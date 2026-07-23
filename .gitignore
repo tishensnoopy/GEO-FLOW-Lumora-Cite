@@ -35,6 +35,9 @@ redis_data/
 # 备份
 db_backup/
 
+# SSL 证书（部署生成，不入库）
+deploy/ssl/
+
 # OS
 .DS_Store
 Thumbs.db
