@@ -35,6 +35,31 @@ services:
       timeout: 5s
       retries: 5
 
+  index-monitor:
+    build:
+      context: ./index-monitor
+      dockerfile: Dockerfile.local
+      network: host
+    container_name: geo-index-monitor-local
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: geo_monitoring
+      POSTGRES_USER: geo_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-GeoLocal2026}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-RedisLocal2026}
+      SECRET_KEY: ${SECRET_KEY:-local-jwt-secret-key-for-testing}
+    ports:
+      - "8090:8090"
+
 volumes:
   postgres_data_local:
   redis_data_local:
