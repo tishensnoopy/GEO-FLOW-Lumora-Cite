@@ -1,0 +1,40 @@
+# 环境变量（含敏感信息）
+.env
+.env.local
+.env.prod
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Node.js
+node_modules/
+npm-debug.log*
+
+# IDE
+.trae/
+.vscode/
+.idea/
+
+# Superpowers 临时文件
+.superpowers/
+
+# 数据卷
+postgres_data/
+redis_data/
+
+# 日志
+*.log
+
+# 备份
+db_backup/
+
+# OS
+.DS_Store
+Thumbs.db
