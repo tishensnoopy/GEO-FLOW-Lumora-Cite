@@ -2,10 +2,13 @@
   <div style="padding: 20px;">
     <h2>文章列表</h2>
     <el-table :data="articles" style="width: 100%">
-      <el-table-column prop="title" label="文章标题" />
+      <el-table-column prop="content_title" label="文章标题" />
       <el-table-column prop="baidu_status" label="百度" />
       <el-table-column prop="toutiao_status" label="头条" />
-      <el-table-column prop="checked_at" label="检测时间" />
+      <el-table-column prop="sogou_status" label="搜狗" />
+      <el-table-column prop="so360_status" label="360" />
+      <el-table-column prop="bing_status" label="必应" />
+      <el-table-column prop="updated_at" label="检测时间" />
     </el-table>
   </div>
 </template>
