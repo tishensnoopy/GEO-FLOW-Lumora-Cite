@@ -272,6 +272,35 @@ CREATE TABLE client_sites (
 CREATE INDEX idx_client_sites_client_id ON client_sites(client_id);
 ```
 
+#### system_config（系统配置）
+
+```sql
+CREATE TABLE system_config (
+    id SERIAL PRIMARY KEY,
+    config_key VARCHAR(128) UNIQUE NOT NULL,
+    config_value TEXT NOT NULL,
+    config_type VARCHAR(32) NOT NULL, -- 'string' / 'number' / 'boolean' / 'json'
+    description TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 初始化默认配置
+INSERT INTO system_config (config_key, config_value, config_type, description) VALUES
+('index_scan_frequency', '1', 'number', '收录检测频率（天/次），默认每天 1 次'),
+('index_scan_time', '02:00', 'string', '收录检测执行时间，默认凌晨 2:00'),
+('citation_scan_frequency', '7', 'number', 'AI 采信检测频率（天/次），默认每 7 天 1 次'),
+('citation_scan_time', '03:00', 'string', 'AI 采信检测执行时间，默认凌晨 3:00'),
+('citation_sample_size', '20', 'number', 'AI 采信检测抽样数量，默认 20 篇'),
+('spider_concurrent', '3', 'number', '爬虫并发数，默认 3'),
+('spider_interval_min', '2', 'number', '爬虫最小间隔（秒），默认 2 秒'),
+('spider_interval_max', '5', 'number', '爬虫最大间隔（秒），默认 5 秒');
+```
+
+**说明**：
+- 管理后台提供配置界面，可动态调整扫描频率、时间、并发数等参数
+- 配置修改后，定时任务自动生效（无需重启服务）
+- 支持立即执行按钮，手动触发扫描任务
+
 ### 3.2 数据关系
 
 ```
@@ -328,9 +357,11 @@ clients (1) ──< client_sites (N)
 - 用于权威确认，避免爬虫误判
 
 **定时任务**：
-- 每天 2:00 / 14:00 执行（错峰）
+- 每天 2:00 执行（错峰）
 - 增量检测：只检测新增文章（status='pending'）
 - 全量巡检：每周日凌晨 2:00 全量检测
+- **频率可配置**：管理后台提供扫描频率配置入口（默认每天 1 次）
+- **立即扫描**：管理后台提供"立即扫描"按钮，手动触发收录检测任务
 
 **数据存储**：
 - 检测结果存入 `index_results` 表
@@ -353,9 +384,11 @@ clients (1) ──< client_sites (N)
 5. 分类：精确引用 / 同域名引用 / 未命中 / 不可验证
 
 **定时任务**：
-- 每周一/四 3:00 执行
+- 每 7 天执行一次（默认周一 3:00）
 - 抽样检测：每次最多 20 篇文章
 - 避免 API 成本过高
+- **频率可配置**：管理后台提供扫描频率配置入口（默认每 7 天 1 次）
+- **立即扫描**：管理后台提供"立即扫描"按钮，手动触发 AI 采信检测任务
 
 **数据存储**：
 - 检测结果存入 `citation_results` 表
