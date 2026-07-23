@@ -1,0 +1,83 @@
+# docker-compose.prod.yml（生产环境，5 服务完整版）
+# 使用方式：docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+# 架构：nginx(80) → dashboard(80) + index-monitor(8090) → postgres + redis
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: geo-postgres
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-geo_monitoring}
+      POSTGRES_USER: ${POSTGRES_USER:-geo_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./deploy/scripts/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-geo_user} -d ${POSTGRES_DB:-geo_monitoring}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: geo-redis
+    restart: always
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  index-monitor:
+    build:
+      context: ./index-monitor
+      dockerfile: Dockerfile
+    container_name: geo-index-monitor
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-geo_monitoring}
+      POSTGRES_USER: ${POSTGRES_USER:-geo_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      SECRET_KEY: ${SECRET_KEY}
+    ports:
+      - "127.0.0.1:8090:8090"
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: geo-dashboard
+    restart: always
+    depends_on:
+      - index-monitor
+
+  nginx:
+    image: nginx:alpine
+    container_name: geo-nginx
+    restart: always
+    ports:
+      - "80:80"
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./deploy/nginx/conf.d:/etc/nginx/conf.d
+    depends_on:
+      - dashboard
+      - index-monitor
+
+volumes:
+  postgres_data:
+  redis_data:
