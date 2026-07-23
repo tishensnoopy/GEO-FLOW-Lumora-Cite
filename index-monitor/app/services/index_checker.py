@@ -1,6 +1,6 @@
 # index-monitor/app/services/index_checker.py
 from datetime import datetime
-from typing import List, Dict
+from typing import List, Dict, Tuple
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.article import ArticleDistribution
@@ -12,16 +12,17 @@ class IndexChecker:
         self.db = db
         self.spider = spider
 
-    async def get_pending_urls(self) -> List[str]:
+    async def get_pending_urls(self) -> List[Tuple[str, str]]:
         result = await self.db.execute(
-            select(ArticleDistribution.remote_url).where(ArticleDistribution.status == "synced")
+            select(ArticleDistribution.remote_url, ArticleDistribution.client_id)
+            .where(ArticleDistribution.status == "synced")
         )
-        distributed_urls = {row[0] for row in result.fetchall()}
+        distributed = {row[0]: row[1] for row in result.fetchall()}
 
         result = await self.db.execute(select(IndexResult.url))
         checked_urls = {row[0] for row in result.fetchall()}
 
-        return list(distributed_urls - checked_urls)
+        return [(url, distributed[url]) for url in distributed if url not in checked_urls]
 
     async def check_url(self, url: str, client_id: str, site_type: str):
         results = await self.spider.check_all_engines(url)
@@ -73,6 +74,6 @@ class IndexChecker:
         await self.db.commit()
 
     async def check_all_pending(self):
-        pending_urls = await self.get_pending_urls()
-        for url in pending_urls:
-            await self.check_url(url, "default", "official")
+        pending = await self.get_pending_urls()
+        for url, client_id in pending:
+            await self.check_url(url, client_id, "official")

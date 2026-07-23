@@ -101,10 +101,12 @@ BEGIN;
 DELETE FROM article_distributions WHERE article_id = '${ARTICLE_ID}';
 INSERT INTO article_distributions (
     article_id,
+    client_id,
     remote_url,
     status
 ) VALUES (
     '${ARTICLE_ID}',
+    '${CLIENT_ID}',
     '${ARTICLE_URL}',
     '${ARTICLE_STATUS}'
 );

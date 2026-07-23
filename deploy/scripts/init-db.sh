@@ -8,6 +8,7 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
     CREATE TABLE IF NOT EXISTS article_distributions (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
         article_id VARCHAR(255) NOT NULL,
+        client_id VARCHAR(64) NOT NULL,
         remote_url VARCHAR(512) NOT NULL,
         status VARCHAR(32) NOT NULL DEFAULT 'synced',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -15,6 +16,7 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
     );
     CREATE INDEX idx_article_distributions_status ON article_distributions(status);
     CREATE INDEX idx_article_distributions_url ON article_distributions(remote_url);
+    CREATE INDEX IF NOT EXISTS idx_article_distributions_client_id ON article_distributions(client_id);
 
     CREATE TABLE IF NOT EXISTS index_results (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
