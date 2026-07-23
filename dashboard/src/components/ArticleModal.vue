@@ -1,5 +1,5 @@
 <template>
-  <el-dialog v-model="visible" :title="article.title || '文章详情'" width="70%">
+  <el-dialog v-model="visible" :title="article.content_title || '文章详情'" width="70%">
     <el-descriptions :column="2" border>
       <el-descriptions-item label="发布时间">{{ article.created_at }}</el-descriptions-item>
       <el-descriptions-item label="URL">{{ article.url }}</el-descriptions-item>
@@ -8,7 +8,7 @@
       <el-descriptions-item label="搜狗收录">{{ article.sogou_status }}</el-descriptions-item>
       <el-descriptions-item label="360收录">{{ article.so360_status }}</el-descriptions-item>
       <el-descriptions-item label="必应收录">{{ article.bing_status }}</el-descriptions-item>
-      <el-descriptions-item label="AI 采信">{{ article.citation_status }}</el-descriptions-item>
+      <el-descriptions-item label="AI 采信">{{ article.citation_status || '暂无数据' }}</el-descriptions-item>
     </el-descriptions>
     <el-divider>原文快照</el-divider>
     <div class="snapshot" v-html="article.content_snapshot"></div>

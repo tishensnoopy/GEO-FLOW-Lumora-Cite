@@ -35,6 +35,10 @@ redis_data/
 # 备份
 db_backup/
 
+# 外部项目源码（云端单独上传/克隆，不入本仓库）
+GEOFlow-main/
+lumora-cite-main/
+
 # SSL 证书（部署生成，不入库）
 deploy/ssl/
 
