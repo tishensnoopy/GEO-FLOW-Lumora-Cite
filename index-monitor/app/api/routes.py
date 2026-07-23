@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.core.database import get_db
 from app.core.security import create_access_token, verify_password, hash_password
+from app.api.deps import get_current_client_id
 from app.models.client import Client
 from app.models.index_result import IndexResult, IndexHistory
 from app.models.citation_result import CitationResult
@@ -30,7 +31,7 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/stats/index")
-async def get_index_stats(client_id: str, db: AsyncSession = Depends(get_db)):
+async def get_index_stats(client_id: str = Depends(get_current_client_id), db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(IndexResult).where(IndexResult.client_id == client_id))
     articles = result.scalars().all()
     total = len(articles)
@@ -43,7 +44,7 @@ async def get_index_stats(client_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/stats/citation")
-async def get_citation_stats(client_id: str, db: AsyncSession = Depends(get_db)):
+async def get_citation_stats(client_id: str = Depends(get_current_client_id), db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(CitationResult).where(CitationResult.url.in_(
             select(IndexResult.url).where(IndexResult.client_id == client_id)
@@ -119,8 +120,8 @@ async def trigger_scan(scan_type: str, db: AsyncSession = Depends(get_db)):
 
 # 修复任务 1 - Fix 5：GET /articles 返回 IndexResult 列表（空表返回 []）
 @router.get("/articles")
-async def list_articles(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(IndexResult))
+async def list_articles(client_id: str = Depends(get_current_client_id), db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(IndexResult).where(IndexResult.client_id == client_id))
     articles = result.scalars().all()
     return [
         {
