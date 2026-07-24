@@ -4,7 +4,6 @@
       <el-header>
         <div class="header-content">
           <h1>GEO 监测仪表盘</h1>
-          <el-button type="danger" @click="handleLogout">退出登录</el-button>
         </div>
       </el-header>
       <el-main>
@@ -25,12 +24,10 @@
 
 <script setup>
 import { onMounted, computed } from 'vue'
-import { useRouter } from 'vue-router'
 import { useStore } from 'vuex'
 import IndexChart from '../components/IndexChart.vue'
 import CitationChart from '../components/CitationChart.vue'
 
-const router = useRouter()
 const store = useStore()
 const indexStats = computed(() => store.state.indexStats)
 const citationStats = computed(() => store.state.citationStats)
@@ -39,11 +36,6 @@ onMounted(async () => {
   await store.dispatch('fetchIndexStats')
   await store.dispatch('fetchCitationStats')
 })
-
-const handleLogout = () => {
-  store.dispatch('logout')
-  router.push('/login')
-}
 </script>
 
 <style scoped>

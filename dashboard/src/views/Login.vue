@@ -41,7 +41,7 @@ const handleLogin = async () => {
     try {
       await store.dispatch('login', form)
       ElMessage.success('登录成功')
-      router.push('/')
+      await router.push('/')
     } catch (error) {
       ElMessage.error('登录失败：' + (error.response?.data?.detail || '未知错误'))
     } finally {

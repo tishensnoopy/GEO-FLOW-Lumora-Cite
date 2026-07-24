@@ -21,4 +21,5 @@ def start_scheduler():
     scheduler.start()
 
 def stop_scheduler():
-    scheduler.shutdown()
+    # wait=True：等待当前正在执行的任务完成后再关闭，避免 02:00 定时任务被强制中断
+    scheduler.shutdown(wait=True)
