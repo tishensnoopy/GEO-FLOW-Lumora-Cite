@@ -118,6 +118,16 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
     ('citation_sample_size', '20', 'number', 'AI 采信检测抽样数量'),
     ('spider_concurrent', '3', 'number', '爬虫并发数'),
     ('spider_interval_min', '2', 'number', '爬虫最小间隔（秒）'),
-    ('spider_interval_max', '5', 'number', '爬虫最大间隔（秒）')
+    ('spider_interval_max', '5', 'number', '爬虫最大间隔（秒）'),
+    -- lumora-cite 集成：AI API Key 配置项（值为空表示未配置）
+    ('ai_deepseek_api_key', '', 'string', 'DeepSeek API Key（问题生成+目的推断用，OpenAI 兼容接口）'),
+    ('ai_dashscope_api_key', '', 'string', '阿里云 DashScope API Key（千问/DeepSeek 引用检测用）'),
+    ('ai_ark_api_key', '', 'string', '火山引擎 ARK API Key（豆包引用检测用）'),
+    ('ai_baidu_api_key', '', 'string', '百度千帆 API Key（文心引用检测用）'),
+    ('ai_openai_api_key', '', 'string', 'OpenAI API Key（ChatGPT 引用检测用）'),
+    ('ai_gemini_api_key', '', 'string', 'Google Gemini API Key（引用检测用）'),
+    ('ai_anthropic_api_key', '', 'string', 'Anthropic API Key（Claude 引用检测用）'),
+    ('ai_question_model', 'deepseek-chat', 'string', '问题生成模型名称（DeepSeek）'),
+    ('ai_citation_models', '', 'string', '引用检测模型（逗号分隔：doubao,qwen,deepseek,ernie,openai,gemini,claude；留空=自动选择已配置的）')
     ON CONFLICT (config_key) DO NOTHING;
 EOSQL

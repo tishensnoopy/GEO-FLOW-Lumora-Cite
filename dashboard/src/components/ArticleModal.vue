@@ -8,7 +8,12 @@
       <el-descriptions-item label="搜狗收录">{{ article.sogou_status }}</el-descriptions-item>
       <el-descriptions-item label="360收录">{{ article.so360_status }}</el-descriptions-item>
       <el-descriptions-item label="必应收录">{{ article.bing_status }}</el-descriptions-item>
-      <el-descriptions-item label="AI 采信">{{ article.citation_status || '暂无数据' }}</el-descriptions-item>
+      <el-descriptions-item label="AI 采信">
+        <el-tag v-if="article.citation_status === 'cited'" type="success">已采信（{{ article.citation_exact }}/{{ article.citation_total }}）</el-tag>
+        <el-tag v-else-if="article.citation_status === 'partial'" type="warning">部分引用（{{ article.citation_domain }}/{{ article.citation_total }}）</el-tag>
+        <el-tag v-else-if="article.citation_status === 'not_cited'" type="danger">未采信（0/{{ article.citation_total }}）</el-tag>
+        <el-tag v-else type="info">待检测</el-tag>
+      </el-descriptions-item>
     </el-descriptions>
     <el-divider>原文快照</el-divider>
     <div class="snapshot" v-html="article.content_snapshot"></div>
