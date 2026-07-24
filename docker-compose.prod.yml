@@ -1,23 +1,46 @@
 # docker-compose.prod.yml（生产环境，5 服务完整版）
 # 使用方式：docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
 # 架构：nginx(80+443) → dashboard(80) + index-monitor(8090) → postgres + redis
+#
+# Task 6 变更（2026-07-25）：
+#   - 废弃监测系统独立的 postgres:15-alpine 容器（下方 postgres 服务已注释）
+#   - index-monitor 改为连接 GEOFlow 生产 PG 容器 geoflow-postgres-prod（pgvector/pg18）
+#   - 通过外部网络 geoflow-prod-net 与 GEOFlow 容器通信
+#   - 监测系统的表仍存放在 monitor schema，GEOFlow 表在 public schema
+#
+# 前置条件：
+#   1. GEOFlow 生产栈已启动（提供 geoflow-postgres-prod 容器 + geoflow-prod-net 网络）
+#   2. monitor schema 已在 geoflow-postgres-prod 创建（执行 alembic upgrade head）
+#   3. 如需从旧 PG 迁移历史数据：DEPLOY_ENV=prod bash deploy/scripts/migrate-monitor-data.sh
+#
+# 回滚方法：
+#   - 取消下方 postgres 服务定义的注释
+#   - 把 index-monitor 的 POSTGRES_HOST/DATABASE_URL 改回 postgres
+#   - 移除 geoflow_net 网络配置
 services:
-  postgres:
-    image: postgres:15-alpine
-    container_name: geo-postgres
-    restart: always
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-geo_monitoring}
-      POSTGRES_USER: ${POSTGRES_USER:-geo_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./deploy/scripts/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-geo_user} -d ${POSTGRES_DB:-geo_monitoring}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+  # ========================================================================
+  # DEPRECATED：旧 PG 容器（Task 6 起废弃，保留以支持回滚）
+  # ------------------------------------------------------------------------
+  # 监测系统原独立 PG（postgres:15-alpine）。Task 6 后由 GEOFlow 的
+  # geoflow-postgres-prod（pgvector/pg18）统一提供 PG 服务。如需回滚请取消注释，
+  # 并把 index-monitor 的 POSTGRES_HOST 改回 postgres、DATABASE_URL 删除。
+  # ========================================================================
+  # postgres:
+  #   image: postgres:15-alpine
+  #   container_name: geo-postgres
+  #   restart: always
+  #   environment:
+  #     POSTGRES_DB: ${POSTGRES_DB:-geo_monitoring}
+  #     POSTGRES_USER: ${POSTGRES_USER:-geo_user}
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #     - ./deploy/scripts/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-geo_user} -d ${POSTGRES_DB:-geo_monitoring}"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
 
   redis:
     image: redis:7-alpine
@@ -39,22 +62,27 @@ services:
     container_name: geo-index-monitor
     restart: always
     depends_on:
-      postgres:
-        condition: service_healthy
+      # postgres 不再在本栈——由 GEOFlow 栈的 geoflow-postgres-prod 提供
       redis:
         condition: service_healthy
     environment:
-      POSTGRES_HOST: postgres
+      # 连接 GEOFlow 生产 PG（容器名 geoflow-postgres-prod，库 geo_flow）
+      POSTGRES_HOST: geoflow-postgres-prod
       POSTGRES_PORT: 5432
-      POSTGRES_DB: ${POSTGRES_DB:-geo_monitoring}
+      POSTGRES_DB: geo_flow
       POSTGRES_USER: ${POSTGRES_USER:-geo_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # 应用层实际消费的 DATABASE_URL（database.py 直接读取，需与 POSTGRES_HOST 对齐）
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-geo_user}:${POSTGRES_PASSWORD}@geoflow-postgres-prod:5432/geo_flow
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       SECRET_KEY: ${SECRET_KEY}
     ports:
       - "127.0.0.1:8090:8090"
+    networks:
+      - default          # 与 redis 通信
+      - geoflow_net      # 与 geoflow-postgres-prod 通信
 
   dashboard:
     build:
@@ -64,6 +92,8 @@ services:
     restart: always
     depends_on:
       - index-monitor
+    networks:
+      - default
 
   nginx:
     image: nginx:alpine
@@ -82,7 +112,20 @@ services:
     depends_on:
       - dashboard
       - index-monitor
+    networks:
+      - default
+      - geoflow_net   # nginx 需代理到 geoflow-web-prod（Task 6 nginx 双域名切流所需）
 
 volumes:
+  # postgres_data 保留定义以便回滚（旧 PG 服务已注释，此卷当前未被使用）
   postgres_data:
   redis_data:
+
+networks:
+  default:
+    # 监测系统内部网络；与 GEOFlow-main/docker-compose.prod.yml 的 edge 外部网络名对齐
+    name: geo-monitoring_default
+  # GEOFlow 生产栈的默认网络（外部网络，由 GEOFlow-main/docker-compose.prod.yml 创建）
+  geoflow_net:
+    external: true
+    name: geoflow-prod-net

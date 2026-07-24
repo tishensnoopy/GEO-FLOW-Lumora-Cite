@@ -1,24 +1,49 @@
+# 本地开发 Docker Compose（监测系统）
+#
+# Task 6 变更（2026-07-25）：
+#   - 废弃监测系统独立的 postgres:15-alpine 容器（下方 postgres 服务已注释）
+#   - index-monitor 改为连接 GEOFlow 的 PG 容器 geoflow-postgres（pgvector/pg16）
+#   - 监测系统的表仍存放在 monitor schema，GEOFlow 表在 public schema
+#   - 通过外部网络 geoflow-laravel_default 与 GEOFlow 容器通信
+#
+# 前置条件：
+#   1. GEOFlow 本地栈已启动（提供 geoflow-postgres 容器 + geoflow-laravel_default 网络）
+#      cd GEOFlow-main && docker compose up -d
+#   2. monitor schema 已在 geoflow-postgres 创建（执行 alembic upgrade head）
+#   3. 如需从旧 PG 迁移历史数据：bash deploy/scripts/migrate-monitor-data.sh
+#
+# 回滚方法：
+#   - 取消下方 postgres 服务定义的注释
+#   - 把 index-monitor 的 POSTGRES_HOST/DATABASE_URL 改回 postgres
+#   - 移除 geoflow_net 网络配置
 version: '3.8'
 
 services:
-  postgres:
-    image: postgres:15-alpine
-    container_name: geo-postgres-local
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: geo_monitoring
-      POSTGRES_USER: geo_user
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-GeoLocal2026}
-    volumes:
-      - postgres_data_local:/var/lib/postgresql/data
-      - ./deploy/scripts/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
-    ports:
-      - "5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U geo_user -d geo_monitoring"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+  # ========================================================================
+  # DEPRECATED：旧 PG 容器（Task 6 起废弃，保留以支持回滚）
+  # ------------------------------------------------------------------------
+  # 监测系统原独立 PG（postgres:15-alpine）。Task 6 后由 GEOFlow 的
+  # geoflow-postgres（pgvector/pg16）统一提供 PG 服务。如需回滚请取消注释，
+  # 并把 index-monitor 的 POSTGRES_HOST 改回 postgres、DATABASE_URL 删除。
+  # ========================================================================
+  # postgres:
+  #   image: postgres:15-alpine
+  #   container_name: geo-postgres-local
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_DB: geo_monitoring
+  #     POSTGRES_USER: geo_user
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-GeoLocal2026}
+  #   volumes:
+  #     - postgres_data_local:/var/lib/postgresql/data
+  #     - ./deploy/scripts/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
+  #   ports:
+  #     - "5432:5432"
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U geo_user -d geo_monitoring"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
 
   redis:
     image: redis:7-alpine
@@ -43,23 +68,38 @@ services:
     container_name: geo-index-monitor-local
     restart: unless-stopped
     depends_on:
-      postgres:
-        condition: service_healthy
+      # postgres 不再在本地栈——由 GEOFlow 栈的 geoflow-postgres 提供
       redis:
         condition: service_healthy
     environment:
-      POSTGRES_HOST: postgres
+      # 连接 GEOFlow 的 PG（容器名 geoflow-postgres，库 geo_flow）
+      POSTGRES_HOST: geoflow-postgres
       POSTGRES_PORT: 5432
-      POSTGRES_DB: geo_monitoring
-      POSTGRES_USER: geo_user
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-GeoLocal2026}
+      POSTGRES_DB: geo_flow
+      POSTGRES_USER: ${POSTGRES_USER:-geo_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-geo_password}
+      # 应用层实际消费的 DATABASE_URL（database.py 直接读取，需与 POSTGRES_HOST 对齐）
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-geo_user}:${POSTGRES_PASSWORD:-geo_password}@geoflow-postgres:5432/geo_flow
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-RedisLocal2026}
       SECRET_KEY: ${SECRET_KEY:-local-jwt-secret-key-for-testing}
     ports:
       - "8090:8090"
+    networks:
+      - default          # 与 redis 通信
+      - geoflow_net      # 与 geoflow-postgres 通信
 
 volumes:
+  # postgres_data_local 保留定义以便回滚（旧 PG 服务已注释，此卷当前未被使用）
   postgres_data_local:
   redis_data_local:
+
+networks:
+  default:
+    name: geo-monitoring-local_default
+  # GEOFlow 本地栈的默认网络（外部网络，由 GEOFlow-main/docker-compose.yml 创建）
+  # GEOFlow compose 的 project name 是 geoflow-laravel，故默认网络名为 geoflow-laravel_default
+  geoflow_net:
+    external: true
+    name: geoflow-laravel_default
