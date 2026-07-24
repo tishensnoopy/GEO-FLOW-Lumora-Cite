@@ -925,10 +925,13 @@ async def get_current_user(
 | POST | `/distributions` | admin | 手动录入 URL |
 | DELETE | `/distributions/{id}` | admin | 删除手动录入的 URL |
 | **POST** | **`/admin/distributions/batch-scan`** | **admin** | **批量触发检测** |
+| **PUT** | **`/admin/clients/{id}/password`** | **admin** | **重置客户密码（不需旧密码）** |
 | GET | `/admin/audit_logs` | admin | 审计日志列表（admin 看自己，super_admin 看所有） |
 | POST | `/admin/exports` | admin/client | 创建导出任务 |
 | GET | `/admin/exports/{id}/download` | admin/client | 下载导出文件 |
 | POST | `/exports` | client | 客户导出自己的数据 |
+| **PUT** | **`/auth/password`** | **client** | **客户修改自己的密码（需验证旧密码）** |
+| **PUT** | **`/auth/profile`** | **client** | **客户修改自己的资料（联系人/电话）** |
 
 ### 9.1 批量触发检测端点
 
@@ -961,6 +964,87 @@ async def client_create_export(req: ExportRequest, user = Depends(get_current_cl
     # 强制 client_id = 当前客户
     task = await ExportService.create_task(client_id=user.client_id, ...)
     return {"task_id": str(task.id)}
+```
+
+### 9.3 客户修改密码端点
+
+```python
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
+
+@router.put("/auth/password")
+async def change_password(req: ChangePasswordRequest, user = Depends(get_current_client), db: AsyncSession = Depends(get_db)):
+    """客户修改自己的密码。需验证旧密码 + 新密码强度校验。"""
+    # 1. 验证旧密码
+    if not verify_password(req.old_password, user.password_hash):
+        raise HTTPException(status_code=400, detail="旧密码错误")
+
+    # 2. 新密码不能与旧密码相同
+    if req.old_password == req.new_password:
+        raise HTTPException(status_code=400, detail="新密码不能与旧密码相同")
+
+    # 3. 校验新密码强度（至少 8 位，含字母+数字）
+    validate_password_strength(req.new_password)
+
+    # 4. 更新密码
+    user.password_hash = hash_password(req.new_password)
+    await db.commit()
+    return {"message": "密码修改成功"}
+
+@router.put("/auth/profile")
+async def update_profile(req: UpdateProfileRequest, user = Depends(get_current_client), db: AsyncSession = Depends(get_db)):
+    """客户修改自己的资料（联系人姓名/电话）。client_id 和 email 不可改。"""
+    if req.contact_name:
+        user.contact_name = req.contact_name
+    if req.contact_phone:
+        user.contact_phone = req.contact_phone
+    await db.commit()
+    return {"message": "资料更新成功"}
+```
+
+### 9.4 admin 重置客户密码端点
+
+```python
+class ResetPasswordRequest(BaseModel):
+    new_password: str
+
+@router.put("/admin/clients/{client_id}/password")
+async def admin_reset_password(client_id: str, req: ResetPasswordRequest, admin = Depends(get_current_admin), db: AsyncSession = Depends(get_db)):
+    """admin 重置客户密码。不需旧密码，但记录审计日志。"""
+    result = await db.execute(select(Client).where(Client.client_id == client_id))
+    client = result.scalar_one_or_none()
+    if not client:
+        raise HTTPException(status_code=404, detail="客户不存在")
+
+    # 校验新密码强度
+    validate_password_strength(req.new_password)
+
+    client.password_hash = hash_password(req.new_password)
+    await db.commit()
+
+    # 记录审计日志
+    await AuditLogService.log(
+        db, admin_user_id=admin["user_id"], admin_name=admin["name"],
+        action="reset_client_password", target_type="client", target_id=client_id,
+    )
+    return {"message": f"客户 {client_id} 密码已重置"}
+```
+
+**密码强度校验函数**（复用于客户创建/修改/重置）：
+
+```python
+# index-monitor/app/utils/validators.py
+import re
+
+def validate_password_strength(password: str) -> None:
+    """密码强度校验：至少 8 位，包含字母和数字。"""
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="密码至少 8 位")
+    if not re.search(r'[a-zA-Z]', password):
+        raise HTTPException(status_code=400, detail="密码必须包含字母")
+    if not re.search(r'[0-9]', password):
+        raise HTTPException(status_code=400, detail="密码必须包含数字")
 ```
 
 ---
@@ -1004,6 +1088,7 @@ class AuditLogService:
 | trigger_index_scan | distribution | 触发收录检测 |
 | trigger_citation_scan | distribution | 触发采信检测 |
 | batch_scan | - | 批量触发检测 |
+| **reset_client_password** | **client** | **admin 重置客户密码** |
 | create_export | export_task | 创建导出任务 |
 
 ---
@@ -1479,6 +1564,14 @@ index-monitor/tests/
 │   │   - test_deactivate_client_blocks_login
 │   │   - test_soft_delete_client_hides_from_list
 │   │   - test_restore_client_re_enables_login
+│   ├── test_change_password.py
+│   │   - test_client_change_password_success
+│   │   - test_client_change_password_wrong_old_returns_400
+│   │   - test_client_change_password_same_as_old_returns_400
+│   │   - test_client_change_password_weak_new_returns_400
+│   │   - test_admin_reset_client_password_success
+│   │   - test_admin_reset_password_logs_audit
+│   │   - test_admin_reset_password_weak_returns_400
 │   ├── test_audit_log.py
 │   │   - test_log_create_client_action
 │   │   - test_log_batch_scan_action
@@ -1569,6 +1662,7 @@ deploy/scripts/test-unified-db-e2e.sh
 14. admin 创建客户 → 客户可登录 → admin 停用客户 → 客户无法登录 → admin 恢复客户 → 客户可登录
 15. admin 批量选择 3 条 URL 触发检测 → 3 条检测任务入队
 16. admin 查看审计日志 → 看到自己的所有操作
+17. 客户修改密码（旧密码错误 → 400；新密码太弱 → 400；正确旧密码+合规新密码 → 成功）→ 用新密码重新登录成功
 
 ---
 
@@ -1758,17 +1852,20 @@ alembic upgrade head
 13. **admin 所有操作记录到审计日志**（创建客户/录入 URL/触发检测/导出等）
 14. **客户生命周期完整**：创建→登录→停用→无法登录→恢复→可登录→软删除→隐藏
 15. **客户密码安全校验**：密码强度不足/邮箱重复 → 创建失败
-16. 导出 Excel → 下载文件包含 4 个 sheet
-17. **导出 PDF → 含封面/4 统计卡片/趋势折线图/饼图/柱状图/数据洞察/明细表**
-18. **PDF 中文不掉字（含生僻字）、图片不丢失、水印 Logo 每页显示、格式每次一致**
-19. **客户能导出自己的 PDF 报告**（只含自己 client_id 数据）
-20. 官网点击"监测平台" → 跳转客户登录页
-21. 官网点击"管理员入口" → SSO 登录后进入监测 dashboard
-22. GEOFlow 后台点击"监测系统" → 新窗口打开监测 dashboard（已 SSO 登录）
-23. dashboard 风格 A（深色侧边栏 + 浅色内容区 + 4 统计卡片 + 5 图表 + 批量操作）
-24. 废弃监测系统的 `postgres:15-alpine` 容器，服务器节省 ~300MB 内存
-25. 所有单元/集成测试通过
-26. 端到端测试脚本 16 步全部通过
+16. **客户能自行修改密码**：`PUT /auth/password` 验证旧密码 + 新密码强度校验 + 新旧不能相同
+17. **客户能修改自己资料**：`PUT /auth/profile` 修改联系人/电话（client_id 和 email 不可改）
+18. **admin 能重置客户密码**：`PUT /admin/clients/{id}/password` 不需旧密码 + 记录审计日志
+19. 导出 Excel → 下载文件包含 4 个 sheet
+20. **导出 PDF → 含封面/4 统计卡片/趋势折线图/饼图/柱状图/数据洞察/明细表**
+21. **PDF 中文不掉字（含生僻字）、图片不丢失、水印 Logo 每页显示、格式每次一致**
+22. **客户能导出自己的 PDF 报告**（只含自己 client_id 数据）
+23. 官网点击"监测平台" → 跳转客户登录页
+24. 官网点击"管理员入口" → SSO 登录后进入监测 dashboard
+25. GEOFlow 后台点击"监测系统" → 新窗口打开监测 dashboard（已 SSO 登录）
+26. dashboard 风格 A（深色侧边栏 + 浅色内容区 + 4 统计卡片 + 5 图表 + 批量操作）
+27. 废弃监测系统的 `postgres:15-alpine` 容器，服务器节省 ~300MB 内存
+28. 所有单元/集成测试通过
+29. 端到端测试脚本 17 步全部通过
 
 ---
 
