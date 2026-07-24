@@ -902,6 +902,22 @@ async def get_current_user(
 | admin | SSO from GEOFlow | 管理客户/站点/分发/手动录入/触发检测/导出/查看审计日志 |
 | client | 监测系统独立登录 | 只看自己 client_id 数据 + 导出自己的数据 |
 
+### 8.4 鉴权独立性（重要边界）
+
+**admin 鉴权与 client 鉴权完全独立，互不影响**：
+
+- admin 的 JWT 是 SSO 签发的（从 GEOFlow 获取），与客户密码无关
+- admin 查数据走 `GET /admin/distributions`（跨 schema JOIN），与客户登录状态无关
+- **客户改密码、停用、软删除均不影响 admin 查看该客户的全部数据**
+
+| 客户操作 | 对客户自己的影响 | 对 admin 的影响 |
+|---|---|---|
+| 改密码 | 下次登录用新密码 | ❌ 无影响 |
+| 停用（inactive） | 无法登录 + 停止定时检测 | ❌ 无影响，admin 正常查看（标注"已停用"） |
+| 软删除（deleted） | 从客户端隐藏 | ❌ 无影响，admin 可用 `?include_deleted=true` 查看历史数据 |
+
+**关键原则**：客户状态只影响**客户自己能否登录**，不影响 admin 查看数据。历史数据（分发记录、检测结果、采信记录）永远保留，admin 随时可查。
+
 ---
 
 ## 9. 管理员端点清单
