@@ -114,6 +114,81 @@ IndexChecker / CitationChecker 执行检测 → 写 monitor.index_results / moni
 客户/管理员看 dashboard（风格 A，丰富图表）→ 导出报告（Playwright PDF / Excel）
 ```
 
+### 2.4 各系统影响分析
+
+本期改动涉及 4 个系统，以下分析每个系统的影响范围和回归测试需求：
+
+#### 2.4.1 GEOFlow（Laravel/PHP）
+
+**本期改动**：
+
+| 改动项 | 文件 | 影响 |
+|---|---|---|
+| 新增 SSO 控制器 | `app/Http/Controllers/SsoController.php`（新增） | 新增功能，不影响现有 |
+| 新增 SSO 路由 | `routes/web.php` + `routes/api.php`（加路由） | 新增路由，不影响现有 |
+| 后台菜单加"监测系统"链接 | `resources/views/layouts/admin.blade.php`（加菜单项） | UI 微调，不影响功能 |
+| 数据库容器统一 | `docker-compose.yml`（PG 镜像不变，仍是 pgvector/pg16） | **无改动**（GEOFlow 仍是 PG 16） |
+
+**不受影响的现有功能**（需回归测试确认）：
+- 文章管理（CRUD、富文本编辑、关键词管理）
+- 文章生成（AI 生成、DeepSeek API 调用）
+- 文章分发（WordPress REST API、publisher 框架）
+- 用户认证（登录、注册、密码重置）
+- 后台管理（用户管理、渠道管理、系统配置）
+
+**回归测试要求**：SSO 改动是新增功能，不影响现有认证流程。但需验证：
+- SSO 路由不与现有路由冲突
+- SsoController 不影响现有中间件链
+- 后台菜单改动不影响页面渲染
+
+#### 2.4.2 Lumora Cite（AI 采信检测）
+
+**本期改动**：
+
+| 改动项 | 文件 | 影响 |
+|---|---|---|
+| 数据库容器统一 | 监测系统的 PG 改为 pgvector/pg16 | **需迁移**：Lumora Cite 的表从旧 PG 迁移到新 PG 的 monitor schema |
+| 检测结果存储 | `monitor.citation_results`（可能需调整 schema） | 表结构可能需对齐 |
+| API key 配置 | `.env.prod`（DeepSeek + 千问/豆包/ChatGPT） | **不变**（沿用现有配置） |
+
+**不受影响的现有功能**（需回归测试确认）：
+- AI 采信检测流程（DeepSeek 生成问题 → 千问/豆包/ChatGPT 检测引用）
+- 检测结果存储和查询
+- API key 管理
+
+**回归测试要求**：
+- 数据库迁移后，Lumora Cite 能正常连接新 PG
+- citation_results 表结构兼容
+- AI 采信检测端到端流程正常（生成问题 → 检测引用 → 存储结果）
+
+#### 2.4.3 官网（WordPress）
+
+**本期改动**：
+
+| 改动项 | 位置 | 影响 |
+|---|---|---|
+| 新增"监测平台"入口 | 官网导航栏 + 页脚 | UI 新增链接 |
+| 新增"管理员入口" | 官网导航栏 + 页脚 | UI 新增链接，跳转 SSO |
+| 新增用户协议页面 | `/legal/terms` | 新增页面 |
+| 新增隐私政策页面 | `/legal/privacy` | 新增页面 |
+
+**不受影响的现有功能**（需回归测试确认）：
+- 官网首页展示
+- SEO/GEO 优化（结构化数据、meta 标签、sitemap）
+- 多语言支持（中英文）
+- 现有页面布局和导航
+
+**回归测试要求**：
+- 新增链接不影响现有导航结构
+- 新增页面不影响 SEO（meta 标签、sitemap 更新）
+- 官网在手机端的响应式布局不受影响
+
+#### 2.4.4 监测系统（index-monitor + dashboard）
+
+**本期改动**：最大，涉及全部新功能（SSO、客户管理、导出、Dashboard、检测频率控制等）。
+
+**回归测试要求**：已有完整测试策略（第 16 节）覆盖。
+
 ---
 
 ## 3. 数据库统一方案
@@ -1748,6 +1823,7 @@ index-monitor/tests/
 
 ### 16.2 GEOFlow 侧测试（PHPUnit）
 
+**新增功能测试**：
 ```
 tests/Feature/Sso/
 ├── SsoControllerTest.php
@@ -1756,6 +1832,38 @@ tests/Feature/Sso/
 │   - test_userinfo_returns_user_data_with_role
 │   - test_userinfo_invalid_code_returns_400
 │   - test_userinfo_one_time_use_code
+│   - test_sso_routes_do_not_conflict_with_existing_routes
+│   - test_sso_controller_does_not_affect_auth_middleware
+```
+
+**现有功能回归测试**（确保本期改动不破坏现有功能）：
+```
+tests/Feature/Regression/
+├── ArticleManagementTest.php
+│   - test_create_article_still_works
+│   - test_edit_article_still_works
+│   - test_delete_article_still_works
+│   - test_article_keywords_management
+│   - test_article_rich_text_editing
+├── ArticleGenerationTest.php
+│   - test_ai_generate_article_with_deepseek
+│   - test_generate_article_with_keywords
+│   - test_generation_history_visible
+├── ArticleDistributionTest.php
+│   - test_distribute_to_wordpress_via_rest_api
+│   - test_distribute_status_synced_writes_to_db
+│   - test_distribution_channel_config_works
+│   - test_publisher_manager_routes_to_correct_publisher
+├── UserAuthTest.php
+│   - test_login_still_works
+│   - test_register_still_works
+│   - test_password_reset_still_works
+│   - test_admin_role_still_has_access
+├── AdminPanelTest.php
+│   - test_admin_dashboard_renders_with_new_menu_item
+│   - test_user_management_still_works
+│   - test_channel_management_still_works
+│   - test_system_config_still_works
 ```
 
 ### 16.3 端到端验证
@@ -1782,6 +1890,103 @@ deploy/scripts/test-unified-db-e2e.sh
 15. admin 批量选择 3 条 URL 触发检测 → 3 条检测任务入队
 16. admin 查看审计日志 → 看到自己的所有操作
 17. 客户修改密码（旧密码错误 → 400；新密码太弱 → 400；正确旧密码+合规新密码 → 成功）→ 用新密码重新登录成功
+18. GEOFlow 发布文章 → 监测系统可见 → 触发 AI 采信检测 → DeepSeek 生成问题 + 千问/豆包检测引用 → 结果存入 monitor.citation_results
+19. 官网首页正常展示（中英文、SEO meta 标签、结构化数据完整）
+20. 官网新增页面 `/legal/terms` 和 `/legal/privacy` 可访问，不影响现有 SEO
+21. 官网手机端布局正常（新增入口链接响应式适配）
+
+### 16.4 Lumora Cite 回归测试
+
+**数据库迁移后的回归测试**（确保 PG 统一后 Lumora Cite 功能正常）：
+```
+index-monitor/tests/regression/
+├── test_lumora_cite_db_migration.py
+│   - test_citation_results_table_accessible_in_new_pg
+│   - test_citation_results_schema_compatible
+│   - test_old_citation_data_migrated_correctly
+├── test_lumora_cite_api_keys.py
+│   - test_deepseek_api_key_configured
+│   - test_citation_model_api_keys_configured（千问/豆包/ChatGPT）
+│   - test_api_keys_not_hardcoded（从 .env.prod 读取）
+├── test_lumora_cite_e2e.py
+│   - test_generate_questions_with_deepseek
+│   - test_check_citation_with_qianwen
+│   - test_check_citation_with_doubao
+│   - test_citation_result_stored_to_monitor_schema
+│   - test_citation_result_queryable_by_url
+│   - test_citation_result_visible_in_dashboard
+```
+
+**验证要点**：
+- DeepSeek API key 从 `.env.prod` 读取（不硬编码，遵循 project_memory 硬约束）
+- 千问/豆包/ChatGPT 的 API key 配置正确（之前部署时发现缺失，本期需修复）
+- AI 采信检测完整流程：生成问题 → 检测引用 → 存储结果 → dashboard 可见
+
+### 16.5 官网功能测试
+
+**新增功能测试**：
+```
+官网测试（手动 + 自动化）：
+├── test_new_entries.py
+│   - test_monitor_platform_link_visible_in_navbar
+│   - test_monitor_platform_link_visible_in_footer
+│   - test_admin_entry_link_visible_in_navbar
+│   - test_admin_entry_redirects_to_sso
+│   - test_legal_terms_page_accessible
+│   - test_legal_privacy_page_accessible
+│   - test_new_links_responsive_on_mobile
+```
+
+**现有功能回归测试**（确保新增页面/链接不影响官网现有功能）：
+```
+├── test_homepage_regression.py
+│   - test_homepage_renders_correctly
+│   - test_seo_meta_tags_complete（title/description/og tags）
+│   - test_structured_data_valid（JSON-LD schema.org）
+│   - test_sitemap_includes_new_legal_pages
+│   - test_sitemap_existing_pages_unchanged
+│   - test_bilingual_content_complete（中英文无遗漏）
+│   - test_images_load_correctly（无 404 图片）
+│   - test_navigation_structure_unchanged
+├── test_seo_regression.py
+│   - test_meta_description_present_on_all_pages
+│   - test_og_tags_present
+│   - test_canonical_tags_correct
+│   - test_robots_txt_accessible
+│   - test_google_structured_data_test_passes
+│   - test_ge_optimization_intact（Generative Engine Optimization）
+```
+
+**验证要点**：
+- 新增页面（/legal/terms、/legal/privacy）不影响现有 SEO 排名
+- sitemap.xml 更新包含新增页面
+- 官网多语言（中英文）内容完整
+- GEO 优化（面向 AI 搜索引擎）不受影响
+
+### 16.6 全系统冒烟测试（部署后执行）
+
+**部署到生产后，执行全系统冒烟测试脚本**：
+```
+deploy/scripts/test-smoke-all-systems.sh
+```
+
+| # | 系统 | 测试项 | 预期结果 |
+|---|---|---|---|
+| 1 | GEOFlow | 后台登录 | ✅ 正常 |
+| 2 | GEOFlow | 文章列表加载 | ✅ 正常 |
+| 3 | GEOFlow | 创建文章 | ✅ 正常 |
+| 4 | GEOFlow | 分发到 WordPress | ✅ status='synced' |
+| 5 | GEOFlow | SSO 跳转监测系统 | ✅ 免登进入 |
+| 6 | 监测系统 | admin SSO 登录 | ✅ 正常 |
+| 7 | 监测系统 | 看到 GEOFlow 分发的文章 | ✅ 跨 schema JOIN |
+| 8 | 监测系统 | 触发收录检测 | ✅ IndexChecker 正常 |
+| 9 | Lumora Cite | 触发 AI 采信检测 | ✅ DeepSeek + 千问/豆包 |
+| 10 | 监测系统 | 导出 PDF | ✅ 中文/图表/水印正常 |
+| 11 | 监测系统 | 客户登录 + 修改密码 | ✅ 正常 |
+| 12 | 官网 | 首页访问 | ✅ 中英文正常 |
+| 13 | 官网 | 监测平台入口 | ✅ 跳转客户登录 |
+| 14 | 官网 | 管理员入口 | ✅ SSO 跳转 |
+| 15 | 官网 | SEO meta 标签 | ✅ 完整无缺失 |
 
 ---
 
@@ -1984,7 +2189,7 @@ alembic upgrade head
 26. dashboard 风格 A（深色侧边栏 + 浅色内容区 + 4 统计卡片 + 5 图表 + 批量操作）
 27. 废弃监测系统的 `postgres:15-alpine` 容器，服务器节省 ~300MB 内存
 28. 所有单元/集成测试通过
-29. 端到端测试脚本 17 步全部通过
+29. 端到端测试脚本 21 步全部通过
 30. **检测频率控制**：同一 URL 6 小时内重复检测返回 409；并发不超过 5；超时 30s
 31. **移动端适配**：手机/平板/PC 三端布局正确，图表和表格可正常查看
 32. **空状态引导**：新客户首次登录看到引导提示，admin 看到「手动添加 URL」按钮
@@ -2000,6 +2205,12 @@ alembic upgrade head
 42. **DB 权限隔离**：监测系统 DB 用户对 `public` schema 只读（SELECT），对 `monitor` schema 读写
 43. **并发安全**：两个 admin 同时创建同一 client_id → 第二个返回 409，不产生重复记录
 44. **SSO 登出失效**：admin 在 GEOFlow 登出后，监测系统 JWT 在过期前仍可用，但刷新时 SSO 失败→跳转登录
+45. **GEOFlow 现有功能回归**：SSO 改动后，文章管理/生成/分发/用户认证/后台管理全部正常
+46. **Lumora Cite API key 配置**：DeepSeek + 千问/豆包/ChatGPT 的 API key 从 .env.prod 读取，不硬编码
+47. **Lumora Cite 端到端**：生成问题 → 检测引用 → 结果存入 monitor.citation_results → dashboard 可见
+48. **官网 SEO 不受影响**：新增页面/链接后，现有 SEO meta 标签/结构化数据/sitemap 完整无缺失
+49. **官网多语言完整**：新增页面（/legal/terms、/legal/privacy）中英文内容完整
+50. **全系统冒烟测试**：部署后 15 项冒烟测试全部通过（GEOFlow + 监测系统 + Lumora Cite + 官网）
 
 ---
 
