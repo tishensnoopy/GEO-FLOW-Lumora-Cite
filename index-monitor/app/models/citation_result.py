@@ -2,14 +2,15 @@
 from sqlalchemy import Column, String, DateTime, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
-from app.models.base import Base
+from app.models.base import Base, monitor_table_args
 import uuid
 
 
 class CitationResult(Base):
     __tablename__ = "citation_results"
     # 控制者裁定 2：DB 有 UNIQUE(url, model, question)，模型须声明同名约束
-    __table_args__ = (
+    # schema dict 由 monitor_table_args 自动附加在元组末尾
+    __table_args__ = monitor_table_args(
         UniqueConstraint("url", "model", "question", name="citation_results_url_model_question_key"),
     )
 

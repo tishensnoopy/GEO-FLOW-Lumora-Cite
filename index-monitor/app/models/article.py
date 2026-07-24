@@ -2,12 +2,13 @@
 from sqlalchemy import Column, String, DateTime
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
-from app.models.base import Base
+from app.models.base import Base, monitor_table_args
 import uuid
 
 
 class ArticleDistribution(Base):
     __tablename__ = "article_distributions"
+    __table_args__ = monitor_table_args()
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     article_id = Column(String(255), nullable=False)

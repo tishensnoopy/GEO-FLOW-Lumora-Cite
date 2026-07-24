@@ -2,12 +2,13 @@
 from sqlalchemy import Column, String, DateTime, Text, ARRAY, Integer, Date, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
-from app.models.base import Base
+from app.models.base import Base, monitor_table_args
 import uuid
 
 
 class IndexResult(Base):
     __tablename__ = "index_results"
+    __table_args__ = monitor_table_args()
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     url = Column(String(512), nullable=False, unique=True, index=True)
@@ -33,7 +34,8 @@ class IndexResult(Base):
 class IndexHistory(Base):
     __tablename__ = "index_history"
     # 控制者裁定 2：DB 有 UNIQUE(url, check_date)，模型须声明同名约束
-    __table_args__ = (
+    # schema dict 由 monitor_table_args 自动附加在元组末尾
+    __table_args__ = monitor_table_args(
         UniqueConstraint("url", "check_date", name="index_history_url_check_date_key"),
     )
 
