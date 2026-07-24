@@ -1671,6 +1671,24 @@ index-monitor/tests/
 │   │   - test_chart_not_split_across_pages（图表不跨页切割）
 │   │   - test_table_row_not_split_across_pages（表格行不跨页）
 │   │   - test_chart_title_not_separated_from_chart（标题不与图表分离）
+│   ├── test_scan_rate_limit.py
+│   │   - test_scan_within_6h_returns_409
+│   │   - test_scan_after_6h_succeeds
+│   │   - test_concurrent_scan_limited_to_5
+│   │   - test_daily_quota_exceeded_returns_429
+│   │   - test_scan_timeout_30s
+│   ├── test_archive_distribution.py
+│   │   - test_geoflow_article_deleted_archives_to_monitor
+│   │   - test_archived_record_visible_in_dashboard_with_tag
+│   │   - test_archived_record_preserves_content_snapshot
+│   ├── test_data_archive.py
+│   │   - test_old_index_results_archived_to_archive_table
+│   │   - test_old_audit_logs_exported_to_json_file
+│   │   - test_dashboard_query_merges_hot_and_archived_data
+│   ├── test_compliance.py
+│   │   - test_client_first_login_shows_terms_popup
+│   │   - test_agreed_at_recorded_after_acceptance
+│   │   - test_privacy_policy_page_accessible
 │   ├── test_excel_export.py
 │   │   - test_excel_has_4_sheets
 │   │   - test_excel_sheet_data_correct
@@ -1949,6 +1967,12 @@ alembic upgrade head
 27. 废弃监测系统的 `postgres:15-alpine` 容器，服务器节省 ~300MB 内存
 28. 所有单元/集成测试通过
 29. 端到端测试脚本 17 步全部通过
+30. **检测频率控制**：同一 URL 6 小时内重复检测返回 409；并发不超过 5；超时 30s
+31. **移动端适配**：手机/平板/PC 三端布局正确，图表和表格可正常查看
+32. **空状态引导**：新客户首次登录看到引导提示，admin 看到「手动添加 URL」按钮
+33. **文章删除保留历史**：GEOFlow 删除文章后，监测系统仍可查看历史记录（标注「已归档」）
+34. **数据归档**：超过 1 年的检测结果/审计日志自动归档，dashboard 查询热表+归档表无感知
+35. **用户协议与隐私政策**：客户首次登录弹窗同意；隐私政策写明数据保留期限
 
 ---
 
@@ -1970,10 +1994,211 @@ alembic upgrade head
 | admin 账号被盗 | JWT 过期 7 天 + 操作日志审计 + GEOFlow 禁用账号后 SSO 失效 |
 | 客户看到非自己 client_id 的数据 | 所有查询强制按 client_id 过滤 + admin/client 鉴权隔离 |
 | docker network 配置错误 | 本地先验证；部署脚本检查容器连通性 |
+| **搜索引擎反爬封 IP** | 检测频率控制（6h 间隔）+ 请求间隔 2-5s + 并发限制 5 + 后续可加代理池 |
+| **数据归档误删** | 归档前先 pg_dump 备份 + 本地验证归档逻辑 + 归档表与热表分离 |
+| **移动端兼容性问题** | 多设备测试（Chrome DevTools 模拟 + 真机测试）+ Element Plus 响应式保障 |
+| **GEOFlow 文章删除后历史丢失** | 定时扫描归档 + archived_distributions 表保留快照 |
 
 ---
 
-## 21. 未来扩展点（不在本期实现）
+## 21. 补充功能设计
+
+### 21.1 检测频率控制
+
+**问题**：频繁请求搜索引擎会导致 IP 被封，同一 URL 短时间重复检测无意义。
+
+**设计方案**：
+
+| 控制项 | 规则 | 实现 |
+|---|---|---|
+| **同一 URL 最小间隔** | 6 小时（可配置） | `monitor.index_results` 和 `monitor.citation_results` 查最近一次检测时间，不足 6 小时拒绝（返回"距上次检测不足 6h"） |
+| **全局并发限制** | 同时最多 5 个检测任务 | asyncio.Semaphore(5) 限流 |
+| **单引擎请求间隔** | 每次请求间隔 2-5 秒（随机） | 防止被搜索引擎识别为爬虫 |
+| **检测超时** | 单次检测 30 秒超时 | httpx.AsyncClient(timeout=30) |
+| **失败重试** | 最多 3 次，指数退避（2s/4s/8s） | 复用现有重试机制 |
+| **每日总量限制** | 每客户每日最多 100 次检测 | `monitor.daily_scan_quota` 表计数 |
+
+**配置项**（`.env.prod`）：
+```
+SCAN_MIN_INTERVAL_HOURS=6
+SCAN_MAX_CONCURRENCY=5
+SCAN_REQUEST_DELAY_MIN=2
+SCAN_REQUEST_DELAY_MAX=5
+SCAN_TIMEOUT_SECONDS=30
+SCAN_DAILY_QUOTA_PER_CLIENT=100
+```
+
+**端点行为**：触发检测时如果距上次不足 6 小时，返回 `409 Conflict`：
+```json
+{"detail": "距上次检测不足 6 小时，上次检测时间：2026-07-25 08:00:00", "next_available_at": "2026-07-25 14:00:00"}
+```
+
+### 21.2 移动端适配
+
+**问题**：客户/管理员可能需要在手机上查看 dashboard。
+
+**设计方案**：基于 Element Plus 响应式 + CSS 媒体查询，无需单独开发移动端 App。
+
+| 断点 | 屏幕宽度 | 布局调整 |
+|---|---|---|
+| PC | ≥1200px | 侧边栏展开 + 内容区 5 列图表网格 |
+| 平板 | 768-1199px | 侧边栏折叠为图标 + 内容区 2 列图表 |
+| 手机 | <768px | 侧边栏抽屉式（点击汉堡菜单展开）+ 内容区 1 列图表 |
+
+**关键调整**：
+- 侧边栏：手机端改为抽屉式（el-drawer），默认隐藏，点击左上角汉堡菜单展开
+- 统计卡片：手机端从 4 列 → 2 列 → 1 列（<400px）
+- 图表网格：`grid-template-columns: repeat(auto-fit, minmax(300px, 1fr))` 自动适配
+- 表格：手机端横向滚动（`overflow-x: auto`），关键列优先显示
+- 登录页：手机端表单宽度 90%，Logo 缩小
+
+**实现方式**：
+```css
+/* 响应式断点 */
+@media (max-width: 1199px) { .sidebar { collapsed } }
+@media (max-width: 768px) {
+  .sidebar { display: none; } /* 改用 el-drawer */
+  .stat-grid { grid-template-columns: repeat(2, 1fr); }
+  .chart-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 400px) {
+  .stat-grid { grid-template-columns: 1fr; }
+}
+```
+
+**不做的**：不开发原生 App，不开发小程序。响应式 Web 足够。
+
+### 21.3 空状态引导
+
+**问题**：新客户首次登录看到空 dashboard 会困惑。
+
+**设计方案**：每个数据区域在无数据时显示引导提示。
+
+| 区域 | 空状态文案 | 引导动作 |
+|---|---|---|
+| 统计卡片 | "暂无监测数据" | - |
+| 分发记录表格 | "暂无分发记录。您的文章发布后会自动出现在这里，也可联系管理员手动添加 URL。" | 「手动添加 URL」按钮（仅 admin 可见） |
+| 收录趋势图 | "暂无收录数据，触发检测后将显示趋势" | 「触发检测」按钮 |
+| AI 采信饼图 | "暂无采信数据，触发 AI 采信检测后显示" | - |
+| 审计日志 | "暂无操作记录" | - |
+
+**空状态组件**：
+```vue
+<el-empty description="暂无分发记录">
+  <el-button type="primary" v-if="isAdmin" @click="showAddUrlDialog">手动添加 URL</el-button>
+</el-empty>
+```
+
+### 21.4 文章删除保留历史（GEOFlow 文章删除后的处理）
+
+**问题**：GEOFlow 删除文章后，监测系统跨 schema JOIN 查不到，历史检测结果丢失。
+
+**设计方案**：在监测系统侧保留历史快照。
+
+**新增 `monitor.archived_distributions` 表**：
+```python
+class ArchivedDistribution(Base):
+    __tablename__ = "archived_distributions"
+    __table_args__ = {"schema": "monitor"}
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    client_id = Column(String(64), nullable=False)
+    remote_url = Column(String(512), nullable=False)
+    geoflow_article_id = Column(Integer, nullable=True)  # 原 GEOFlow 文章 ID
+    # 文章快照（删除时的内容副本）
+    content_title = Column(String(512), nullable=True)
+    content_slug = Column(String(255), nullable=True)
+    content_excerpt = Column(Text, nullable=True)
+    content_body = Column(Text, nullable=True)
+    content_keywords = Column(JSON, nullable=True)
+    meta_description = Column(Text, nullable=True)
+    original_keyword = Column(String(255), nullable=True)
+    published_at = Column(DateTime(timezone=True), nullable=True)
+    # 删除信息
+    archived_at = Column(DateTime(timezone=True), server_default=func.now())
+    archived_reason = Column(String(64), default="geoflow_deleted")  # geoflow_deleted/manual
+```
+
+**触发时机**：定时任务每小时扫描 `public.article_distributions`，发现 GEOFlow 侧记录消失（`status != 'synced'` 或不存在），则将该分发记录的历史数据归档到 `monitor.archived_distributions`。
+
+**查询逻辑**：`DistributionQueryService` 查询时同时查 GEOFlow 实时表 + `monitor.archived_distributions`，合并结果。归档记录标注 `source: "archived"`，在 dashboard 显示「已归档」标签。
+
+**数据保留**：归档记录永久保留（或按 21.5 节归档策略定期清理）。
+
+### 21.5 数据归档
+
+**问题**：历史数据（检测结果、审计日志）越来越多，影响查询性能。
+
+**设计方案**：超过 1 年的数据归档到冷存储。
+
+| 数据类型 | 热数据保留 | 归档方式 |
+|---|---|---|
+| `index_results` | 1 年 | 超过 1 年的迁移到 `monitor.index_results_archive` 表 |
+| `citation_results` | 1 年 | 同上 |
+| `admin_audit_logs` | 1 年 | 超过 1 年的导出为 JSON 文件，存到 `/data/archive/audit_logs/{year}/` |
+| `archived_distributions` | 永久 | 不归档（数据量小） |
+
+**归档任务**：定时任务每月 1 日凌晨 3 点执行：
+```python
+# app/services/archive_service.py
+class ArchiveService:
+    async def archive_old_data(self):
+        """每月归档超过 1 年的数据。"""
+        cutoff = datetime.now() - timedelta(days=365)
+        # 1. 迁移 index_results
+        await self.db.execute(
+            text("""
+                INSERT INTO monitor.index_results_archive
+                SELECT * FROM monitor.index_results WHERE created_at < :cutoff
+            """), {"cutoff": cutoff}
+        )
+        await self.db.execute(
+            text("DELETE FROM monitor.index_results WHERE created_at < :cutoff"),
+            {"cutoff": cutoff}
+        )
+        # 2. 同样处理 citation_results
+        # 3. 导出 audit_logs 为 JSON 文件
+        await self.db.commit()
+```
+
+**查询兼容**：dashboard 查询时同时查热表 + 归档表（UNION ALL），对前端透明。
+
+### 21.6 操作留痕与合规
+
+**问题**：需要用户协议/隐私政策、数据保留期限声明、审计日志保留。
+
+**设计方案**：
+
+**1. 用户协议与隐私政策页面**（官网展示）：
+- `/legal/terms` — 用户服务协议
+- `/legal/privacy` — 隐私政策
+- 客户首次登录时弹窗要求同意用户协议（记录同意时间到 `monitor.clients.agreed_at`）
+
+**2. clients 表新增字段**：
+```python
+agreed_terms_at = Column(DateTime(timezone=True), nullable=True)  # 同意用户协议时间
+agreed_privacy_at = Column(DateTime(timezone=True), nullable=True)  # 同意隐私政策时间
+```
+
+**3. 数据保留期限声明**（隐私政策中写明）：
+- 客户账号数据：账号停用后保留 3 年，之后可申请删除
+- 分发记录：永久保留（业务数据）
+- 检测结果：热数据 1 年，归档后再保留 2 年（共 3 年）
+- 审计日志：保留 1 年（21.5 节归档策略）
+- 导出文件：下载后 24 小时自动删除
+
+**4. 审计日志保留**：
+- `admin_audit_logs` 保留 1 年，超过后导出为 JSON 文件归档（21.5 节）
+- 归档文件路径：`/data/archive/audit_logs/{year}/{month}.json`
+- 归档文件保留 3 年后删除
+
+**5. 数据删除权**：
+- 客户可申请导出自己的全部数据（`GET /admin/exports?type=full_data`）
+- 客户可申请删除账号（admin 审核后执行软删除 → 3 年后硬删除）
+
+---
+
+## 22. 未来扩展点（不在本期实现）
 
 1. **GEOFlow 后台嵌入监测 dashboard**：iframe + 一次性 token 鉴权（统一数据库后更简单）
 2. **webhook 通知**：监测完成后通知客户（邮件/钉钉/企微）
