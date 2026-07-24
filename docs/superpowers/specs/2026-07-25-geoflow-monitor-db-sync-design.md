@@ -1385,23 +1385,45 @@ GEOFlow 已支持 3 种渠道类型（[DistributionChannel.php](../../../GEOFlow
 
 ### 13.3 本期实现范围
 
-**监测系统侧**（本期做）：
+**监测系统侧**（本期做，已完整）：
 - domain 匹配逻辑适配所有渠道类型
 - 导出报表显示渠道类型
 - dashboard 列表显示渠道名称
+- **任意渠道的分发记录自动可见**（统一数据库的天然优势，无需额外开发）
 
-**GEOFlow 侧**（本期做框架，具体 publisher 后续）：
-- 文档说明如何新增渠道 publisher
-- `generic_http_api` 渠道配置示例
+**GEOFlow 侧**（本期留接口，不实现具体平台 publisher）：
+- 保留现有 publisher 框架（Publisher 基类 + DistributionPublisherManager）
+- 文档说明如何新增渠道 publisher（见 13.4）
+- `generic_http_api` 渠道配置示例（见 13.4）
+- **不实现**头条/知乎/百家号等无公开 API 平台的发布（法律风险，后续独立项目）
 
-### 13.4 新增渠道 publisher 的步骤（GEOFlow 侧）
+### 13.4 新增渠道 publisher 的步骤（GEOFlow 侧，后续扩展指南）
+
+**接口已预留**：GEOFlow 现有 Publisher 框架支持通过以下步骤新增任意渠道：
 
 1. 在 [DistributionChannel.php](../../../GEOFlow-main/app/Models/DistributionChannel.php) 的 `channelType()` 方法加新类型常量
 2. 创建新 Publisher 类（继承现有 Publisher 基类），实现 `publish()`/`update()`/`delete()` 方法
 3. 在 [DistributionPublisherManager.php](../../../GEOFlow-main/app/Services/GeoFlow/DistributionPublisherManager.php) 注册新 Publisher
 4. 配置 `channel_config` 选项（API URL、认证方式等）
 
-### 13.5 头条/知乎等平台调研（后续任务）
+**`generic_http_api` 渠道配置示例**（本期可用的通用适配）：
+
+```json
+{
+  "api_url": "https://your-cms.com/api/articles",
+  "auth_type": "bearer",
+  "auth_token": "your_token",
+  "field_mapping": {
+    "title": "title",
+    "content": "body",
+    "slug": "slug"
+  }
+}
+```
+
+适用于：企业微信 webhook、钉钉群机器人、其他 CMS 的 REST API、任何接受 HTTP POST 的平台。
+
+### 13.5 头条/知乎等平台调研（后续独立项目）
 
 | 平台 | API 现状 | 可行性 |
 |---|---|---|
@@ -1412,6 +1434,35 @@ GEOFlow 已支持 3 种渠道类型（[DistributionChannel.php](../../../GEOFlow
 | 百家号 | 无公开内容发布 API | ❌ 可能需爬虫（违反 ToS） |
 
 **本期不实现爬虫方式发布**（法律风险）。仅支持有合法 API 的平台，通过 `generic_http_api` 适配。
+
+### 13.6 开源项目参考（后续实现时调研）
+
+后续实现多渠道发布时，可参考以下开源项目（2026-07-25 GitHub 调研）：
+
+| 项目 | Star | 语言 | 平台数 | 特点 | 集成方式 |
+|---|---|---|---|---|---|
+| [Wechatsync](https://github.com/wechatsync/Wechatsync) | 5.5k | TypeScript | 29+ | 最成熟，有 CLI 包，草稿优先，MCP 协议 | Symfony Process 调用 CLI |
+| [binggo-island-upload-tool](https://github.com/karmawind/binggo-island-upload-tool) | - | Python | 10 | Python 同语言，CLI+Web+AI Agent，cookie 管理 | 部署为独立服务，HTTP 调用 |
+| [SyncCaster](https://github.com/RyanYipeng/SyncCaster) | - | TypeScript | 17+ | 规范化 AST，LaTeX/代码高亮保留 | Chrome 扩展，参考其平台适配逻辑 |
+| [MultiPost-Extension](https://gitcode.com/gh_mirrors/mu/MultiPost-Extension) | - | JS | 12+ | 完全免费，无需 API Key | Chrome 扩展 |
+| [ZenoClaw](https://github.com/zenolore/zenoclaw) | - | Python | 19 | 连接运行中的 Chrome（debugging port） | Python 服务，HTTP 调用 |
+
+**推荐后续方案**（独立项目时评估）：
+- **方案 A**：集成 Wechatsync CLI（Node.js），GEOFlow 通过 Symfony Process 调用——最成熟，29+ 平台
+- **方案 B**：部署 binggo-island-upload-tool 作为独立 Python 服务——Python 同语言，有 Web 界面
+- **方案 C**：参考开源项目的平台适配逻辑，用 PHP 自研 publisher——纯 PHP，无额外依赖
+
+### 13.7 后续升级路径
+
+当多渠道发布作为独立项目启动时：
+
+1. **评估开源项目**：重新调研 Wechatsync / binggo-island 的活跃度和兼容性
+2. **选择集成方案**：A/B/C 三种方案选一（见 13.6）
+3. **登录态管理**：设计 cookie/session 管理机制（扫码登录 + 定期刷新）
+4. **内容格式适配**：设计 Markdown → 各平台富文本的转换器
+5. **法律合规评估**：确认目标平台的 ToS，评估风险
+6. **实现 publisher**：在 GEOFlow 现有框架内实现（见 13.4 步骤）
+7. **监测系统无需改动**：统一数据库架构下，新渠道的分发记录自动可见
 
 ---
 
