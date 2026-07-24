@@ -19,11 +19,12 @@ class HttpClient:
         return random.choice(USER_AGENTS)
 
     async def get(self, url: str, headers: Optional[Dict] = None) -> httpx.Response:
-        if headers is None:
-            headers = {}
-        headers["User-Agent"] = self.get_random_ua()
+        # 不修改调用方传入的 headers dict，构建新 dict 合并
+        merged = {"User-Agent": self.get_random_ua()}
+        if headers:
+            merged.update(headers)
         await self._random_delay()
-        return await self.client.get(url, headers=headers)
+        return await self.client.get(url, headers=merged)
 
     async def _random_delay(self):
         delay = random.randint(settings.SPIDER_INTERVAL_MIN, settings.SPIDER_INTERVAL_MAX)

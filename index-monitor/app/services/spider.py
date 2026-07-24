@@ -1,9 +1,12 @@
 # index-monitor/app/services/spider.py
 import asyncio
+import logging
 from typing import Dict
 from bs4 import BeautifulSoup
 from app.utils.http_client import http_client
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 class IndexSpider:
     def __init__(self):
@@ -16,7 +19,7 @@ class IndexSpider:
                 soup = BeautifulSoup(response.text, 'lxml')
                 return len(soup.find_all('div', class_='result')) > 0
             except Exception as e:
-                print(f"百度检测失败: {url}, 错误: {e}")
+                logger.warning("百度检测失败: %s, 错误: %s", url, e)
                 return False
 
     async def check_toutiao(self, url: str) -> bool:
@@ -26,7 +29,7 @@ class IndexSpider:
                 soup = BeautifulSoup(response.text, 'lxml')
                 return len(soup.find_all('div', class_='result')) > 0
             except Exception as e:
-                print(f"头条检测失败: {url}, 错误: {e}")
+                logger.warning("头条检测失败: %s, 错误: %s", url, e)
                 return False
 
     async def check_sogou(self, url: str) -> bool:
@@ -36,7 +39,7 @@ class IndexSpider:
                 soup = BeautifulSoup(response.text, 'lxml')
                 return len(soup.find_all('div', class_='rb')) > 0
             except Exception as e:
-                print(f"搜狗检测失败: {url}, 错误: {e}")
+                logger.warning("搜狗检测失败: %s, 错误: %s", url, e)
                 return False
 
     async def check_so360(self, url: str) -> bool:
@@ -46,7 +49,7 @@ class IndexSpider:
                 soup = BeautifulSoup(response.text, 'lxml')
                 return len(soup.find_all('li', class_='res-list')) > 0
             except Exception as e:
-                print(f"360检测失败: {url}, 错误: {e}")
+                logger.warning("360检测失败: %s, 错误: %s", url, e)
                 return False
 
     async def check_bing(self, url: str) -> bool:
@@ -56,7 +59,7 @@ class IndexSpider:
                 soup = BeautifulSoup(response.text, 'lxml')
                 return len(soup.find_all('li', class_='b_algo')) > 0
             except Exception as e:
-                print(f"必应检测失败: {url}, 错误: {e}")
+                logger.warning("必应检测失败: %s, 错误: %s", url, e)
                 return False
 
     async def check_all_engines(self, url: str) -> Dict[str, bool]:

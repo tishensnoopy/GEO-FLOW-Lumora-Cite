@@ -1,6 +1,5 @@
 # index-monitor/app/core/database.py
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from app.core.config import settings
 
 DATABASE_URL = (
@@ -10,13 +9,12 @@ DATABASE_URL = (
 
 engine = create_async_engine(DATABASE_URL, echo=settings.DEBUG)
 
-async_session = sessionmaker(
+# SQLAlchemy 2.0 推荐使用 async_sessionmaker（替代 sessionmaker）
+async_session = async_sessionmaker(
     engine, class_=AsyncSession, expire_on_commit=False
 )
 
 async def get_db():
+    # async with 上下文退出时自动 close，无需 finally 手动 close
     async with async_session() as session:
-        try:
-            yield session
-        finally:
-            await session.close()
+        yield session

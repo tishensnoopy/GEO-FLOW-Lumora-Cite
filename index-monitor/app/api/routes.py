@@ -4,10 +4,10 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.core.database import get_db
-from app.core.security import create_access_token, verify_password, hash_password
+from app.core.security import create_access_token, verify_password
 from app.api.deps import get_current_client_id
 from app.models.client import Client
-from app.models.index_result import IndexResult, IndexHistory
+from app.models.index_result import IndexResult
 from app.models.citation_result import CitationResult
 from app.models.system_config import SystemConfig
 from app.services.index_checker import IndexChecker

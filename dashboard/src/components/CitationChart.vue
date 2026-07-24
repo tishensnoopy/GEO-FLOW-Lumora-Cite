@@ -3,13 +3,14 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import * as echarts from 'echarts'
 
 const chartRef = ref(null)
+let chart = null
 
 onMounted(() => {
-  const chart = echarts.init(chartRef.value)
+  chart = echarts.init(chartRef.value)
   chart.setOption({
     tooltip: { trigger: 'item' },
     series: [{
@@ -20,5 +21,13 @@ onMounted(() => {
       ]
     }]
   })
+})
+
+onUnmounted(() => {
+  // 释放 echarts 实例，防止内存泄漏
+  if (chart) {
+    chart.dispose()
+    chart = null
+  }
 })
 </script>

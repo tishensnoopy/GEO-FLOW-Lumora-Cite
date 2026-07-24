@@ -1,5 +1,5 @@
 # index-monitor/app/services/index_checker.py
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Tuple
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -54,7 +54,7 @@ class IndexChecker:
         await self._record_history(url, results)
 
     async def _record_history(self, url: str, results: Dict[str, bool]):
-        today = datetime.now().date()
+        today = datetime.now(timezone.utc).date()
         existing = await self.db.execute(
             select(IndexHistory).where(IndexHistory.url == url, IndexHistory.check_date == today)
         )
