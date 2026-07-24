@@ -1,9 +1,24 @@
 #!/bin/bash
 # deploy/scripts/init-db.sh
+#
+# 监测系统数据库初始化脚本——由 PG 容器 docker-entrypoint-initdb.d 自动执行。
+#
+# Task 4 变更：所有监测系统表创建在 monitor schema（不是 public）。
+# - GEOFlow 的表在 public schema（由 Laravel migration 管理），不受影响。
+# - 监测系统对 public schema 只读（跨 schema 查询通过 GeoflowBase 模型）。
+# - 通过 SET search_path TO monitor 让后续 CREATE TABLE 默认落入 monitor schema。
 set -e
 
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+    -- uuid-ossp 扩展装在 public（PG 默认 schema），monitor schema 通过
+    -- search_path 引用。扩展本身不属于业务表，留 public 不影响 schema 隔离。
     CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+    -- 创建 monitor schema（幂等；alembic 001 也会创建，这里双保险）
+    CREATE SCHEMA IF NOT EXISTS monitor;
+
+    -- 后续 CREATE TABLE / CREATE INDEX 默认在 monitor schema 下创建
+    SET search_path TO monitor;
 
     CREATE TABLE IF NOT EXISTS article_distributions (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -14,8 +29,8 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
-    CREATE INDEX idx_article_distributions_status ON article_distributions(status);
-    CREATE INDEX idx_article_distributions_url ON article_distributions(remote_url);
+    CREATE INDEX IF NOT EXISTS idx_article_distributions_status ON article_distributions(status);
+    CREATE INDEX IF NOT EXISTS idx_article_distributions_url ON article_distributions(remote_url);
     CREATE INDEX IF NOT EXISTS idx_article_distributions_client_id ON article_distributions(client_id);
 
     CREATE TABLE IF NOT EXISTS index_results (
@@ -39,8 +54,8 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
-    CREATE INDEX idx_index_results_client_id ON index_results(client_id);
-    CREATE INDEX idx_index_results_site_type ON index_results(site_type);
+    CREATE INDEX IF NOT EXISTS idx_index_results_client_id ON index_results(client_id);
+    CREATE INDEX IF NOT EXISTS idx_index_results_site_type ON index_results(site_type);
 
     CREATE TABLE IF NOT EXISTS index_history (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -55,8 +70,8 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(url, check_date)
     );
-    CREATE INDEX idx_index_history_url ON index_history(url);
-    CREATE INDEX idx_index_history_check_date ON index_history(check_date);
+    CREATE INDEX IF NOT EXISTS idx_index_history_url ON index_history(url);
+    CREATE INDEX IF NOT EXISTS idx_index_history_check_date ON index_history(check_date);
 
     CREATE TABLE IF NOT EXISTS citation_results (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -70,8 +85,8 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(url, model, question)
     );
-    CREATE INDEX idx_citation_results_url ON citation_results(url);
-    CREATE INDEX idx_citation_results_model ON citation_results(model);
+    CREATE INDEX IF NOT EXISTS idx_citation_results_url ON citation_results(url);
+    CREATE INDEX IF NOT EXISTS idx_citation_results_model ON citation_results(model);
 
     CREATE TABLE IF NOT EXISTS clients (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -99,7 +114,7 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(client_id, domain)
     );
-    CREATE INDEX idx_client_sites_client_id ON client_sites(client_id);
+    CREATE INDEX IF NOT EXISTS idx_client_sites_client_id ON client_sites(client_id);
 
     CREATE TABLE IF NOT EXISTS system_config (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

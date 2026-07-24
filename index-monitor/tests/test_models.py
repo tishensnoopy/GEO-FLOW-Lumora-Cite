@@ -8,6 +8,9 @@
 
 依赖：Task 1 启动的 ``geo-postgres-local`` 容器（localhost:5432），
 表结构由 ``deploy/scripts/init-db.sh`` 创建。
+
+Task 4 变更：监测系统表已从 public schema 迁移到 monitor schema。
+反射时必须指定 schema='monitor'，否则 inspector 默认只看 public/search_path。
 """
 import pytest
 from sqlalchemy import create_engine, inspect, Date
@@ -19,8 +22,11 @@ from app.models.citation_result import CitationResult
 from app.models.client import Client, ClientSite
 
 
+# 监测系统表所在的 schema（Task 4 起为 monitor，GEOFlow 表在 public）
+MONITOR_SCHEMA = "monitor"
+
 # 用同步 engine 反射 DB schema（async engine 的 inspect 需 run_sync，简化起见用 psycopg2）。
-# DATABASE URL 与 app.core.database.py 指向同一个 live DB（Task 1 的 postgres）。
+# DATABASE URL 与 conftest.py 一致，基于 POSTGRES_* 连接本地 PG。
 SYNC_DATABASE_URL = (
     f"postgresql+psycopg2://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
     f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
@@ -47,18 +53,21 @@ MODELS = [
 
 
 def test_tablenames_exist_in_db(db_inspector):
-    """每个模型的 __tablename__ 必须存在于 DB 中。"""
-    db_tables = set(db_inspector.get_table_names())
+    """每个模型的 __tablename__ 必须存在于 DB 的 monitor schema 中。"""
+    db_tables = set(db_inspector.get_table_names(schema=MONITOR_SCHEMA))
     for model in MODELS:
         assert model.__tablename__ in db_tables, (
-            f"{model.__name__}.__tablename__={model.__tablename__!r} 不在 DB 表集合中"
+            f"{model.__name__}.__tablename__={model.__tablename__!r} 不在 DB "
+            f"schema={MONITOR_SCHEMA!r} 表集合中"
         )
 
 
 @pytest.mark.parametrize("model", MODELS)
 def test_model_columns_match_db(db_inspector, model):
     """模型列名集合 == DB 表列名集合（set 相等）。"""
-    db_cols = {c["name"] for c in db_inspector.get_columns(model.__tablename__)}
+    db_cols = {
+        c["name"] for c in db_inspector.get_columns(model.__tablename__, schema=MONITOR_SCHEMA)
+    }
     model_cols = {c.name for c in model.__table__.columns}
     assert model_cols == db_cols, (
         f"{model.__name__}（表 {model.__tablename__}）列不一致："
@@ -88,8 +97,8 @@ EXPECTED_COMPOSITE_UNIQUES = [
     ids=[t for t, _, _ in EXPECTED_COMPOSITE_UNIQUES],
 )
 def test_composite_unique_in_db(db_inspector, table_name, cols, constraint_name):
-    """DB 中存在对应的复合唯一约束且名称正确。"""
-    db_uniques = db_inspector.get_unique_constraints(table_name)
+    """DB 中存在对应的复合唯一约束且名称正确（monitor schema）。"""
+    db_uniques = db_inspector.get_unique_constraints(table_name, schema=MONITOR_SCHEMA)
     expected_sorted = tuple(sorted(cols))
     found = False
     for uq in db_uniques:
