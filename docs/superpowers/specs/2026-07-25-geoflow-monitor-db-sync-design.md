@@ -1245,6 +1245,18 @@ class PdfExportService:
     h1, h2, h3 { page-break-after: avoid; }
     .cover { page-break-after: always; }
 
+    /* 图表不跨页：所有图表容器、统计卡片、数据洞察禁止分页切割 */
+    .chart-box, .chart-grid, .stat-card, .stat-grid, .insight {
+        page-break-inside: avoid;
+        break-inside: avoid;
+    }
+    /* 图表标题不与图表分离 */
+    .chart-title { page-break-after: avoid; }
+    /* 统计卡片行不跨页（4 个卡片保持在同一页） */
+    .stat-grid { page-break-before: avoid; }
+    /* 两列图表网格不跨页 */
+    .chart-grid { page-break-before: avoid; }
+
     /* 统计卡片 */
     .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px; }
     .stat-card { background: white; border: 1px solid #e8e8e8; border-radius: 8px; padding: 16px; text-align: center; }
@@ -1350,6 +1362,7 @@ ECharts 图表用**前端截图传后端**方式，保证图表美观且与 dash
 | **掉字/吞字** | 安装 `fonts-noto-cjk`（7万+汉字）+ `fonts-noto-cjk-extra`（罕见字）；CSS 指定 `font-family: "Noto Sans CJK SC"`；Chromium 自动嵌入字体子集到 PDF |
 | **图片不显示** | 所有图片转 base64 data URI 内联（Logo、ECharts 截图）；不依赖文件路径 |
 | **格式不一致** | Jinja2 固定模板 + CSS `@page` 规则 + `page-break-inside: avoid` 防表格断裂；封面 `page-break-after: always` 单独一页 |
+| **图表跨页切割** | 所有图表容器 `.chart-box`、统计卡片 `.stat-grid`、数据洞察 `.insight` 加 `page-break-inside: avoid` + `break-inside: avoid`；图表标题 `.chart-title` 加 `page-break-after: avoid` 防标题与图表分离；空间不足时整块移到下一页 |
 | **水印每页显示** | CSS `position:fixed` + `z-index:-1`；Chromium 的 `print_background=True` 确保背景打印 |
 | **Logo 每页显示** | CSS `position:fixed` + `top/right` 定位 |
 | **页码正确** | Chromium `display_header_footer=True` + `pageNumber`/`totalPages` 模板变量 |
@@ -1604,6 +1617,9 @@ index-monitor/tests/
 │   │   - test_watermark_on_every_page
 │   │   - test_logo_on_every_page
 │   │   - test_format_consistency（多次生成页数一致）
+│   │   - test_chart_not_split_across_pages（图表不跨页切割）
+│   │   - test_table_row_not_split_across_pages（表格行不跨页）
+│   │   - test_chart_title_not_separated_from_chart（标题不与图表分离）
 │   ├── test_excel_export.py
 │   │   - test_excel_has_4_sheets
 │   │   - test_excel_sheet_data_correct
