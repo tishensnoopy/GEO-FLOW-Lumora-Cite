@@ -10,7 +10,7 @@ import socket
 import subprocess
 import urllib.error
 import urllib.request
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 from .suitability import SuitabilityResult, evaluate_content_suitability
 
@@ -111,6 +111,21 @@ def validate_public_url(url: str) -> str:
     if not addresses or not any(_is_public_ip(item[4][0]) for item in addresses):
         raise UnsafeUrlError("URL 指向非公开网络地址")
     return url
+
+
+def _encode_url(url: str) -> str:
+    """对 URL 中的非 ASCII 字符做百分号编码。
+
+    urllib.request 不支持含非 ASCII 字符（如中文）的 URL，会抛出
+    ``UnicodeEncodeError: 'ascii' codec can't encode``。
+    本函数仅对 path 和 query 中的非 ASCII 字符编码，保留 scheme/host
+    及安全分隔符（/、=、&、%）。已编码的 %XX 序列不会被二次编码。
+    """
+    parsed = urlsplit(url)
+    # safe="/" 保留路径分隔符；safe="%" 保留已编码序列不被二次编码
+    encoded_path = quote(parsed.path, safe="/%")
+    encoded_query = quote(parsed.query, safe="=&%")
+    return urlunsplit((parsed.scheme, parsed.netloc, encoded_path, encoded_query, parsed.fragment))
 
 
 class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -234,9 +249,11 @@ def _fetch_with_headless_browser(url: str, timeout: int) -> FetchedContent | Non
 def fetch_public_content(url: str, timeout: int = 15) -> FetchedContent:
     """Fetch a public HTML page and evaluate whether it is testable."""
     validate_public_url(url)
+    # 对非 ASCII URL（如中文路径）做百分号编码，urllib.request 不支持原始非 ASCII URL
+    encoded_url = _encode_url(url)
     opener = urllib.request.build_opener(_SafeRedirectHandler())
     request = urllib.request.Request(
-        url,
+        encoded_url,
         headers={
             "User-Agent": "LumoraCitationCheck/0.1",
             "Accept": "text/html,application/xhtml+xml",

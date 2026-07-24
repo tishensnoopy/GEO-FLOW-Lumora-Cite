@@ -19,7 +19,10 @@ logger = logging.getLogger(__name__)
 
 # DeepSeek OpenAI 兼容 API
 DEEPSEEK_API_BASE = "https://api.deepseek.com/v1"
-DEFAULT_QUESTION_MODEL = "deepseek-chat"
+# 注意：deepseek-chat 模型名已被 DeepSeek API 废弃（2026年），
+# 当前支持的模型名为 deepseek-v4-pro / deepseek-v4-flash。
+# flash 版本更快更省，适合问题生成；pro 版本推理更强，适合复杂分析。
+DEFAULT_QUESTION_MODEL = "deepseek-v4-flash"
 DEFAULT_TIMEOUT = 120  # 秒，问题生成/目的推断可能较慢
 
 
