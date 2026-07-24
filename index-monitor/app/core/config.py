@@ -19,6 +19,7 @@
 3. SSO 配置项（``SSO_GEOFLOW_BASE_URL`` 等）在本任务预先加入，后续 SSO
    认证任务可直接引用，避免届时再改 config.py。
 """
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 
@@ -73,12 +74,28 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ #
     # SSO 配置（与 GEOFlow 单点登录集成）                                  #
     # ------------------------------------------------------------------ #
-    # 后续 SSO 任务会消费这些字段；本任务预先加入，避免届时再改 config.py。
+    # - SSO_GEOFLOW_BASE_URL：GEOFlow 站点根 URL（authorize + userinfo 共用）。
+    # - SSO_GEOFLOW_USERINFO_URL：从 BASE_URL 派生，避免两处硬编码 URL 不一致
+    #   （Task 4 审查建议：原实现把 BASE_URL 和 USERINFO_URL 都硬编码，BASE_URL
+    #    改了之后 USERINFO_URL 不会自动跟随）。env 仍可显式覆盖 USERINFO_URL。
     SSO_GEOFLOW_BASE_URL: str = "https://zkeeeai.com"
-    SSO_GEOFLOW_USERINFO_URL: str = "https://zkeeeai.com/api/sso/userinfo"
+    SSO_GEOFLOW_USERINFO_URL: Optional[str] = None
     SSO_REDIRECT_URI: str = "https://monitor.zkeeeai.com/sso/callback"
     SSO_JWT_SECRET: str = "change-me-in-prod"
     SSO_JWT_EXPIRE_DAYS: int = 7
+
+    @model_validator(mode="after")
+    def _derive_sso_userinfo_url(self) -> "Settings":
+        """如果 USERINFO_URL 未显式注入，则从 BASE_URL 派生。
+
+        - BASE_URL 末尾斜杠会被规整掉，避免 ``https://x//api`` 这种重复斜杠；
+        - 若 env 显式设置了 SSO_GEOFLOW_USERINFO_URL，则尊重该值（向后兼容
+          旧部署 / 内网代理场景）。
+        """
+        if not self.SSO_GEOFLOW_USERINFO_URL:
+            base = self.SSO_GEOFLOW_BASE_URL.rstrip("/")
+            object.__setattr__(self, "SSO_GEOFLOW_USERINFO_URL", f"{base}/api/sso/userinfo")
+        return self
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
 
