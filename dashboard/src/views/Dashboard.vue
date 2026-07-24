@@ -3,7 +3,7 @@
     <el-container>
       <el-header>
         <div class="header-content">
-          <h1>GEO 监测仪表盘</h1>
+          <h1>知氪AI全链路监测仪表盘</h1>
         </div>
       </el-header>
       <el-main>

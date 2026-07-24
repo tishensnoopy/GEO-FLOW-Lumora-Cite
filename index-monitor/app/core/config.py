@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 
 class Settings(BaseSettings):
-    APP_NAME: str = "Index Monitor Service"
+    APP_NAME: str = "知氪AI全链路监测平台"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = False
 

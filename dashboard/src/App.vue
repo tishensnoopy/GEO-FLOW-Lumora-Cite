@@ -1,7 +1,7 @@
 <template>
   <div class="app-container">
     <div v-if="showNav" class="nav-bar">
-      <div class="logo">GEO 监测系统</div>
+      <div class="logo">知氪AI全链路监测平台</div>
       <el-menu :default-active="activeMenu" mode="horizontal" router class="nav-menu">
         <el-menu-item index="/">仪表盘</el-menu-item>
         <el-menu-item index="/articles">文章列表</el-menu-item>
