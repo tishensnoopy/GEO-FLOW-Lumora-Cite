@@ -1,9 +1,9 @@
-# GEOFlow → 监测系统 DB 同步机制设计
+# GEOFlow + 监测系统 统一数据库架构与监测能力增强设计
 
 - **创建日期**：2026-07-25
 - **状态**：待实现
 - **关联文档**：[2026-07-23-geo-monitoring-system-design.md](./2026-07-23-geo-monitoring-system-design.md)
-- **实现分支**：`feat/monitor-db-sync`（基于 `feat/rebrand-dual-domain`）
+- **实现分支**：`feat/unified-db-and-monitoring`（基于 `feat/rebrand-dual-domain`）
 
 ---
 
@@ -13,142 +13,179 @@
 
 当前系统存在两个独立的 PostgreSQL 实例：
 
-- **GEOFlow**（Laravel/PHP）：内容生产端，`article_distributions` 表记录文章分发到各渠道（WordPress 等）的状态。配置在 `GEOFlow-main/.env` 的 `DB_*` 变量。
-- **监测系统**（FastAPI/Python，index-monitor + dashboard）：监测端，`article_distributions` 表已定义模型（[article.py:9-18](../../../index-monitor/app/models/article.py)）但**无数据**，因为没有接收入口。使用 [docker-compose.prod.yml](../../../docker-compose.prod.yml) 里的 `postgres` 容器（`geo-postgres`）。
+- **GEOFlow**（Laravel/PHP）：内容生产端，使用 `pgvector/pgvector:pg16` 镜像（PostgreSQL 16 + pgvector 向量扩展），有自己的 docker-compose（[GEOFlow-main/docker-compose.yml](../../../GEOFlow-main/docker-compose.yml)）。
+- **监测系统**（FastAPI/Python，index-monitor + dashboard）：监测端，使用 `postgres:15-alpine` 镜像（[docker-compose.prod.yml](../../../docker-compose.prod.yml) 的 `postgres` 容器）。
 
-两个 PG 实例完全不互通，导致 GEOFlow 分发成功的文章数据无法流入监测系统，[IndexChecker](../../../index-monitor/app/services/index_checker.py) 和 [CitationChecker](../../../index-monitor/app/services/citation_checker.py) 读到的 `article_distributions` 表是空的，收录检测和 AI 采信检测无法执行。
+两个 PG 实例完全不互通，导致 GEOFlow 分发成功的文章数据无法流入监测系统，`article_distributions` 表在监测系统侧是空的，IndexChecker 和 CitationChecker 无法执行。
+
+**经过 brainstorming 评估，两套数据库是历史遗留，不是有意设计。** 同步机制（推送/重试/幂等）本质上是在解决人为制造的数据隔离问题。本设计改为**一套数据库**，从根源消除数据不互通。
 
 ### 1.2 设计目标
 
-1. 建立 GEOFlow → 监测系统的单向数据同步机制（article_distributions 表）
-2. 支持运营手动录入 URL（不依赖 GEOFlow 推送）
-3. 客户登录 dashboard 只看自己 client_id 下的数据（多租户隔离）
-4. 补全管理员角色（你和同事登录管理所有客户数据）
-5. 客户 dashboard UI 采用专业数据中台风格
+1. **统一数据库**：监测系统直接读 GEOFlow 的 PG，用 schema 隔离，消除同步机制
+2. **手动 URL 录入**：支持运营手动录入 URL（不依赖 GEOFlow 分发）
+3. **管理员角色**：补全 admin/super_admin 两级角色（你和同事登录管理）
+4. **监测结果导出**：支持 PDF/Excel 报告导出
+5. **多渠道分发扩展**：为头条/知乎等平台预留扩展点
+6. **客户 dashboard**：采用专业数据中台风格（风格 A）
+7. **官网管理入口**：在官网添加管理员/客户登录入口
 
 ### 1.3 非目标（YAGNI）
 
-- 不做监测系统 → GEOFlow 的反向同步（本期仅预留扩展点）
-- 不做双向实时同步
-- 不引入消息队列（Kafka/RabbitMQ）
-- 不做 PostgreSQL FDW 跨库直连
+- 不做监测系统 → GEOFlow 的反向同步（统一数据库后天然可见，不需要反向同步）
+- 不做头条/知乎 publisher 的完整实现（本期只做框架 + generic_http_api 适配，具体平台 API 调研作为后续任务）
+- 不引入消息队列
+- 不做 PostgreSQL FDW（同一 PG 内跨 schema 查询不需要 FDW）
 
 ---
 
 ## 2. 架构总览
 
-### 2.1 数据流
+### 2.1 统一数据库架构
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  GEOFlow (Laravel/PHP) — 独立 PG 实例 A                         │
+│  单一 PostgreSQL 实例（pgvector/pgvector:pg16）                  │
 │                                                                  │
-│  ArticleDistribution (action=publish/update/delete)              │
-│       │                                                          │
-│       ▼                                                          │
-│  ProcessArticleDistributionJob                                   │
-│       │  发布成功后（status='synced'）                           │
-│       ▼                                                          │
-│  MonitorSyncClient::push($payload)   ← 新增服务                  │
-│       │  HTTP POST + SYNC_API_TOKEN                              │
-│       │  失败 → 复用现有 queue 重试 (attempt_count/next_retry_at) │
-└───────┼──────────────────────────────────────────────────────────┘
-        │
-        │  HTTPS（https://monitor.zkeeeai.com），不依赖容器网络互通
-        ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  监测系统 (FastAPI/Python) — 独立 PG 实例 B (geo-postgres)       │
+│  public schema（GEOFlow 读写）                                   │
+│   ├── articles                          ← 监测系统只读 JOIN       │
+│   ├── article_distributions             ← 监测系统只读 JOIN       │
+│   ├── distribution_channels             ← 监测系统只读            │
+│   ├── knowledge_bases / knowledge_chunks ← pgvector 向量搜索     │
+│   └── ...（GEOFlow 现有所有表）                                  │
 │                                                                  │
-│  POST /api/v1/distributions/sync       ← GEOFlow 推送入口        │
-│  POST /api/v1/distributions/sync/batch ← 历史数据批量迁移        │
-│       │  验证 SYNC_API_TOKEN                                     │
-│       │  domain → client_id 匹配 (查 client_sites)               │
-│       │  (client_id, remote_url) 唯一约束去重                     │
-│       │  按 action 处理：publish/update/upsert, delete/软删除    │
-│       ▼                                                          │
-│  article_distributions (source='geoflow', 全量字段)              │
-│       │                                                          │
-│       ▼                                                          │
-│  IndexChecker / CitationChecker  ← 现有逻辑无需改                │
-│                                                                  │
-│  POST /api/v1/distributions            ← 运营手动录入 (admin)     │
-│  GET  /api/v1/distributions            ← 列表 (admin/client)      │
-│  GET  /api/v1/admin/clients            ← 客户管理 (admin)         │
-│  GET  /api/v1/admin/client_sites       ← 站点管理 (admin)         │
-└──────────────────────────────────────────────────────────────────┘
+│  monitor schema（监测系统读写）                                  │
+│   ├── clients                           ← 客户账号               │
+│   ├── client_sites                      ← 客户站点（domain 映射）│
+│   ├── admins                            ← 管理员账号             │
+│   ├── index_results                     ← 收录检测结果           │
+│   ├── citation_results                  ← AI 采信检测结果        │
+│   ├── manual_distributions              ← 手动录入的 URL         │
+│   ├── system_config                     ← 系统配置               │
+│   └── export_tasks                      ← 导出任务记录           │
+└─────────────────────────────────────────────────────────────────┘
+        ▲                              ▲
+        │                              │
+┌───────┴──────────┐          ┌────────┴──────────────────────┐
+│  GEOFlow          │          │  监测系统 (index-monitor)      │
+│  (Laravel/PHP)    │          │  (FastAPI/Python)              │
+│  连 public schema │          │  读 public + 读写 monitor     │
+│  写 articles 等   │          │  跨 schema JOIN 查询           │
+└───────────────────┘          └────────────────────────────────┘
 ```
 
 ### 2.2 关键边界
 
-- GEOFlow 只负责「推送」，不关心监测系统内部数据模型
-- 监测系统只负责「接收 + 匹配 + 落库」，不反向查询 GEOFlow
-- 两个 PG 实例完全不互通，只通过 HTTP 推送同步
-- 推送走 HTTPS（`https://monitor.zkeeeai.com`），通过现有 nginx 暴露
+- **GEOFlow**：只读写 `public` schema，不感知 `monitor` schema 存在
+- **监测系统**：读 `public` schema（只读 GEOFlow 数据），读写 `monitor` schema（自己的表）
+- **数据一致性**：天然保证（同一 PG，同一事务可见性）
+- **schema 隔离**：GEOFlow 改表结构不影响监测系统（除非改了被监测系统 JOIN 的表结构）
+- **无同步机制**：不需要推送、重试、幂等、迁移命令
+
+### 2.3 数据流
+
+```
+GEOFlow 发布文章 → 写 public.article_distributions (status='synced')
+                          │
+                          │ 监测系统跨 schema 查询（实时可见）
+                          ▼
+监测系统查询：SELECT d.*, a.title, a.content, s.client_id, s.site_type
+              FROM public.article_distributions d
+              JOIN public.articles a ON a.id = d.article_id
+              LEFT JOIN monitor.client_sites s ON s.domain = extract_domain(d.remote_url)
+              WHERE d.status = 'synced' AND d.action != 'delete'
+                          │
+                          ▼
+IndexChecker / CitationChecker 执行检测 → 写 monitor.index_results / monitor.citation_results
+                          │
+                          ▼
+客户/管理员看 dashboard → 查询 monitor.index_results + monitor.citation_results
+                          │
+                          ▼
+导出报告（PDF/Excel）→ 下载
+```
 
 ---
 
-## 3. 数据模型变更
+## 3. 数据库统一方案
 
-### 3.1 监测系统侧：article_distributions 表扩展
+### 3.1 迁移策略
 
-在 [article.py:9-18](../../../index-monitor/app/models/article.py) 现有基础上扩展：
+**目标**：废弃监测系统的 `postgres:15-alpine` 容器，统一使用 GEOFlow 的 `pgvector/pgvector:pg16` 容器。
 
-```python
-class ArticleDistribution(Base):
-    __tablename__ = "article_distributions"
-    __table_args__ = (
-        UniqueConstraint("client_id", "remote_url", name="uq_distributions_client_url"),
-    )
+**迁移步骤**（本地先验证，生产按部署手册执行）：
 
-    # 现有字段
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    client_id = Column(String(64), nullable=False, index=True)
-    remote_url = Column(String(512), nullable=False, index=True)
-    status = Column(String(32), nullable=False, default="synced", index=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+1. **备份监测系统现有数据**（虽然表是空的，但保险起见）
+   ```bash
+   docker exec geo-postgres-local pg_dump -U geo_user -d geo_monitoring > backup_monitor.sql
+   ```
 
-    # 新增：来源标识
-    source = Column(String(16), nullable=False, default="manual", index=True)  # 'geoflow' | 'manual'
-    geoflow_article_id = Column(String(64), nullable=True, index=True)  # GEOFlow Article.id 转 string
-    geoflow_action = Column(String(16), nullable=True)  # 'publish' | 'update' | 'delete'，仅 geoflow 推送有
+2. **在 GEOFlow 的 PG 创建 monitor schema**
+   ```sql
+   CREATE SCHEMA IF NOT EXISTS monitor;
+   ```
 
-    # 新增：文章全量字段（GEOFlow 推送，手动录入可空）
-    content_title = Column(String(512), nullable=True)
-    content_slug = Column(String(512), nullable=True)
-    content_excerpt = Column(Text, nullable=True)
-    content_body = Column(Text, nullable=True)  # 文章正文 HTML/Markdown
-    content_keywords = Column(ARRAY(Text), nullable=True)  # 复用 IndexResult 的 ARRAY(Text)
-    meta_description = Column(Text, nullable=True)
-    original_keyword = Column(String(255), nullable=True)
-    site_type = Column(String(32), nullable=True)  # 从 client_sites.site_type 带过来
-    published_at = Column(DateTime(timezone=True), nullable=True)
+3. **迁移监测系统的表到 monitor schema**
+   - 修改监测系统的 Alembic 迁移，所有表加 `schema="monitor"`
+   - 或用 `ALTER TABLE xxx SET SCHEMA monitor` 迁移现有表
+
+4. **更新监测系统的数据库连接配置**
+   - `.env.prod` 改 `POSTGRES_HOST` 指向 GEOFlow 的 PG 容器
+   - `POSTGRES_PORT` 改为 GEOFlow PG 的端口
+   - `POSTGRES_DB` 改为 GEOFlow 的 database name
+
+5. **更新 docker-compose**
+   - `docker-compose.prod.yml` 删除 `postgres` 服务（geo-postgres）
+   - `index-monitor` 服务的 `depends_on` 改为依赖 GEOFlow 的 PG（或通过 host 网络访问）
+   - 保留 `redis` 服务（监测系统仍需要 Redis）
+
+6. **验证**：监测系统能跨 schema 查询 `public.article_distributions`
+
+### 3.2 回滚方案
+
+如果统一后出现问题：
+1. 恢复监测系统的 `postgres:15-alpine` 容器
+2. 恢复 `backup_monitor.sql`
+3. 监测系统 `.env` 改回原 PG 连接
+4. GEOFlow 不受影响（从未改动）
+
+### 3.3 网络配置
+
+**方案**：GEOFlow 和监测系统的 docker-compose 合并到同一个网络，或通过宿主机网络访问。
+
+**推荐**：合并到一个 docker-compose（或用 `external network`），让监测系统的 index-monitor 容器能直接访问 GEOFlow 的 PG 容器。
+
+```yaml
+# docker-compose.prod.yml（合并后）
+networks:
+  geoflow-net:
+    external: true  # GEOFlow 的 docker-compose 创建的网络
+
+services:
+  index-monitor:
+    environment:
+      POSTGRES_HOST: geoflow-postgres  # GEOFlow 的 PG 容器名
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${GEOFLOW_DB_NAME}
+      ...
+    networks:
+      - geoflow-net
 ```
 
-**status 取值**：`synced`（已同步，可监测）/ `deleted`（已删除，跳过监测）/ `failed`（推送失败，仅 geoflow 源可能）
+---
 
-### 3.2 监测系统侧：client_sites 表加 domain 唯一约束
+## 4. 数据模型
 
-[client.py:24-40](../../../index-monitor/app/models/client.py) 的 `ClientSite`：
+### 4.1 监测系统侧：monitor schema 的表
 
-```python
-class ClientSite(Base):
-    __tablename__ = "client_sites"
-    __table_args__ = (
-        UniqueConstraint("client_id", "domain", name="client_sites_client_id_domain_key"),  # 现有
-        UniqueConstraint("domain", name="client_sites_domain_unique_key"),  # 新增：一个 domain 只属于一个客户
-    )
-    # ... 其余字段不变
-    domain = Column(String(255), nullable=False, index=True)  # 已有 index，保留
-```
-
-**业务约束**：一个 domain 只能属于一个客户。避免 domain 匹配时找到多个客户导致数据归属错误。
-
-### 3.3 监测系统侧：新增 admins 表
+**新建 admins 表**：
 
 ```python
+# index-monitor/app/models/admin.py
 class Admin(Base):
     __tablename__ = "admins"
+    __table_args__ = {"schema": "monitor"}
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     username = Column(String(128), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
@@ -159,625 +196,422 @@ class Admin(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 ```
 
-**两级 role**：
-- `admin`：日常运营，可管理客户/站点/分发记录、手动录入 URL
-- `super_admin`：可管理 admin 账号（创建/禁用其他 admin）
+**新建 manual_distributions 表**（手动录入的 URL）：
 
-### 3.4 GEOFlow 侧：无表结构变更
+```python
+# index-monitor/app/models/manual_distribution.py
+class ManualDistribution(Base):
+    __tablename__ = "manual_distributions"
+    __table_args__ = (
+        UniqueConstraint("client_id", "remote_url", name="uq_manual_client_url"),
+        {"schema": "monitor"},
+    )
 
-复用现有 [ArticleDistribution](../../../GEOFlow-main/app/Models/ArticleDistribution.php) + [Article](../../../GEOFlow-main/app/Models/Article.php) 关联（[Article.php:92-95](../../../GEOFlow-main/app/Models/Article.php) 已有 `distributions()` 关系）。
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    client_id = Column(String(64), nullable=False, index=True)
+    remote_url = Column(String(512), nullable=False, index=True)
+    status = Column(String(32), nullable=False, default="synced", index=True)
+    note = Column(Text, nullable=True)  # 运营备注
+    created_by_admin_id = Column(UUID(as_uuid=True), nullable=True)  # 录入的 admin
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+```
 
-### 3.5 字段映射（GEOFlow → 监测系统）
+**现有表迁移到 monitor schema**（clients, client_sites, index_results, citation_results, system_config, index_history）：
 
-| GEOFlow 字段 | 监测系统字段 | 转换说明 |
-|---|---|---|
-| ArticleDistribution.id | — | 不直接映射，仅作推送日志 |
-| ArticleDistribution.remote_url | remote_url | 直接映射 |
-| ArticleDistribution.status | status | 'synced' → 'synced'；'failed' → 'failed' |
-| ArticleDistribution.action | geoflow_action | 'publish'/'update'/'delete' 直接映射 |
-| Article.id | geoflow_article_id | integer → string |
-| Article.title | content_title | 直接映射 |
-| Article.slug | content_slug | 直接映射 |
-| Article.excerpt | content_excerpt | 直接映射 |
-| Article.content | content_body | 直接映射（HTML/Markdown） |
-| Article.keywords | content_keywords | **需确认格式**（JSON 字符串/array），实现前先 `SELECT keywords FROM articles LIMIT 5` 验证，在 `buildPayload()` 做 JSON decode → array 转换 |
-| Article.meta_description | meta_description | 直接映射 |
-| Article.original_keyword | original_keyword | 直接映射 |
-| Article.published_at | published_at | Carbon → `toIso8601String()`（含时区） |
-| (domain 匹配) | client_id | 从 remote_url 提取 domain 查 client_sites |
-| (domain 匹配) | site_type | 从 client_sites.site_type 带过来 |
-| (固定值) | source | 'geoflow' |
+```python
+# 所有监测系统的模型加 __table_args__ = {"schema": "monitor"}
+class Client(Base):
+    __tablename__ = "clients"
+    __table_args__ = {"schema": "monitor"}
+    # ... 字段不变
+
+class ClientSite(Base):
+    __tablename__ = "client_sites"
+    __table_args__ = (
+        UniqueConstraint("client_id", "domain", name="client_sites_client_id_domain_key"),
+        UniqueConstraint("domain", name="client_sites_domain_unique_key"),  # 新增：一个 domain 只属于一个客户
+        {"schema": "monitor"},
+    )
+    # ... 字段不变
+```
+
+**新建 export_tasks 表**（导出任务记录）：
+
+```python
+class ExportTask(Base):
+    __tablename__ = "export_tasks"
+    __table_args__ = {"schema": "monitor"}
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    client_id = Column(String(64), nullable=True)  # null 表示全部客户（admin 导出）
+    requested_by = Column(String(128), nullable=False)  # admin username 或 client_id
+    requested_by_role = Column(String(32), nullable=False)  # 'admin' | 'client'
+    export_type = Column(String(16), nullable=False)  # 'pdf' | 'excel'
+    date_from = Column(Date, nullable=True)
+    date_to = Column(Date, nullable=True)
+    status = Column(String(32), default="pending", nullable=False)  # pending/processing/completed/failed
+    file_path = Column(String(512), nullable=True)  # 生成的文件路径
+    file_size = Column(Integer, nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+```
+
+### 4.2 跨 schema 读 GEOFlow 的表
+
+监测系统的 SQLAlchemy 模型跨 schema 查询 GEOFlow 的表（只读）：
+
+```python
+# index-monitor/app/models/geoflow_views.py
+from sqlalchemy import Column, String, DateTime, Text, Integer, ForeignKey
+from app.models.base import Base
+
+class GeoflowArticle(Base):
+    """GEOFlow 的 articles 表（只读视图）。"""
+    __tablename__ = "articles"
+    __table_args__ = {"schema": "public"}
+
+    id = Column(Integer, primary_key=True)
+    title = Column(String(512))
+    slug = Column(String(512))
+    excerpt = Column(Text)
+    content = Column(Text)  # 文章正文
+    keywords = Column(Text)  # JSON 字符串，需解析
+    meta_description = Column(Text)
+    original_keyword = Column(String(255))
+    status = Column(String(32))
+    published_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True))
+    updated_at = Column(DateTime(timezone=True))
+
+class GeoflowArticleDistribution(Base):
+    """GEOFlow 的 article_distributions 表（只读视图）。"""
+    __tablename__ = "article_distributions"
+    __table_args__ = {"schema": "public"}
+
+    id = Column(Integer, primary_key=True)
+    article_id = Column(Integer, ForeignKey("public.articles.id"))
+    distribution_channel_id = Column(Integer)
+    action = Column(String(16))  # publish/update/delete
+    status = Column(String(32))  # synced/failed/queued/sending
+    remote_id = Column(String(255))
+    remote_url = Column(String(512))
+    remote_meta = Column(Text)  # JSON
+    created_at = Column(DateTime(timezone=True))
+    updated_at = Column(DateTime(timezone=True))
+
+class GeoflowDistributionChannel(Base):
+    """GEOFlow 的 distribution_channels 表（只读视图，用于显示渠道类型）。"""
+    __tablename__ = "distribution_channels"
+    __table_args__ = {"schema": "public"}
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255))
+    channel_type = Column(String(64))  # geoflow_agent/wordpress_rest/generic_http_api
+    domain = Column(String(255))
+    status = Column(String(32))
+```
+
+**重要**：这些模型**不创建表**（表由 GEOFlow 的 Laravel migration 管理），只用于查询。在 Alembic 里标记为 `view=True` 或不生成迁移。
+
+### 4.3 字段映射（查询时 JOIN）
+
+监测系统查询分发记录时，跨 schema JOIN 获取完整信息：
+
+```sql
+SELECT
+    d.id AS distribution_id,
+    d.remote_url,
+    d.action,
+    d.status AS distribution_status,
+    d.created_at AS distributed_at,
+    a.title AS content_title,
+    a.slug AS content_slug,
+    a.excerpt AS content_excerpt,
+    a.content AS content_body,
+    a.keywords AS content_keywords_raw,
+    a.meta_description,
+    a.original_keyword,
+    a.published_at,
+    s.client_id,
+    s.site_type,
+    c.channel_type,
+    c.name AS channel_name,
+    -- 手动录入标记
+    CASE WHEN m.id IS NOT NULL THEN 'manual' ELSE 'geoflow' END AS source,
+    -- 关联收录检测
+    ir.baidu_status, ir.toutiao_status, ir.sogou_status, ir.so360_status, ir.bing_status,
+    -- 关联采信检测
+    cr.citation_exact, cr.citation_total
+FROM public.article_distributions d
+JOIN public.articles a ON a.id = d.article_id
+LEFT JOIN public.distribution_channels c ON c.id = d.distribution_channel_id
+LEFT JOIN monitor.client_sites s ON s.domain = extract_domain(d.remote_url)
+LEFT JOIN monitor.manual_distributions m ON m.remote_url = d.remote_url  -- 手动录入关联
+LEFT JOIN monitor.index_results ir ON ir.url = d.remote_url
+LEFT JOIN (SELECT url, COUNT(*) FILTER (WHERE hit_type='exact') AS citation_exact, COUNT(*) AS citation_total
+           FROM monitor.citation_results GROUP BY url) cr ON cr.url = d.remote_url
+WHERE d.status = 'synced' AND d.action != 'delete'
+```
+
+**keywords 格式处理**：GEOFlow 的 `articles.keywords` 存储格式需实现前验证（`SELECT keywords FROM public.articles LIMIT 5`），可能是 JSON 字符串或逗号分隔。查询后用 Python 解析为 array。
 
 ---
 
-## 4. GEOFlow 侧推送实现
+## 5. DistributionQueryService 实现
 
-### 4.1 新增 MonitorSyncClient 服务
+位置：`index-monitor/app/services/distribution_query.py`
 
-位置：`GEOFlow-main/app/Services/GeoFlow/MonitorSyncClient.php`
-
-```php
-class MonitorSyncClient
-{
-    public function __construct(
-        private readonly string $apiUrl,      // config('geoflow.monitor_sync_api_url')
-        private readonly string $apiToken,    // config('geoflow.monitor_sync_api_token')
-        private readonly int $timeout = 10,
-    ) {}
-
-    /**
-     * 推送分发记录到监测系统。
-     * 失败时抛 MonitorSyncException，触发 queue 重试。
-     */
-    public function push(ArticleDistribution $distribution): void
-    {
-        $article = $distribution->article()->first();
-        $payload = $this->buildPayload($distribution, $article);
-
-        $response = Http::withToken($this->apiToken)
-            ->timeout($this->timeout)
-            ->post("{$this->apiUrl}/api/v1/distributions/sync", $payload);
-
-        if ($response->failed()) {
-            throw new MonitorSyncException(
-                "推送失败: HTTP {$response->status()} - {$response->body()}"
-            );
-        }
-    }
-
-    private function buildPayload(ArticleDistribution $d, ?Article $a): array
-    {
-        $keywords = $a?->keywords;
-        // keywords 格式适配：如果是 JSON 字符串先 decode，如果是逗号分隔字符串转 array
-        if (is_string($keywords)) {
-            $decoded = json_decode($keywords, true);
-            $keywords = is_array($decoded) ? $decoded : array_filter(array_map('trim', explode(',', $keywords)));
-        }
-        $keywords = $keywords ?? [];
-
-        // delete action 时 remote_url 可能为空（GEOFlow 删除分发时可能已清空 remote_url）。
-        // 此时推送 geoflow_article_id 让监测系统按 article_id 软删除对应记录。
-        // 监测系统 _handle_delete 优先按 remote_url 查找，回退到 geoflow_article_id。
-        $remoteUrl = $d->remote_url;
-        if (!$remoteUrl && $d->action !== 'delete') {
-            throw new MonitorSyncException("非 delete action 的 remote_url 为空，无法推送");
-        }
-
-        return [
-            'geoflow_article_id' => $a ? (string) $a->id : null,
-            'remote_url' => $remoteUrl,  // delete 时可能为 null
-            'status' => $d->status,
-            'action' => $d->action,  // publish/update/delete
-            'content_title' => $a?->title,
-            'content_slug' => $a?->slug,
-            'content_excerpt' => $a?->excerpt,
-            'content_body' => $a?->content,
-            'content_keywords' => $keywords,
-            'meta_description' => $a?->meta_description,
-            'original_keyword' => $a?->original_keyword,
-            'published_at' => $a?->published_at?->toIso8601String(),
-        ];
-    }
-}
-```
-
-### 4.2 修改 ProcessArticleDistributionJob
-
-位置：[GEOFlow-main/app/Jobs/ProcessArticleDistributionJob.php](../../../GEOFlow-main/app/Jobs/ProcessArticleDistributionJob.php)
-
-在 `process()` 方法末尾，发布成功（`status='synced'`）或 delete 完成后，调用推送：
-
-```php
-// 在 process() 末尾
-if (in_array($distribution->status, ['synced', 'failed'], true)
-    || $distribution->action === 'delete') {
-    try {
-        app(MonitorSyncClient::class)->push($distribution);
-    } catch (MonitorSyncException $e) {
-        // 记录失败信息，触发 queue 重试
-        $distribution->last_error_message = $e->getMessage();
-        $distribution->save();
-        throw $e;  // queue 自动重试（复用现有 attempt_count/next_retry_at）
-    }
-}
-```
-
-### 4.3 历史数据批量迁移命令
-
-新增 Artisan 命令：`GEOFlow-main/app/Console/Commands/SyncHistoryToMonitorCommand.php`
-
-```php
-class SyncHistoryToMonitorCommand extends Command
-{
-    protected $signature = 'geoflow:sync-monitor
-        {--batch=100 : 每批处理数量}
-        {--days= : 只同步最近 N 天的数据}
-        {--dry-run : 只打印不推送}';
-
-    public function handle(MonitorSyncClient $client): int
-    {
-        $query = ArticleDistribution::query()
-            ->where('status', 'synced')
-            ->where('action', '!=', 'delete')
-            ->whereNotNull('remote_url');
-        if ($this->option('days')) {
-            $query->where('updated_at', '>=', now()->subDays((int) $this->option('days')));
-        }
-        $total = $query->count();
-        $this->info("待同步：{$total} 条");
-        $bar = $this->output->createProgressBar($total);
-        $success = 0; $failed = 0;
-        $query->chunkById((int) $this->option('batch'), function ($distributions) use ($client, $bar, &$success, &$failed) {
-            foreach ($distributions as $distribution) {
-                if ($this->option('dry-run')) {
-                    $this->line("DRY-RUN: #{$distribution->id} {$distribution->remote_url}");
-                    continue;
-                }
-                try {
-                    $client->push($distribution);
-                    $success++;
-                } catch (\Throwable $e) {
-                    $failed++;
-                    $this->error("失败 #{$distribution->id}: {$e->getMessage()}");
-                }
-                $bar->advance();
-            }
-        });
-        $bar->finish();
-        $this->info("\n完成：成功 {$success}，失败 {$failed}");
-        return $failed > 0 ? self::FAILURE : self::SUCCESS;
-    }
-}
-```
-
-### 4.4 配置项
-
-`.env.prod`（GEOFlow 侧，遵循 project_memory 硬约束"API keys must not be hardcoded"）：
-```
-MONITOR_SYNC_API_URL=https://monitor.zkeeeai.com
-MONITOR_SYNC_API_TOKEN=<部署时 openssl rand -hex 32 生成>
-```
-
-`config/geoflow.php` 新增：
-```php
-'monitor_sync_api_url' => env('MONITOR_SYNC_API_URL'),
-'monitor_sync_api_token' => env('MONITOR_SYNC_API_TOKEN'),
-```
-
----
-
-## 5. 监测系统侧接收端点
-
-### 5.1 POST /api/v1/distributions/sync（GEOFlow 推送入口）
+### 5.1 domain → client_id 匹配（查询时 JOIN）
 
 ```python
-# index-monitor/app/api/routes.py 新增
-from app.services.distribution_sync import DistributionSyncService, DomainNotRegisteredError
-
-class DistributionSyncPayload(BaseModel):
-    geoflow_article_id: str | None = None
-    remote_url: str
-    status: str = "synced"
-    action: str = "publish"  # publish/update/delete
-    content_title: str | None = None
-    content_slug: str | None = None
-    content_excerpt: str | None = None
-    content_body: str | None = None
-    content_keywords: list[str] | None = None
-    meta_description: str | None = None
-    original_keyword: str | None = None
-    published_at: str | None = None
-
-@router.post("/distributions/sync")
-async def sync_distribution(
-    payload: DistributionSyncPayload,
-    token: str = Depends(verify_sync_token),
-    db: AsyncSession = Depends(get_db),
-):
-    service = DistributionSyncService(db)
-    try:
-        result = await service.ingest_from_geoflow(payload)
-    except DomainNotRegisteredError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    return result
-```
-
-### 5.2 POST /api/v1/distributions/sync/batch（历史迁移）
-
-```python
-class BatchSyncPayload(BaseModel):
-    distributions: list[DistributionSyncPayload]
-
-@router.post("/distributions/sync/batch")
-async def sync_batch(
-    payload: BatchSyncPayload,
-    token: str = Depends(verify_sync_token),
-    db: AsyncSession = Depends(get_db),
-):
-    service = DistributionSyncService(db)
-    results = []
-    for item in payload.distributions:
-        try:
-            results.append(await service.ingest_from_geoflow(item))
-        except DomainNotRegisteredError as e:
-            results.append({"remote_url": item.remote_url, "error": str(e), "action": "failed"})
-    return {"total": len(results), "results": results}
-```
-
-### 5.3 POST /api/v1/distributions（运营手动录入）
-
-```python
-class ManualDistributionPayload(BaseModel):
-    remote_url: str
-    # client_id 可选；不填则 domain 自动匹配；填了则用指定的（admin 可覆盖）
-
-@router.post("/distributions")
-async def manual_create_distribution(
-    payload: ManualDistributionPayload,
-    admin: Admin = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    service = DistributionSyncService(db)
-    try:
-        result = await service.ingest_manual(payload.remote_url)
-    except DomainNotRegisteredError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except DistributionConflictError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    return result
-```
-
-### 5.4 GET /api/v1/distributions（列表查询，JOIN 收录/采信状态）
-
-```python
-@router.get("/distributions")
-async def list_distributions(
-    requester = Depends(get_current_user),  # admin 看所有，client 看自己
-    source: str | None = None,
-    status: str | None = None,
-    db: AsyncSession = Depends(get_db),
-):
-    # 根据 requester 类型决定 client_id 过滤
-    client_id = None if requester.role in ("admin", "super_admin") else requester.client_id
-    service = DistributionSyncService(db)
-    return await service.list_distributions(client_id=client_id, source=source, status=status)
-```
-
-**返回结构**（每条分发记录关联收录和采信统计）：
-```python
-[
-    {
-        "id": "...",
-        "client_id": "...",
-        "remote_url": "...",
-        "source": "geoflow",
-        "status": "synced",
-        "content_title": "...",
-        "content_excerpt": "...",
-        "site_type": "official",
-        "published_at": "...",
-        "created_at": "...",
-        # 关联收录状态（从 IndexResult 聚合）
-        "index_status": {
-            "baidu": "indexed", "toutiao": "not_indexed", ...
-            "last_checked": "..."
-        },
-        # 关联采信状态（从 CitationResult 聚合）
-        "citation_status": "cited",  # pending/cited/partial/not_cited
-        "citation_exact": 2,
-        "citation_total": 5,
-    }
-]
-```
-
----
-
-## 6. DistributionSyncService 实现
-
-位置：`index-monitor/app/services/distribution_sync.py`
-
-### 6.1 完整实现
-
-```python
-import logging
-from urllib.parse import urlsplit
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.models.article import ArticleDistribution
-from app.models.client import ClientSite
-from app.models.index_result import IndexResult
-from app.models.citation_result import CitationResult
-
-logger = logging.getLogger(__name__)
-
-
-class DomainNotRegisteredError(ValueError):
-    pass
-
-
-class DistributionConflictError(ValueError):
-    pass
-
-
-class DistributionSyncService:
+class DistributionQueryService:
     def __init__(self, db: AsyncSession):
         self.db = db
-
-    # ------------------------------------------------------------------
-    # 接收入口
-    # ------------------------------------------------------------------
-
-    async def ingest_from_geoflow(self, payload) -> dict:
-        """GEOFlow 推送入口。处理 publish/update/delete 三种 action。"""
-        if payload.action == "delete":
-            return await self._handle_delete(payload)
-
-        client_id, site_type = await self._match_client_by_domain(payload.remote_url)
-        return await self._upsert(
-            client_id=client_id,
-            remote_url=payload.remote_url,
-            source="geoflow",
-            site_type=site_type,
-            payload=payload,
-        )
-
-    async def ingest_manual(self, remote_url: str) -> dict:
-        """运营手动录入入口。"""
-        client_id, site_type = await self._match_client_by_domain(remote_url)
-        try:
-            return await self._upsert(
-                client_id=client_id,
-                remote_url=remote_url,
-                source="manual",
-                site_type=site_type,
-                payload=None,
-            )
-        except IntegrityError:
-            raise DistributionConflictError(f"URL 已存在：{remote_url}")
-
-    # ------------------------------------------------------------------
-    # delete 处理
-    # ------------------------------------------------------------------
-
-    async def _handle_delete(self, payload) -> dict:
-        """delete action：软删除监测系统侧记录。"""
-        if not payload.remote_url:
-            # delete 时 remote_url 可能为空，按 geoflow_article_id 查找
-            if not payload.geoflow_article_id:
-                return {"action": "skipped", "reason": "no_identifier"}
-            result = await self.db.execute(
-                select(ArticleDistribution)
-                .where(ArticleDistribution.geoflow_article_id == payload.geoflow_article_id)
-            )
-        else:
-            result = await self.db.execute(
-                select(ArticleDistribution)
-                .where(ArticleDistribution.remote_url == payload.remote_url)
-            )
-        records = result.scalars().all()
-        for record in records:
-            record.status = "deleted"
-            record.geoflow_action = "delete"
-        await self.db.commit()
-        return {"action": "deleted", "count": len(records)}
-
-    # ------------------------------------------------------------------
-    # domain → client_id 匹配
-    # ------------------------------------------------------------------
-
-    async def _match_client_by_domain(self, url: str) -> tuple[str, str]:
-        """从 URL 提取 domain，查 client_sites 表匹配 client_id。
-
-        domain 标准化：小写 + 去掉 www. 前缀。
-        """
-        domain = self._extract_domain(url)
-        # client_sites.domain 存储时也标准化，两边一致
-        result = await self.db.execute(
-            select(ClientSite)
-            .where(ClientSite.domain == domain, ClientSite.status == "active")
-        )
-        sites = result.scalars().all()
-        if not sites:
-            raise DomainNotRegisteredError(
-                f"域名 '{domain}' 未在 client_sites 登记任一客户，"
-                f"请先在管理后台 → 客户站点 中添加该域名。"
-            )
-        # 由于 client_sites.domain 有 UNIQUE 约束，最多只会有一个
-        site = sites[0]
-        return site.client_id, site.site_type
 
     @staticmethod
     def _extract_domain(url: str) -> str:
         """提取并标准化 domain：小写 + 去掉 www. 前缀。"""
+        from urllib.parse import urlsplit
         host = urlsplit(url).hostname or ""
         host = host.lower()
         if host.startswith("www."):
             host = host[4:]
         return host
 
-    # ------------------------------------------------------------------
-    # 幂等 upsert
-    # ------------------------------------------------------------------
+    async def list_distributions(
+        self,
+        client_id: str | None = None,
+        source: str | None = None,
+        status: str | None = None,
+        include_manual: bool = True,
+    ) -> list[dict]:
+        """查询分发记录（跨 schema JOIN）。
 
-    async def _upsert(self, client_id, remote_url, source, site_type, payload) -> dict:
-        """按 (client_id, remote_url) 幂等 upsert。
-
-        冲突策略：
-        - manual 记录优先，geoflow 推送不覆盖 manual（除非 manual 主动 update）
-        - geoflow → geoflow：更新内容字段
-        - 无记录：创建
+        client_id 为 None 时返回所有客户（admin 权限）。
+        source 为 'geoflow' / 'manual' / None（全部）。
         """
-        existing = await self.db.execute(
-            select(ArticleDistribution)
+        results = []
+
+        # 1. GEOFlow 推送的记录
+        if source in (None, "geoflow"):
+            geoflow_records = await self._query_geoflow_distributions(client_id, status)
+            results.extend(geoflow_records)
+
+        # 2. 手动录入的记录
+        if include_manual and source in (None, "manual"):
+            manual_records = await self._query_manual_distributions(client_id, status)
+            results.extend(manual_records)
+
+        # 按时间倒序
+        results.sort(key=lambda x: x.get("distributed_at") or x.get("created_at") or "", reverse=True)
+        return results
+
+    async def _query_geoflow_distributions(self, client_id: str | None, status: str | None) -> list[dict]:
+        """查 GEOFlow 的 article_distributions（跨 schema JOIN）。
+
+        domain 匹配采用 Python 层处理（避免复杂 SQL 正则）：
+        先查所有 client_sites 建立 domain→client_id 映射，再在 Python 层匹配。
+        """
+        # 1. 查 GEOFlow 分发记录 + 文章 + 渠道 + 收录结果
+        query = (
+            select(
+                GeoflowArticleDistribution,
+                GeoflowArticle,
+                GeoflowDistributionChannel,
+                IndexResult,
+            )
+            .join(GeoflowArticle, GeoflowArticle.id == GeoflowArticleDistribution.article_id)
+            .outerjoin(GeoflowDistributionChannel, GeoflowDistributionChannel.id == GeoflowArticleDistribution.distribution_channel_id)
+            .outerjoin(IndexResult, IndexResult.url == GeoflowArticleDistribution.remote_url)
             .where(
-                ArticleDistribution.client_id == client_id,
-                ArticleDistribution.remote_url == remote_url,
+                GeoflowArticleDistribution.status == "synced",
+                GeoflowArticleDistribution.action != "delete",
+                GeoflowArticleDistribution.remote_url.isnot(None),
             )
         )
-        record = existing.scalar_one_or_none()
+        result = await self.db.execute(query)
+        rows = result.fetchall()
 
-        if record:
-            # 冲突策略
-            if record.source == "manual" and source == "geoflow":
-                logger.info("跳过推送：URL 已被手动录入 %s", remote_url)
-                return {"action": "skipped", "reason": "manual_record_exists", "client_id": client_id}
-            if record.source == "manual" and source == "manual":
-                raise DistributionConflictError(f"URL 已存在（手动录入）：{remote_url}")
-            # 更新（geoflow → geoflow，或 manual 补充内容）
-            self._apply_fields(record, payload, source, site_type)
-            action = "updated"
+        # 2. 建立 domain → client_id 映射（一次查询）
+        sites_result = await self.db.execute(
+            select(ClientSite).where(ClientSite.status == "active")
+        )
+        domain_map = {self._extract_domain(s.domain): (s.client_id, s.site_type) for s in sites_result.scalars().all()}
+
+        # 3. 过滤：如果指定了 client_id，只保留匹配的记录
+        # 4. 聚合采信统计
+        urls = [row[0].remote_url for row in rows]
+        citation_map = await self._aggregate_citations(urls)
+
+        records = []
+        for row in rows:
+            dist, article, channel, index_result = row
+            domain = self._extract_domain(dist.remote_url)
+            matched = domain_map.get(domain)
+            if matched is None:
+                continue  # domain 未登记，跳过（可记日志告警）
+            cid, site_type = matched
+            if client_id and cid != client_id:
+                continue  # 客户过滤
+            records.append(self._serialize_geoflow(dist, article, channel, index_result, cid, site_type, citation_map))
+        return records
+
+    def _serialize_geoflow(self, dist, article, channel, index_result, client_id, site_type, citation_map) -> dict:
+        """序列化 GEOFlow 分发记录 + 关联数据。"""
+        import json
+        # keywords 格式适配：JSON 字符串 → array
+        keywords_raw = article.keywords if article else None
+        if isinstance(keywords_raw, str):
+            try:
+                keywords = json.loads(keywords_raw)
+            except (json.JSONDecodeError, ValueError):
+                keywords = [k.strip() for k in keywords_raw.split(",") if k.strip()]
         else:
-            record = ArticleDistribution(
-                client_id=client_id,
-                remote_url=remote_url,
-                source=source,
-                site_type=site_type,
-                status="synced",
-            )
-            self._apply_fields(record, payload, source, site_type)
-            self.db.add(record)
-            action = "created"
+            keywords = keywords_raw or []
 
-        try:
-            await self.db.commit()
-        except IntegrityError:
-            # 并发竞态：UNIQUE 约束兜底，重试一次 upsert
-            await self.db.rollback()
-            return await self._upsert(client_id, remote_url, source, site_type, payload)
+        url = dist.remote_url
+        citation = citation_map.get(url)
+        return {
+            "id": str(dist.id),
+            "source": "geoflow",
+            "client_id": client_id,
+            "site_type": site_type,
+            "remote_url": url,
+            "action": dist.action,
+            "status": dist.status,
+            "channel_name": channel.name if channel else None,
+            "channel_type": channel.channel_type if channel else None,
+            "content_title": article.title if article else None,
+            "content_slug": article.slug if article else None,
+            "content_excerpt": article.excerpt if article else None,
+            "content_body": article.content if article else None,
+            "content_keywords": keywords,
+            "meta_description": article.meta_description if article else None,
+            "original_keyword": article.original_keyword if article else None,
+            "published_at": article.published_at.isoformat() if article and article.published_at else None,
+            "distributed_at": dist.created_at.isoformat() if dist.created_at else None,
+            "index_status": {
+                "baidu": index_result.baidu_status if index_result else "pending",
+                "toutiao": index_result.toutiao_status if index_result else "pending",
+                "sogou": index_result.sogou_status if index_result else "pending",
+                "so360": index_result.so360_status if index_result else "pending",
+                "bing": index_result.bing_status if index_result else "pending",
+            },
+            "citation_status": "cited" if citation and citation.get("exact", 0) > 0 else ("not_cited" if citation else "pending"),
+            "citation_exact": citation.get("exact", 0) if citation else 0,
+            "citation_total": citation.get("total", 0) if citation else 0,
+        }
 
-        return {"action": action, "client_id": client_id}
-
-    def _apply_fields(self, record: ArticleDistribution, payload, source: str, site_type: str):
-        """将 payload 内容字段应用到 record。"""
-        record.site_type = site_type
-        if payload:
-            record.geoflow_article_id = payload.geoflow_article_id
-            record.geoflow_action = payload.action
-            record.content_title = payload.content_title
-            record.content_slug = payload.content_slug
-            record.content_excerpt = payload.content_excerpt
-            record.content_body = payload.content_body
-            record.content_keywords = payload.content_keywords
-            record.meta_description = payload.meta_description
-            record.original_keyword = payload.original_keyword
-            if payload.published_at:
-                # 时区一致性：保留 ISO8601 时区信息
-                from datetime import datetime
-                record.published_at = datetime.fromisoformat(payload.published_at.replace("Z", "+00:00"))
-            record.status = payload.status if payload.status in ("synced", "failed") else "synced"
-        if source == "manual" and record.source == "geoflow":
-            record.source = "manual"  # 手动录入补充内容，source 升级为 manual
-
-    # ------------------------------------------------------------------
-    # 列表查询（JOIN 收录/采信状态）
-    # ------------------------------------------------------------------
-
-    async def list_distributions(
-        self, client_id: str | None = None, source: str | None = None, status: str | None = None
-    ) -> list[dict]:
-        """列表查询，关联 IndexResult 和 CitationResult 聚合统计。"""
-        query = select(ArticleDistribution).where(ArticleDistribution.status != "deleted")
+    async def _query_manual_distributions(self, client_id: str | None, status: str | None) -> list[dict]:
+        """查手动录入的记录。"""
+        query = select(ManualDistribution).where(ManualDistribution.status == "synced")
         if client_id:
-            query = query.where(ArticleDistribution.client_id == client_id)
-        if source:
-            query = query.where(ArticleDistribution.source == source)
-        if status:
-            query = query.where(ArticleDistribution.status == status)
-        result = await self.db.execute(query.order_by(ArticleDistribution.created_at.desc()))
+            query = query.where(ManualDistribution.client_id == client_id)
+
+        result = await self.db.execute(query)
         records = result.scalars().all()
 
-        if not records:
-            return []
-
         urls = [r.remote_url for r in records]
-        # 聚合收录状态
-        index_result = await self.db.execute(
-            select(IndexResult).where(IndexResult.url.in_(urls))
-        )
-        index_map = {r.url: r for r in index_result.scalars().all()}
-        # 聚合采信状态
-        from sqlalchemy import func
-        citation_result = await self.db.execute(
-            select(
-                CitationResult.url,
-                func.count().label("total"),
-                func.count().filter(CitationResult.hit_type == "exact").label("exact"),
-                func.max(CitationResult.checked_at).label("last_checked"),
-            )
-            .where(CitationResult.url.in_(urls))
-            .group_by(CitationResult.url)
-        )
-        citation_map = {row.url: row for row in citation_result.fetchall()}
+        index_map, citation_map = await self._aggregate_index_and_citation(urls)
 
-        return [self._serialize_with_stats(r, index_map, citation_map) for r in records]
+        return [self._serialize_manual(r, index_map, citation_map) for r in records]
 
-    def _serialize_with_stats(self, record, index_map, citation_map) -> dict:
-        index = index_map.get(record.remote_url)
-        citation = citation_map.get(record.remote_url)
-        citation_status = "pending"
-        if citation:
-            if citation.exact > 0:
-                citation_status = "cited"
-            elif citation.total > 0:
-                citation_status = "not_cited"
-        return {
-            "id": str(record.id),
-            "client_id": record.client_id,
-            "remote_url": record.remote_url,
-            "source": record.source,
-            "status": record.status,
-            "content_title": record.content_title,
-            "content_excerpt": record.content_excerpt,
-            "site_type": record.site_type,
-            "published_at": record.published_at.isoformat() if record.published_at else None,
-            "created_at": record.created_at.isoformat() if record.created_at else None,
-            "index_status": {
-                "baidu": index.baidu_status if index else "pending",
-                "toutiao": index.toutiao_status if index else "pending",
-                "sogou": index.sogou_status if index else "pending",
-                "so360": index.so360_status if index else "pending",
-                "bing": index.bing_status if index else "pending",
-                "last_checked": max(
-                    filter(None, [
-                        index.baidu_checked_at if index else None,
-                        index.toutiao_checked_at if index else None,
-                    ])
-                ).isoformat() if index else None,
-            },
-            "citation_status": citation_status,
-            "citation_exact": citation.exact if citation else 0,
-            "citation_total": citation.total if citation else 0,
-        }
+    # ... 序列化方法略
+```
+
+### 5.2 手动录入
+
+```python
+async def create_manual_distribution(
+    self, remote_url: str, admin_id: str, client_id: str | None = None, note: str | None = None
+) -> dict:
+    """运营手动录入 URL。
+
+    client_id 为 None 时自动匹配 domain。
+    """
+    if client_id is None:
+        client_id, _ = await self._match_client_by_domain(remote_url)
+
+    # 检查重复（手动表 + GEOFlow 表）
+    existing_manual = await self.db.execute(
+        select(ManualDistribution).where(
+            ManualDistribution.client_id == client_id,
+            ManualDistribution.remote_url == remote_url,
+        )
+    )
+    if existing_manual.scalar_one_or_none():
+        raise DistributionConflictError(f"URL 已存在（手动录入）：{remote_url}")
+
+    # 检查 GEOFlow 是否已推送过
+    existing_geoflow = await self.db.execute(
+        select(GeoflowArticleDistribution).where(
+            GeoflowArticleDistribution.remote_url == remote_url,
+            GeoflowArticleDistribution.status == "synced",
+        )
+    )
+    if existing_geoflow.scalar_one_or_none():
+        raise DistributionConflictError(f"URL 已存在（GEOFlow 推送）：{remote_url}")
+
+    record = ManualDistribution(
+        client_id=client_id,
+        remote_url=remote_url,
+        status="synced",
+        note=note,
+        created_by_admin_id=admin_id,
+    )
+    self.db.add(record)
+    await self.db.commit()
+    return {"action": "created", "client_id": client_id, "source": "manual"}
+```
+
+### 5.3 IndexChecker / CitationChecker 改造
+
+现有 [index_checker.py:15-25](../../../index-monitor/app/services/index_checker.py) 和 [citation_checker.py:76-95](../../../index-monitor/app/services/citation_checker.py) 从 `article_distributions` 读 URL。改造为同时读 GEOFlow 的表 + 手动录入表：
+
+```python
+# index_checker.py 改造
+async def get_pending_urls(self) -> List[Tuple[str, str]]:
+    """获取待检测 URL：GEOFlow 分发记录 + 手动录入记录。"""
+    # 1. GEOFlow 分发记录（跨 schema 查询）
+    geoflow_result = await self.db.execute(
+        select(GeoflowArticleDistribution.remote_url, ClientSite.client_id)
+        .outerjoin(ClientSite, ClientSite.domain == <domain_expr>)
+        .where(
+            GeoflowArticleDistribution.status == "synced",
+            GeoflowArticleDistribution.action != "delete",
+        )
+    )
+    distributed = {row[0]: row[1] for row in geoflow_result.fetchall()}
+
+    # 2. 手动录入记录
+    manual_result = await self.db.execute(
+        select(ManualDistribution.remote_url, ManualDistribution.client_id)
+        .where(ManualDistribution.status == "synced")
+    )
+    for row in manual_result.fetchall():
+        distributed.setdefault(row[0], row[1])  # GEOFlow 优先
+
+    # 3. 已检测的 URL
+    result = await self.db.execute(select(IndexResult.url))
+    checked_urls = {row[0] for row in result.fetchall()}
+
+    return [(url, cid) for url, cid in distributed.items() if url not in checked_urls]
 ```
 
 ---
 
-## 7. 鉴权设计
+## 6. 鉴权设计
 
-### 7.1 GEOFlow 推送：共享 API Token
+### 6.1 客户登录：现有 client JWT（无需改动）
 
-```python
-# index-monitor/app/api/deps.py 新增
-from app.core.config import settings
+复用 [deps.py:7-12](../../../index-monitor/app/api/deps.py) 的 `get_current_client_id`。客户登录后按 client_id 过滤数据。
 
-async def verify_sync_token(authorization: str = Header(...)) -> str:
-    """验证 GEOFlow 推送的 SYNC_API_TOKEN。"""
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="缺少 Bearer token")
-    token = authorization.removeprefix("Bearer ")
-    if not settings.SYNC_API_TOKEN or token != settings.SYNC_API_TOKEN:
-        raise HTTPException(status_code=401, detail="SYNC_API_TOKEN 无效")
-    return token
-```
-
-### 7.2 运营手动录入：admin JWT
+### 6.2 管理员登录：admin JWT（新增）
 
 ```python
 # index-monitor/app/api/deps.py 新增
-from app.models.admin import Admin
-
 async def get_current_admin(token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)) -> Admin:
     payload = decode_token(token)
     if payload.get("role") not in ("admin", "super_admin"):
@@ -796,25 +630,25 @@ async def get_current_super_admin(token: str = Depends(oauth2_scheme), db: Async
     return admin
 
 async def get_current_user(
-    token: str = Depends(oauth2_scheme),
-    db: AsyncSession = Depends(get_db),
-) -> Admin | Client:
-    """统一入口：admin 或 client 都能通过，调用方根据类型判断。"""
+    token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)
+) -> tuple[Admin | Client, str]:
+    """统一入口：返回 (user, role)。调用方根据 role 判断权限。"""
     payload = decode_token(token)
     role = payload.get("role", "client")
     if role in ("admin", "super_admin"):
-        return await get_current_admin(token, db)
-    return await get_current_client(token, db)
+        admin = await get_current_admin(token, db)
+        return admin, role
+    # client
+    result = await db.execute(select(Client).where(Client.client_id == payload.get("sub")))
+    client = result.scalar_one_or_none()
+    if not client or client.status != "active":
+        raise HTTPException(status_code=401, detail="客户账号不存在或已禁用")
+    return client, "client"
 ```
 
-### 7.3 客户查看：现有 client JWT
-
-无需改动，复用现有 [deps.py:7-12](../../../index-monitor/app/api/deps.py) 的 `get_current_client_id`。
-
-### 7.4 admin 登录端点
+### 6.3 admin 登录端点
 
 ```python
-# index-monitor/app/api/admin_routes.py 新增
 @router.post("/admin/auth/login")
 async def admin_login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Admin).where(Admin.username == req.username))
@@ -831,36 +665,38 @@ async def admin_login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
 
 ---
 
-## 8. 管理员端点清单
+## 7. 管理员端点清单
 
 新增 `index-monitor/app/api/admin_routes.py`，前缀 `/api/v1/admin`：
 
 | 方法 | 路径 | 鉴权 | 功能 |
 |---|---|---|---|
-| POST | `/admin/auth/login` | 公开 | admin 登录，返回 JWT（含 role） |
+| POST | `/admin/auth/login` | 公开 | admin 登录 |
 | GET | `/admin/clients` | admin | 客户列表（分页、搜索） |
-| POST | `/admin/clients` | admin | 创建客户账号（生成 client_id） |
+| POST | `/admin/clients` | admin | 创建客户账号 |
 | PUT | `/admin/clients/{id}` | admin | 更新客户（密码重置、状态） |
 | GET | `/admin/client_sites` | admin | 站点列表 |
 | POST | `/admin/client_sites` | admin | 登记站点（domain 自动标准化去 www） |
 | PUT | `/admin/client_sites/{id}` | admin | 更新站点 |
 | DELETE | `/admin/client_sites/{id}` | admin | 删除站点（软删除） |
-| GET | `/admin/distributions` | admin | 所有分发记录（跨客户，可按 client_id/source 过滤） |
-| POST | `/distributions` | admin | 手动录入 URL（[5.3 节](#53-post-apiv1distributions运营手动录入)） |
-| GET | `/admin/admins` | super_admin | admin 账号列表 |
+| GET | `/admin/distributions` | admin | 所有分发记录（跨客户） |
+| POST | `/distributions` | admin | 手动录入 URL |
+| DELETE | `/distributions/{id}` | admin | 删除手动录入的 URL |
 | POST | `/admin/admins` | super_admin | 创建 admin 账号 |
 | PUT | `/admin/admins/{id}` | super_admin | 禁用/启用 admin |
+| GET | `/admin/admins` | super_admin | admin 账号列表 |
+| POST | `/admin/exports` | admin/client | 创建导出任务 |
+| GET | `/admin/exports/{id}/download` | admin/client | 下载导出文件 |
 
-**客户站点登记 domain 标准化**（admin 写入时）：
+**客户站点 domain 标准化**（admin 写入时去 www）：
 ```python
 @router.post("/admin/client_sites")
 async def create_client_site(payload: ClientSitePayload, admin = Depends(get_current_admin), db = ...):
-    domain = DistributionSyncService._extract_domain(payload.domain)  # 标准化
-    # 检查 domain UNIQUE
+    domain = DistributionQueryService._extract_domain(payload.domain)
     existing = await db.execute(select(ClientSite).where(ClientSite.domain == domain))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail=f"域名 {domain} 已被其他客户登记")
-    site = ClientSite(client_id=payload.client_id, domain=domain, site_name=payload.site_name, ...)
+    site = ClientSite(client_id=payload.client_id, domain=domain, ...)
     db.add(site)
     await db.commit()
     return {"id": str(site.id), "domain": domain}
@@ -868,76 +704,24 @@ async def create_client_site(payload: ClientSitePayload, admin = Depends(get_cur
 
 ---
 
-## 9. 安全加固
+## 8. 监测触发机制
 
-### 9.1 推送端点限流
+### 8.1 不自动触发
 
-```python
-# index-monitor/app/api/deps.py
-from slowapi import Limiter
-from slowapi.util import get_remote_address
-
-limiter = Limiter(key_func=get_remote_address)
-
-@router.post("/distributions/sync")
-@limiter.limit("100/minute")  # 防 GEOFlow 异常批量推送
-async def sync_distribution(request: Request, ...):
-    ...
-```
-
-### 9.2 请求体大小限制
-
-```python
-# index-monitor/app/main.py 或 nginx 配置
-# FastAPI 层：限制 content_body 大小
-# nginx 层：client_max_body_size 2m;
-```
-
-在 `DistributionSyncPayload` 校验：
-```python
-from pydantic import validator
-
-class DistributionSyncPayload(BaseModel):
-    ...
-    @validator("content_body")
-    def validate_body_size(cls, v):
-        if v and len(v.encode("utf-8")) > 2_000_000:  # 2MB
-            raise ValueError("content_body 超过 2MB 限制")
-        return v
-```
-
-### 9.3 日志审计
-
-```python
-# 所有推送请求记录日志
-logger.info(
-    "sync_distribution: action=%s client_id=%s remote_url=%s source=geoflow result=%s",
-    payload.action, result.get("client_id"), payload.remote_url, result.get("action")
-)
-```
-
----
-
-## 10. 监测触发机制
-
-### 10.1 不自动触发
-
-推送后**不自动触发**收录检测和 AI 采信检测。原因：
-- 收录检测有延迟（搜索引擎需要时间收录新文章，刚发布的 URL 检测必然 not_indexed，浪费资源）
+推送/录入后**不自动触发**检测。原因：
+- 收录检测有延迟（搜索引擎需要时间收录新文章）
 - AI 采信检测成本高（调用 DeepSeek + 多个引用检测模型）
 
-### 10.2 两种触发方式
+### 8.2 两种触发方式
 
 **手动触发**（现有 [routes.py:137-156](../../../index-monitor/app/api/routes.py)）：
-- 客户/运营在 dashboard 点击"检测"按钮
 - `POST /scan/trigger/index` / `POST /scan/trigger/citation`
 
-**定时触发**（新增）：
+**定时触发**（新增 APScheduler）：
 - 每日凌晨 02:00 定时检测所有 `status='synced'` 且超过 24h 的 URL
-- 使用 APScheduler 或 cron + Artisan 命令
 
 ```python
-# index-monitor/app/services/scheduler.py 新增
+# index-monitor/app/services/scheduler.py
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 scheduler = AsyncIOScheduler()
@@ -951,58 +735,219 @@ async def daily_index_check():
 
 ---
 
-## 11. 反向同步扩展点（预留，本期不实现）
+## 9. 监测结果导出（PDF/Excel）
 
-本期不做监测系统 → GEOFlow 的反向同步。但预留扩展点：
+### 9.1 导出类型
 
-**方案**：GEOFlow 后台通过 iframe 嵌入监测系统 dashboard
-- GEOFlow 后台文章详情页加"查看监测"按钮
-- 点击后 iframe 嵌入 `https://monitor.zkeeeai.com/embed/distributions?article_id={geoflow_article_id}`
-- 监测系统新增 `/embed/distributions` 端点，支持按 geoflow_article_id 查询
-- 鉴权：使用一次性 token 或共享 secret（避免暴露 client JWT）
+| 格式 | 用途 | 技术栈 |
+|---|---|---|
+| Excel | 明细数据导出（收录明细、采信明细），运营分析用 | `openpyxl` |
+| PDF | 完整报告（含图表、摘要），客户给老板看 | `weasyprint`（HTML→PDF） |
 
-**未来扩展**：如果需要 GEOFlow 后台显示监测数据摘要，监测系统可提供只读 API：
+### 9.2 导出报表内容
+
+**Excel 报表**（多 sheet）：
+- Sheet 1「分发记录」：URL、标题、来源、客户、渠道、发布时间
+- Sheet 2「收录检测」：URL、百度/头条/搜狗/360/必应状态、检测时间
+- Sheet 3「AI 采信」：URL、模型、问题、命中类型、检测时间
+- Sheet 4「汇总统计」：总分发数、收录率、采信率、各引擎收录数
+
+**PDF 报告**（HTML 模板 → PDF）：
+- 封面：客户名、报告周期、生成时间
+- 摘要：收录率、采信率、趋势
+- 图表：ECharts 截图（前端生成 PNG 后嵌入）或 matplotlib 生成
+- 明细表：关键 URL 的收录和采信详情
+- 结论建议
+
+### 9.3 实现方案
+
+**异步导出**（避免大文件阻塞 API）：
+1. 客户/admin 点击"导出" → `POST /admin/exports` 创建 `export_tasks` 记录
+2. 后台任务处理（APScheduler 或 BackgroundTasks）：
+   - 查询数据
+   - 生成文件（openpyxl / weasyprint）
+   - 保存到 `/app/exports/{task_id}.xlsx`
+   - 更新 `export_tasks.status = 'completed'`
+3. 用户轮询 `GET /admin/exports/{id}` 获取状态
+4. 完成后 `GET /admin/exports/{id}/download` 下载
+
+```python
+# index-monitor/app/services/export_service.py
+class ExportService:
+    async def create_excel(self, task: ExportTask, db: AsyncSession) -> str:
+        wb = openpyxl.Workbook()
+        distributions = await DistributionQueryService(db).list_distributions(task.client_id)
+
+        # Sheet 1: 分发记录
+        ws1 = wb.active
+        ws1.title = "分发记录"
+        ws1.append(["URL", "标题", "来源", "客户", "渠道", "渠道类型", "发布时间", "收录状态", "采信状态"])
+        for d in distributions:
+            ws1.append([
+                d["remote_url"], d["content_title"], d["source"], d["client_id"],
+                d.get("channel_name"), d.get("channel_type"), d.get("published_at"),
+                d.get("index_status", {}).get("baidu"), d.get("citation_status"),
+            ])
+
+        # Sheet 2: 收录检测明细
+        ws2 = wb.create_sheet("收录检测")
+        ws2.append(["URL", "百度", "头条", "搜狗", "360", "必应", "最后检测时间"])
+        for d in distributions:
+            idx = d.get("index_status", {})
+            ws2.append([d["remote_url"], idx.get("baidu"), idx.get("toutiao"), idx.get("sogou"), idx.get("so360"), idx.get("bing"), d.get("distributed_at")])
+
+        # Sheet 3: AI 采信明细（查 citation_results 原始记录）
+        ws3 = wb.create_sheet("AI采信")
+        ws3.append(["URL", "模型", "问题", "命中类型", "检测时间"])
+        urls = [d["remote_url"] for d in distributions]
+        citations = await db.execute(
+            select(CitationResult).where(CitationResult.url.in_(urls)).order_by(CitationResult.checked_at.desc())
+        )
+        for c in citations.scalars().all():
+            ws3.append([c.url, c.model, c.question, c.hit_type, c.checked_at.isoformat() if c.checked_at else None])
+
+        # Sheet 4: 汇总统计
+        ws4 = wb.create_sheet("汇总统计")
+        total = len(distributions)
+        indexed = sum(1 for d in distributions if any(v == "indexed" for v in d.get("index_status", {}).values()))
+        cited = sum(1 for d in distributions if d.get("citation_status") == "cited")
+        ws4.append(["指标", "数值"])
+        ws4.append(["总分发数", total])
+        ws4.append(["已收录数", indexed])
+        ws4.append(["收录率", f"{indexed/total*100:.1f}%" if total else "0%"])
+        ws4.append(["AI采信数", cited])
+        ws4.append(["采信率", f"{cited/total*100:.1f}%" if total else "0%"])
+
+        file_path = f"/app/exports/{task.id}.xlsx"
+        wb.save(file_path)
+        return file_path
+
+    async def create_pdf(self, task: ExportTask, db: AsyncSession) -> str:
+        distributions = await DistributionQueryService(db).list_distributions(task.client_id)
+        # 渲染 HTML 模板（含封面/摘要/图表占位/明细表）
+        html = render_template("report.html", distributions=distributions, task=task,
+                               summary=self._calc_summary(distributions))
+        file_path = f"/app/exports/{task.id}.pdf"
+        weasyprint.HTML(string=html).write_pdf(file_path)
+        return file_path
+
+    def _calc_summary(self, distributions) -> dict:
+        total = len(distributions)
+        indexed = sum(1 for d in distributions if any(v == "indexed" for v in d.get("index_status", {}).values()))
+        cited = sum(1 for d in distributions if d.get("citation_status") == "cited")
+        return {"total": total, "indexed": indexed, "cited": cited,
+                "index_rate": indexed/total if total else 0, "citation_rate": cited/total if total else 0}
 ```
-GET /api/v1/external/articles/{geoflow_article_id}/stats
-  → { index_rate, citation_rate, last_checked }
+
+### 9.4 前端导出交互
+
+```vue
+<!-- dashboard/src/views/Distributions.vue -->
+<template>
+  <el-button type="primary" @click="showExportDialog = true">
+    <el-icon><Download /></el-icon> 导出报告
+  </el-button>
+
+  <el-dialog v-model="showExportDialog" title="导出报告">
+    <el-form>
+      <el-form-item label="格式">
+        <el-radio-group v-model="exportForm.type">
+          <el-radio label="excel">Excel 明细</el-radio>
+          <el-radio label="pdf">PDF 报告</el-radio>
+        </el-radio-group>
+      </el-form-item>
+      <el-form-item label="时间范围">
+        <el-date-picker v-model="exportForm.dateRange" type="daterange" />
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="showExportDialog = false">取消</el-button>
+      <el-button type="primary" @click="submitExport">生成报告</el-button>
+    </template>
+  </el-dialog>
+</template>
 ```
 
 ---
 
-## 12. Dashboard UI 设计规范（风格 A：专业数据中台）
+## 10. 多渠道分发扩展
 
-### 12.1 技术栈
+### 10.1 现有渠道支持
 
-现有：Vue 3 + Element Plus + ECharts + Vite + Vuex + Vue Router
+GEOFlow 已支持 3 种渠道类型（[DistributionChannel.php:418-423](../../../GEOFlow-main/app/Models/DistributionChannel.php)）：
+- `geoflow_agent`：GEOFlow 自有代理
+- `wordpress_rest`：WordPress REST API
+- `generic_http_api`：通用 HTTP API
 
-### 12.2 整体布局
+### 10.2 本期实现范围
+
+**监测系统侧**（本期做）：
+- domain 匹配逻辑适配所有渠道类型（`generic_http_api` 的 remote_url 格式可能多样）
+- 导出报表显示渠道类型
+- dashboard 列表显示渠道名称
+
+**GEOFlow 侧**（本期做框架，具体 publisher 后续）：
+- 文档说明如何新增渠道 publisher
+- `generic_http_api` 渠道配置示例（适配有 API 的平台）
+
+### 10.3 新增渠道 publisher 的步骤（GEOFlow 侧）
+
+1. 在 [DistributionChannel.php](../../../GEOFlow-main/app/Models/DistributionChannel.php) 的 `channelType()` 方法加新类型常量
+2. 创建新 Publisher 类（继承现有 Publisher 基类），实现 `publish()`/`update()`/`delete()` 方法
+3. 在 [DistributionPublisherManager.php](../../../GEOFlow-main/app/Services/GeoFlow/DistributionPublisherManager.php) 注册新 Publisher
+4. 配置 `channel_config` 选项（API URL、认证方式等）
+
+### 10.4 头条/知乎等平台调研（后续任务）
+
+**难点**：各平台是否有公开的内容发布 API？
+
+| 平台 | API 现状 | 可行性 |
+|---|---|---|
+| WordPress | REST API 完善 | ✅ 已支持 |
+| 微信公众号 | 有素材管理 API，但受限 | ⚠️ 需调研 |
+| 头条号 | 无公开内容发布 API | ❌ 可能需爬虫（违反 ToS） |
+| 知乎 | 无公开内容发布 API | ❌ 可能需爬虫（违反 ToS） |
+| 百家号 | 无公开内容发布 API | ❌ 可能需爬虫（违反 ToS） |
+
+**本期不实现爬虫方式发布**（法律风险）。仅支持有合法 API 的平台，通过 `generic_http_api` 适配。
+
+---
+
+## 11. Dashboard UI 设计规范（风格 A：专业数据中台）
+
+### 11.1 技术栈
+
+现有：Vue 3 + Element Plus + ECharts + Vite + Vuex + Vue Router。无新增前端依赖。
+
+### 11.2 整体布局
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │ [深色侧边栏 240px]  │  [顶部导航 64px]                       │
-│                     │  面包屑 | 搜索 | 🔔 | 👤 客户A ▼      │
+│                     │  面包屑 | 搜索 | 🔔 | 👤 用户 ▼        │
 │  🌐 知氪AI监测       ├────────────────────────────────────────┤
 │                     │                                        │
 │  📊 数据总览         │  [内容区，浅色背景 #f5f7fa]            │
 │  📝 分发记录         │                                        │
 │  🔍 收录检测         │  ┌──────────────────────────────┐     │
 │  📈 AI采信检测       │  │  统计卡片行（4 个卡片）       │     │
-│  📋 检测报告         │  │  收录率 | 采信率 | 分发数 | 待检测 │ │
-│  ⚙️ 系统设置         │  └──────────────────────────────┘     │
-│                     │                                        │
-│  ─────────          │  ┌──────────────────────────────┐     │
-│  站点筛选 ▼         │  │  ECharts 折线图：收录趋势     │     │
-│   • zkeeeai.com     │  │  （近 30 天）                 │     │
-│   • blog.example    │  └──────────────────────────────┘     │
-│                     │                                        │
-│  ─────────          │  ┌──────────────────────────────┐     │
-│  👤 客户切换 ▼      │  │  分发记录表格                 │     │
-│  (仅 admin 可见)    │  │  标题|URL|来源|收录|采信|操作 │     │
+│  📋 检测报告         │  │  收录率 | 采信率 | 分发数 | 待检测 │
+│  📤 导出报告         │  └──────────────────────────────┘     │
+│  ⚙️ 系统设置         │                                        │
+│                     │  ┌──────────────────────────────┐     │
+│  ─────────          │  │  ECharts 折线图：收录趋势     │     │
+│  站点筛选 ▼         │  │  （近 30 天）                 │     │
+│   • zkeeeai.com     │  └──────────────────────────────┘     │
+│   • blog.example    │                                        │
+│                     │  ┌──────────────────────────────┐     │
+│  ─────────          │  │  分发记录表格                 │     │
+│  👤 客户切换 ▼      │  │  标题|URL|来源|渠道|收录|采信|操作│ │
+│  (仅 admin 可见)    │  │  [导出报告] 按钮              │     │
 │                     │  └──────────────────────────────┘     │
 └─────────────────────┴────────────────────────────────────────┘
 ```
 
-### 12.3 配色规范
+### 11.3 配色规范
 
 ```scss
 // 侧边栏（深色）
@@ -1017,7 +962,7 @@ $card-bg: #ffffff;
 $border-color: #e8e8e8;
 
 // 品牌色
-$primary: #1890ff;       // Element Plus 默认蓝
+$primary: #1890ff;
 $success: #52c41a;       // 已收录/已采信
 $warning: #faad14;       // 部分收录
 $error: #f5222d;         // 未收录/失败
@@ -1028,24 +973,17 @@ $text-secondary: #595959;
 $text-tertiary: #8c8c8c;
 ```
 
-### 12.4 组件规范
+### 11.4 组件规范
 
 **统计卡片**：白色背景 + 圆角 8px + 柔和阴影 + 大数字 + 趋势箭头
-```vue
-<el-card class="stat-card" shadow="hover">
-  <div class="stat-label">收录率</div>
-  <div class="stat-value">87%</div>
-  <div class="stat-trend trend-up">↑ 5% 本周</div>
-</el-card>
-```
 
 **数据表格**：Element Plus Table + 状态标签
-- 收录状态：`<el-tag type="success">已收录</el-tag>` / `<el-tag type="danger">未收录</el-tag>` / `<el-tag type="warning">部分</el-tag>`
+- 收录状态：`<el-tag type="success">已收录</el-tag>` / `<el-tag type="danger">未收录</el-tag>`
 - 来源：`<el-tag type="info">GEOFlow</el-tag>` / `<el-tag type="warning">手动</el-tag>`
 
 **图表**：ECharts 折线图（收录趋势）、饼图（采信分布）、柱状图（各搜索引擎收录对比）
 
-### 12.5 登录页设计
+### 11.5 登录页设计
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -1066,55 +1004,47 @@ $text-tertiary: #8c8c8c;
 │                    │   ┌─────────────────────────────┐      │
 │                    │   │        登  录               │      │
 │                    │   └─────────────────────────────┘      │
-│                    │                                         │
-│                    │   忘记密码？                            │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 **登录页区分**：
 - 客户登录：`/login`（client JWT）
 - 管理员登录：`/admin/login`（admin JWT，含 role）
-- 两个登录页共用相同视觉风格，但路由和鉴权独立
+- 两个登录页共用相同视觉风格，路由和鉴权独立
 
-### 12.6 客户多站点分组展示
+### 11.6 客户多站点分组展示
 
 - 侧边栏底部"站点筛选"下拉框，默认"全部站点"
-- 选择具体站点后，所有数据按 `client_sites.site_type` 或 domain 过滤
-- 统计卡片和图表跟随筛选更新
+- 选择具体站点后，所有数据按 `client_sites.domain` 或 `site_type` 过滤
 
 ---
 
-## 13. 错误监控告警
+## 12. 官网管理入口
 
-### 13.1 GEOFlow 侧
+### 12.1 入口设计
 
-后台新增"同步失败记录"页面（admin 登录后可见）：
-- 查询 `article_distributions WHERE last_error_message IS NOT NULL AND attempt_count >= 3`
-- 显示：分发 ID、文章标题、remote_url、失败原因、最后尝试时间
-- 提供"重新同步"按钮（重新 dispatch ProcessArticleDistributionJob）
+**官网首页（zkeeeai.com）添加入口**：
 
-### 13.2 监测系统侧
+1. **顶部导航栏右侧**：「监测平台」链接 → `https://monitor.zkeeeai.com/login`（客户登录）
+2. **底部页脚**：「管理员入口」链接 → `https://monitor.zkeeeai.com/admin/login`（管理员登录，低调放置）
+3. **GEOFlow 后台菜单**：新增「监测系统」菜单项 → 新窗口打开 `https://monitor.zkeeeai.com`（你日常从 GEOFlow 后台跳转）
 
-- 推送端点异常日志（5xx 错误）
-- domain 未登记告警（统计未登记 domain，提示运营补登记）
-- 接收量异常告警（推送量突增/突降）
+### 12.2 实现方式
 
----
+**GEOFlow 前端**（zkeeeai.com）：
+- 在模板文件加链接（Laravel blade 模板）
+- 不需要鉴权，只是跳转链接
 
-## 14. 时区一致性
-
-- GEOFlow `published_at`：Carbon datetime → `toIso8601String()` 输出 `2026-07-25T10:00:00+08:00`
-- 监测系统解析：`datetime.fromisoformat(payload.published_at.replace("Z", "+00:00"))`，保留时区
-- DB 存储：`DateTime(timezone=True)`，PostgreSQL 存储为 timestamptz
-- 展示：前端用 dayjs 转换为用户本地时区显示
+**dashboard 前端**（monitor.zkeeeai.com）：
+- `/login` 客户登录页
+- `/admin/login` 管理员登录页
+- 登录后根据 role 跳转不同主页
 
 ---
 
-## 15. 测试策略（TDD）
+## 13. 测试策略（TDD）
 
-遵循 project_memory 约束"测试先于实现"和用户偏好"TDD approach"。
-
-### 15.1 监测系统侧测试（pytest）
+### 13.1 监测系统侧测试（pytest）
 
 ```
 index-monitor/tests/
@@ -1122,260 +1052,257 @@ index-monitor/tests/
 │   ├── test_domain_matcher.py
 │   │   - test_extract_domain_strips_www
 │   │   - test_extract_domain_lowercase
-│   │   - test_extract_domain_handles_no_host
 │   │   - test_match_client_by_domain_success
 │   │   - test_match_client_by_domain_not_registered_raises
-│   │   - test_match_client_by_domain_inactive_site_ignored
-│   ├── test_distribution_sync_service.py
-│   │   - test_ingest_geoflow_publish_creates_new_record
-│   │   - test_ingest_geoflow_update_existing_record
-│   │   - test_ingest_geoflow_delete_soft_deletes_record
-│   │   - test_ingest_geoflow_delete_by_article_id
-│   │   - test_ingest_manual_creates_new_record
-│   │   - test_upsert_skip_when_manual_exists_and_geoflow_push
-│   │   - test_upsert_manual_overwrites_geoflow
-│   │   - test_upsert_manual_conflict_raises_409
-│   │   - test_concurrent_upsert_catches_integrity_error
-│   │   - test_keywords_array_conversion
-│   ├── test_sync_token_auth.py
-│   │   - test_valid_token_passes
-│   │   - test_missing_token_returns_401
-│   │   - test_invalid_token_returns_401
+│   ├── test_distribution_query_service.py
+│   │   - test_list_distributions_geoflow_only
+│   │   - test_list_distributions_manual_only
+│   │   - test_list_distributions_both_sources
+│   │   - test_list_distributions_filtered_by_client
+│   │   - test_list_distributions_includes_index_stats
+│   │   - test_list_distributions_includes_citation_stats
+│   ├── test_manual_distribution.py
+│   │   - test_create_manual_distribution_success
+│   │   - test_create_manual_duplicate_url_raises_409
+│   │   - test_create_manual_url_exists_in_geoflow_raises_409
 │   ├── test_admin_auth.py
 │   │   - test_admin_login_returns_jwt_with_role
 │   │   - test_super_admin_can_create_admin
 │   │   - test_admin_cannot_create_admin
 │   │   - test_disabled_admin_cannot_login
-│   └── test_payload_validation.py
-│       - test_content_body_over_2mb_rejected
-│       - test_action_delete_without_url_or_article_id_skipped
+│   ├── test_export_service.py
+│   │   - test_create_excel_generates_valid_file
+│   │   - test_create_pdf_generates_valid_file
+│   │   - test_export_task_status_transitions
+│   │   - test_export_filters_by_date_range
+│   └── test_cross_schema_query.py
+│       - test_geoflow_article_distribution_readable
+│       - test_join_geoflow_with_monitor_client_sites
+│       - test_keywords_json_parsed_to_array
 ├── integration/
-│   ├── test_sync_endpoint.py
-│   │   - test_sync_creates_record_with_full_fields
-│   │   - test_sync_domain_not_registered_returns_400
-│   │   - test_sync_duplicate_url_idempotent
-│   │   - test_sync_update_existing_record
-│   │   - test_sync_delete_removes_record
-│   │   - test_batch_sync_endpoint
-│   ├── test_manual_endpoint.py
-│   │   - test_manual_create_requires_admin_auth
-│   │   - test_manual_create_with_unregistered_domain_returns_400
-│   │   - test_manual_create_duplicate_url_returns_409
-│   ├── test_distributions_list.py
+│   ├── test_distributions_endpoint.py
 │   │   - test_admin_sees_all_distributions
 │   │   - test_client_sees_only_own_distributions
-│   │   - test_distributions_include_index_and_citation_stats
-│   └── test_admin_endpoints.py
-│       - test_create_client_site_normalizes_domain
-│       - test_create_client_site_duplicate_domain_returns_409
+│   │   - test_distributions_include_geoflow_and_manual
+│   ├── test_admin_endpoints.py
+│   │   - test_create_client_site_normalizes_domain
+│   │   - test_create_client_site_duplicate_domain_returns_409
+│   ├── test_export_endpoints.py
+│   │   - test_create_export_task_returns_task_id
+│   │   - test_download_completed_export
+│   │   - test_download_pending_export_returns_409
+│   └── test_manual_endpoint.py
+│       - test_manual_create_requires_admin_auth
+│       - test_manual_create_with_unregistered_domain_returns_400
 └── e2e/
-    └── test_geoflow_to_monitor_sync.py
-        - test_pushed_record_visible_to_index_checker
-        - test_pushed_record_visible_to_citation_checker
-        - test_deleted_record_skipped_by_index_checker
-        - test_pushed_record_visible_in_dashboard_list
+    └── test_unified_db_flow.py
+        - test_geoflow_distribution_visible_to_index_checker
+        - test_geoflow_distribution_visible_to_citation_checker
+        - test_manual_distribution_visible_to_index_checker
+        - test_deleted_geoflow_distribution_skipped
+        - test_export_contains_both_geoflow_and_manual_records
 ```
 
-### 15.2 GEOFlow 侧测试（PHPUnit）
+### 13.2 端到端验证
 
 ```
-GEOFlow-main/tests/Unit/Services/GeoFlow/
-├── MonitorSyncClientTest.php
-│   - test_build_payload_includes_all_article_fields
-│   - test_build_payload_converts_keywords_json_to_array
-│   - test_build_payload_converts_keywords_comma_string_to_array
-│   - test_push_success_when_monitor_returns_200
-│   - test_push_throws_exception_on_4xx
-│   - test_push_throws_exception_on_5xx
-│   - test_push_throws_exception_on_timeout
-└── ProcessArticleDistributionJobTest.php
-    - test_job_calls_monitor_sync_when_status_synced
-    - test_job_does_not_sync_when_status_queued
-    - test_job_retries_on_sync_failure
-    - test_job_delete_action_calls_sync
-
-GEOFlow-main/tests/Feature/Console/Commands/
-└── SyncHistoryToMonitorCommandTest.php
-    - test_command_syncs_history_in_batches
-    - test_command_dry_run_does_not_push
-    - test_command_respects_days_option
-```
-
-### 15.3 端到端验证（手动 + 脚本）
-
-```
-deploy/scripts/test-db-sync-e2e.sh
+deploy/scripts/test-unified-db-e2e.sh
 ```
 
 验证步骤：
-1. GEOFlow 后台发布文章到 WordPress → status='synced'
-2. 验证监测系统 article_distributions 表新增记录（source='geoflow'，字段完整）
-3. dashboard 用 admin 登录 → 看到该分发记录
-4. dashboard 用 client 登录（对应 domain）→ 看到该分发记录
-5. 触发收录检测 → IndexChecker 读到该 URL
-6. 触发 AI 采信检测 → CitationChecker 读到该 URL
-7. GEOFlow 更新文章内容重新发布 → 监测系统记录被更新
-8. GEOFlow 删除文章 → 监测系统记录 status='deleted'，IndexChecker 跳过
-9. 运营手动录入同一 URL → 409 冲突提示
-10. 运营手动录入新 URL（domain 已登记）→ 创建成功，source='manual'
-11. 运营手动录入新 URL（domain 未登记）→ 400 错误提示
-12. 历史数据迁移：`php artisan geoflow:sync-monitor --days=30` → 监测系统批量接收
+1. GEOFlow 发布文章到 WordPress → `public.article_distributions` 新增记录
+2. 监测系统查询 `/distributions` → 看到 GEOFlow 推送的记录（跨 schema JOIN）
+3. dashboard 用 admin 登录 → 看到所有分发记录
+4. dashboard 用 client 登录 → 只看到自己 domain 的记录
+5. 触发收录检测 → IndexChecker 读到 GEOFlow 的 URL
+6. 触发 AI 采信检测 → CitationChecker 读到 GEOFlow 的 URL
+7. GEOFlow 删除文章 → 监测系统查询时自动看不到（无需同步删除）
+8. 运营手动录入 URL → 创建到 `monitor.manual_distributions`
+9. 运营手动录入已存在的 URL → 409 冲突
+10. 导出 Excel → 下载文件包含所有 sheet
+11. 导出 PDF → 下载文件包含图表和摘要
+12. 官网点击"监测平台" → 跳转到客户登录页
+13. 官网点击"管理员入口" → 跳转到管理员登录页
 
 ---
 
-## 16. 部署配置
+## 14. 部署配置
 
-### 16.1 新增配置项
+### 14.1 新增配置项
 
 遵循 project_memory 硬约束"API keys must not be hardcoded, use .env.prod"。
 
-`.env.prod`（GEOFlow 侧）：
-```
-MONITOR_SYNC_API_URL=https://monitor.zkeeeai.com
-MONITOR_SYNC_API_TOKEN=<部署时 openssl rand -hex 32 生成>
-```
-
 `.env.prod`（监测系统侧）：
 ```
-SYNC_API_TOKEN=<与 GEOFlow 侧 MONITOR_SYNC_API_TOKEN 相同>
-ADMIN_JWT_SECRET=<部署时生成，可与 client JWT_SECRET 相同或独立>
+# 改为连 GEOFlow 的 PG
+POSTGRES_HOST=geoflow-postgres       # GEOFlow 的 PG 容器名
+POSTGRES_PORT=5432
+POSTGRES_DB=${GEOFLOW_DB_NAME}       # GEOFlow 的 database name
+POSTGRES_USER=${GEOFLOW_DB_USER}
+POSTGRES_PASSWORD=${GEOFLOW_DB_PASSWORD}
+MONITOR_SCHEMA=monitor               # 监测系统的 schema 名
+ADMIN_JWT_SECRET=<部署时生成>
 ```
 
-### 16.2 依赖项安装
+### 14.2 依赖项安装
 
 **监测系统侧 Python 依赖**（`index-monitor/requirements.txt` 新增）：
 ```
-slowapi>=0.1.9        # 限流（第 9.1 节）
-apscheduler>=3.10.0   # 定时任务（第 10.2 节）
+openpyxl>=3.1.0        # Excel 导出（第 9 节）
+weasyprint>=60.0       # PDF 导出（第 9 节）
+apscheduler>=3.10.0    # 定时任务（第 8 节）
 ```
 
-**GEOFlow 侧 PHP 依赖**：无新增（`laravel/http` 已内置，现有项目已有 HTTP 客户端）。
+**GEOFlow 侧 PHP 依赖**：无新增。
 
-**Dashboard 前端依赖**：无新增（现有 Element Plus + ECharts 足够，仅需定制主题）。
+**Dashboard 前端依赖**：无新增（现有 Element Plus + ECharts 足够）。
 
-部署脚本需在 `pip install -r requirements.txt` 步骤后确保新依赖被安装。
+### 14.3 docker-compose 变更
 
-### 16.3 部署脚本更新
+**docker-compose.prod.yml**：
+- 删除 `postgres` 服务（geo-postgres，废弃）
+- `index-monitor` 服务的 `POSTGRES_HOST` 改为 GEOFlow 的 PG 容器名
+- `index-monitor` 加入 GEOFlow 的 docker network（或用 external network）
+- 保留 `redis` 服务
 
-- `deploy/scripts/deploy-geoflow.sh`：注入 `MONITOR_SYNC_API_URL` + `MONITOR_SYNC_API_TOKEN`
-- `deploy/scripts/deploy-lumora-cite.sh`：注入 `SYNC_API_TOKEN` + `ADMIN_JWT_SECRET`
-- 两个 token 必须一致，部署脚本里用同一个变量源（避免不一致）
+**GEOFlow 的 docker-compose.yml**：
+- 无变更（GEOFlow 不感知监测系统）
+- 确保 PG 容器对监测系统容器可见（网络配置）
 
-### 16.4 DB 迁移
+### 14.4 DB 迁移
 
 **监测系统侧**（新建 Alembic 迁移）：
 ```bash
 cd index-monitor
-alembic revision --autogenerate -m "add sync fields to article_distributions, create admins table, add domain unique"
+# 1. 创建 monitor schema
+alembic revision -m "create monitor schema and migrate tables"
+# 迁移内容：
+#   - CREATE SCHEMA IF NOT EXISTS monitor;
+#   - 所有监测系统表 ALTER SET SCHEMA monitor
+#   - 新建 monitor.admins 表
+#   - 新建 monitor.manual_distributions 表
+#   - 新建 monitor.export_tasks 表
+#   - client_sites.domain 加 UNIQUE 约束
 alembic upgrade head
 ```
 
-迁移内容：
-1. `article_distributions` 加字段：source, geoflow_article_id, geoflow_action, content_title, content_slug, content_excerpt, content_body, content_keywords, meta_description, original_keyword, site_type, published_at
-2. `article_distributions` 加唯一约束：`uq_distributions_client_url (client_id, remote_url)`
-3. 新建 `admins` 表
-4. `client_sites` 加唯一约束：`client_sites_domain_unique_key (domain)`
-
 **GEOFlow 侧**：无 DB schema 变更。
 
-### 16.5 Docker 网络
+### 14.5 数据迁移流程（生产环境）
 
-- GEOFlow 推送走 HTTPS（`https://monitor.zkeeeai.com`），不依赖容器网络互通
-- 监测系统接收端点通过现有 nginx 暴露（已有 nginx 配置）
-- 无需修改 docker-compose.prod.yml 的网络配置
-
-### 16.6 nginx 配置
-
-现有 nginx 已配置 `monitor.zkeeeai.com` 路由到 index-monitor，无需改动。需确认：
-- `client_max_body_size 2m;`（限制推送请求体大小）
-- 限流配置（`limit_req_zone` 防 GEOFlow 异常批量推送）
+1. 备份监测系统现有 PG（虽然表基本为空）
+2. 在 GEOFlow 的 PG 创建 `monitor` schema
+3. 运行监测系统的 Alembic 迁移（连 GEOFlow 的 PG）
+4. 更新监测系统的 `.env.prod` 指向 GEOFlow 的 PG
+5. 重启监测系统容器
+6. 验证跨 schema 查询正常
+7. 废弃监测系统的 `postgres:15-alpine` 容器
 
 ---
 
-## 17. 实现顺序（TDD）
+## 15. 实现顺序（TDD）
 
-遵循"测试先于实现"原则，按依赖顺序实现：
+### Phase 1：数据库统一（基础）
+1. 写 monitor schema 创建迁移 + 测试
+2. 写监测系统表迁移到 monitor schema + 测试
+3. 写跨 schema 查询模型（GeoflowArticle/Distribution/Channel）+ 测试
+4. 改监测系统的 database.py 连接配置 + 测试
+5. 本地验证跨 schema JOIN 查询
 
-### Phase 1：监测系统侧基础（数据模型 + 鉴权）
-1. 写 admins 表迁移 + 模型 + 测试
-2. 写 article_distributions 扩展迁移 + 模型 + 测试
-3. 写 client_sites.domain UNIQUE 约束迁移 + 测试
-4. 写 admin JWT 鉴权（登录 + get_current_admin + get_current_super_admin）+ 测试
-5. 写 SYNC_API_TOKEN 鉴权 + 测试
+### Phase 2：鉴权与数据模型
+6. 写 admins 表迁移 + 模型 + 测试
+7. 写 manual_distributions 表迁移 + 模型 + 测试
+8. 写 export_tasks 表迁移 + 模型 + 测试
+9. 写 admin JWT 鉴权（登录 + get_current_admin + get_current_super_admin）+ 测试
+10. 写 client_sites.domain UNIQUE 约束 + 测试
 
-### Phase 2：监测系统侧核心服务
-6. 写 DistributionSyncService._extract_domain + 测试
-7. 写 DistributionSyncService._match_client_by_domain + 测试
-8. 写 DistributionSyncService._upsert（publish/update）+ 测试
-9. 写 DistributionSyncService._handle_delete + 测试
-10. 写 DistributionSyncService.ingest_manual + 测试
-11. 写 DistributionSyncService.list_distributions（JOIN 收录/采信）+ 测试
+### Phase 3：核心查询服务
+11. 写 DistributionQueryService._extract_domain + 测试
+12. 写 DistributionQueryService._query_geoflow_distributions（跨 schema JOIN）+ 测试
+13. 写 DistributionQueryService._query_manual_distributions + 测试
+14. 写 DistributionQueryService.list_distributions（合并查询）+ 测试
+15. 写 DistributionQueryService.create_manual_distribution + 测试
 
-### Phase 3：监测系统侧端点
-12. 写 POST /distributions/sync 端点 + 集成测试
-13. 写 POST /distributions/sync/batch 端点 + 集成测试
-14. 写 POST /distributions（手动录入）端点 + 集成测试
-15. 写 GET /distributions 端点 + 集成测试
-16. 写 admin 端点（clients/client_sites/distributions/admins）+ 集成测试
-17. 写限流 + 请求体校验 + 日志审计
+### Phase 4：IndexChecker/CitationChecker 改造
+16. 改 IndexChecker.get_pending_urls 读 GEOFlow + 手动表 + 测试
+17. 改 CitationChecker.get_pending_urls 读 GEOFlow + 手动表 + 测试
+18. 验证收录检测和 AI 采信检测正常工作
 
-### Phase 4：GEOFlow 侧推送
-18. 写 MonitorSyncClient::buildPayload + 测试（含 keywords 格式适配）
-19. 写 MonitorSyncClient::push + 测试（成功/4xx/5xx/超时）
-20. 修改 ProcessArticleDistributionJob 调用推送 + 测试
-21. 写 SyncHistoryToMonitorCommand + 测试
+### Phase 5：管理员端点
+19. 写 admin 登录端点 + 测试
+20. 写 admin 端点（clients/client_sites/distributions/admins）+ 测试
+21. 写手动录入端点 POST /distributions + 测试
+22. 写 domain 标准化（去 www）+ 测试
 
-### Phase 5：Dashboard 前端
-22. 改造登录页（风格 A）+ 客户登录 / admin 登录
-23. 改造数据总览页（统计卡片 + ECharts 图表）
-24. 新增分发记录页（表格 + 收录/采信状态）
-25. 新增站点筛选 + 客户切换（admin）
+### Phase 6：监测结果导出
+23. 写 ExportService.create_excel + 测试
+24. 写 ExportService.create_pdf + 测试
+25. 写导出端点（POST /admin/exports + GET download）+ 测试
+26. 写导出任务后台处理 + 测试
 
-### Phase 6：定时任务 + 端到端
-26. 写定时收录检测任务
-27. 写端到端测试脚本 `test-db-sync-e2e.sh`
-28. 本地完整测试 → 云端部署 → 生产验证
+### Phase 7：Dashboard 前端
+27. 改造登录页（风格 A）+ 客户登录 / admin 登录
+28. 改造数据总览页（统计卡片 + ECharts 图表）
+29. 新增分发记录页（表格 + 收录/采信状态 + 来源标签）
+30. 新增导出报告功能（导出对话框 + 下载）
+31. 新增站点筛选 + 客户切换（admin）
+
+### Phase 8：官网入口 + 定时任务 + 端到端
+32. 官网首页加监测平台入口 + 管理员入口
+33. GEOFlow 后台加监测系统菜单
+34. 写定时收录检测任务
+35. 写端到端测试脚本 `test-unified-db-e2e.sh`
+36. 本地完整测试 → 云端部署 → 生产验证
 
 ---
 
-## 18. 验收标准
+## 16. 验收标准
 
-1. GEOFlow 发布文章到 WordPress → 监测系统 article_distributions 表新增记录，字段完整
-2. GEOFlow 更新文章 → 监测系统记录被更新（content_body 等字段刷新）
-3. GEOFlow 删除文章 → 监测系统记录 status='deleted'，IndexChecker/CitationChecker 跳过
+1. 监测系统连 GEOFlow 的 PG，跨 schema 查询 `public.article_distributions` 正常
+2. GEOFlow 发布文章 → 监测系统 `/distributions` 端点实时看到记录（无同步延迟）
+3. GEOFlow 删除文章 → 监测系统查询时自动看不到（无需同步删除逻辑）
 4. 运营 admin 登录 → 看到所有客户的所有分发记录
 5. 客户 client 登录 → 只看到自己 client_id 下的分发记录
 6. 运营手动录入 URL（domain 已登记）→ 创建成功，source='manual'
-7. 运营手动录入 URL（domain 未登记）→ 400 错误，提示先登记 domain
-8. 运营手动录入已存在的 URL → 409 冲突提示
-9. GEOFlow 推送失败 → queue 重试，重试耗尽后 GEOFlow 后台可见失败记录
-10. dashboard 展示分发记录 + 收录状态 + 采信状态（JOIN 查询）
-11. 历史数据迁移命令 `php artisan geoflow:sync-monitor` 执行成功
-12. 所有单元/集成测试通过
-13. 端到端测试脚本 12 步全部通过
+7. 运营手动录入 URL（domain 未登记）→ 400 错误
+8. 运营手动录入已存在的 URL（GEOFlow 或手动）→ 409 冲突
+9. IndexChecker 读取 GEOFlow + 手动录入的 URL 执行收录检测
+10. CitationChecker 读取 GEOFlow + 手动录入的 URL 执行 AI 采信检测
+11. 导出 Excel → 下载文件包含 4 个 sheet（分发记录/收录检测/AI 采信/汇总统计）
+12. 导出 PDF → 下载文件包含封面/摘要/图表/明细表
+13. 官网点击"监测平台" → 跳转客户登录页
+14. 官网点击"管理员入口" → 跳转管理员登录页
+15. GEOFlow 后台点击"监测系统" → 新窗口打开监测 dashboard
+16. dashboard 风格 A（深色侧边栏 + 浅色内容区 + 统计卡片 + ECharts 图表）
+17. 废弃监测系统的 `postgres:15-alpine` 容器，服务器节省 ~300MB 内存
+18. 所有单元/集成测试通过
+19. 端到端测试脚本 13 步全部通过
 
 ---
 
-## 19. 风险与缓解
+## 17. 风险与缓解
 
 | 风险 | 缓解措施 |
 |---|---|
-| GEOFlow 推送时监测系统宕机 | queue 重试 + 指数退避，重试耗尽后人工介入 |
-| domain 未登记导致推送被拒 | 400 错误 + 日志告警，运营及时补登记 |
-| content_body 过大压垮监测系统 | 2MB 请求体限制 + nginx client_max_body_size |
-| 并发推送导致 UNIQUE 冲突 | IntegrityError 捕获 + 重试一次 upsert |
-| keywords 字段格式不一致 | 实现前先 `SELECT keywords FROM articles LIMIT 5` 验证，buildPayload 做 JSON/string 双适配 |
-| 历史数据量大导致迁移慢 | 分批 chunkById（每批 100）+ 进度条 + dry-run 预览 |
-| admin 账号被盗 | JWT 过期时间 7 天 + 禁用账号立即失效 + 操作日志审计 |
+| 跨 schema JOIN 性能问题 | PostgreSQL 跨 schema 查询性能等同同 schema；必要时加索引 |
+| GEOFlow 改 article_distributions 表结构影响监测系统 | 监测系统只读，且只依赖核心字段（id/remote_url/status/action/article_id）；表结构变更前协调 |
+| 监测系统写入 monitor schema 影响 GEOFlow | schema 隔离，互不干扰 |
+| 数据迁移过程停机 | 本地先验证迁移流程；生产选择低峰期；准备回滚方案（第 3.2 节） |
+| GEOFlow PG 宕机导致监测系统不可用 | 监测系统依赖 GEOFlow 的 PG，需共同保障 PG 高可用；可后续做只读副本 |
+| keywords 字段格式不一致 | 实现前先 `SELECT keywords FROM public.articles LIMIT 5` 验证，查询后 Python 解析 |
+| 导出大文件阻塞 API | 异步导出 + export_tasks 状态跟踪 |
+| weasyprint 系统依赖复杂 | Dockerfile 安装系统依赖（libpango, libjpeg 等）；或改用 reportlab |
+| admin 账号被盗 | JWT 过期 7 天 + 禁用账号立即失效 + 操作日志审计 |
 | 客户看到非自己 client_id 的数据 | 所有查询强制按 client_id 过滤 + admin/client 鉴权隔离 |
+| docker network 配置错误导致容器无法通信 | 本地先验证网络配置；部署脚本检查容器连通性 |
 
 ---
 
-## 20. 未来扩展点（不在本期实现）
+## 18. 未来扩展点（不在本期实现）
 
-1. **反向同步**：监测系统 → GEOFlow 推送监测结果摘要（收录率、采信率）
-2. **GEOFlow 后台嵌入监测 dashboard**：iframe + 一次性 token 鉴权
-3. ** webhook 通知**：监测完成后通知 GEOFlow 或客户（邮件/钉钉/企微）
-4. **多渠道分发**：除了 WordPress，支持分发到头条、知乎等平台
-5. **监测结果导出**：PDF/Excel 报告导出
-6. **客户自助管理站点**：客户自己登记 domain（需 admin 审核）
+1. **GEOFlow 后台嵌入监测 dashboard**：iframe + 一次性 token 鉴权（统一数据库后更简单，可直接跨 schema 查询）
+2. **webhook 通知**：监测完成后通知客户（邮件/钉钉/企微）
+3. **更多渠道 publisher**：微信公众号素材 API、其他有合法 API 的平台
+4. **客户自助管理站点**：客户自己登记 domain（需 admin 审核）
+5. **PG 只读副本**：监测系统查询走只读副本，避免影响 GEOFlow 写入
+6. **实时监测**：WebSocket 推送检测结果到 dashboard（替代轮询）
