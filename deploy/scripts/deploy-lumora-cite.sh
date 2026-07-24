@@ -18,7 +18,31 @@ SERVER_IP="124.220.33.188"
 SERVER_USER="ubuntu"
 REMOTE_DIR="/opt/geo-monitoring"
 PROJECT_DIR="/home/tishensnoopy/GEO FLOW+LUMORA CITE"
-DEEPSEEK_KEY="REDACTED_DEEPSEEK_KEY"
+
+# ------------------------------------------------------------------
+# AI API Key 安全读取：优先从环境变量，其次从 .env.prod 加载
+# 禁止在本脚本中硬编码任何真实 API Key
+# ------------------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_PROD_FILE="$PROJECT_DIR/.env.prod"
+
+if [[ -z "${DEEPSEEK_API_KEY:-}" && -f "$ENV_PROD_FILE" ]]; then
+    # 从 .env.prod 中读取 DEEPSEEK_API_KEY（不 source 整个文件，避免副作用）
+    # tr -d "\"'" 用于去除值两侧可能存在的单/双引号
+    DEEPSEEK_API_KEY="$(grep -E '^DEEPSEEK_API_KEY=' "$ENV_PROD_FILE" | head -1 | cut -d'=' -f2- | tr -d "\"'" || true)"
+fi
+
+# 校验：必须设置且不能是占位符
+if [[ -z "${DEEPSEEK_API_KEY:-}" ]]; then
+    echo "❌ 错误：DEEPSEEK_API_KEY 未设置。"
+    echo "   请在 $ENV_PROD_FILE 中配置 DEEPSEEK_API_KEY=sk-xxx"
+    echo "   或通过环境变量传入：DEEPSEEK_API_KEY=sk-xxx bash $0"
+    exit 1
+fi
+if [[ "$DEEPSEEK_API_KEY" == *"请替换"* || "$DEEPSEEK_API_KEY" == *"your_"* || "$DEEPSEEK_API_KEY" == *"sk-xxx"* ]]; then
+    echo "❌ 错误：DEEPSEEK_API_KEY 仍为占位符（$DEEPSEEK_API_KEY），请先在 .env.prod 中填入真实 Key。"
+    exit 1
+fi
 
 # SSH/SCP 传输方式
 if [[ -n "${SERVER_PASSWORD:-}" ]]; then
@@ -82,7 +106,7 @@ echo "[2/5] 添加 AI 配置项到生产数据库..."
 
 $SSH_CMD $SERVER_USER@$SERVER_IP "docker exec -i geo-postgres psql -U geo_user -d geo_monitoring << 'SQL'
 INSERT INTO system_config (config_key, config_value, config_type, description) VALUES
-('ai_deepseek_api_key', 'REDACTED_DEEPSEEK_KEY', 'string', 'DeepSeek API Key'),
+('ai_deepseek_api_key', '$DEEPSEEK_API_KEY', 'string', 'DeepSeek API Key'),
 ('ai_dashscope_api_key', '', 'string', 'DashScope API Key'),
 ('ai_ark_api_key', '', 'string', 'ARK API Key'),
 ('ai_baidu_api_key', '', 'string', 'Baidu API Key'),
