@@ -1717,6 +1717,21 @@ index-monitor/tests/
 │   └── test_manual_endpoint.py
 │       - test_manual_create_requires_admin_auth
 │       - test_manual_create_with_unregistered_domain_returns_400
+│   ├── test_concurrent_safety.py
+│   │   - test_concurrent_create_same_client_id_returns_409
+│   │   - test_concurrent_upsert_no_duplicate_records
+│   │   - test_optimistic_lock_version_mismatch
+│   ├── test_security.py
+│   │   - test_sql_injection_in_url_field_blocked
+│   │   - test_xss_in_content_title_escaped
+│   │   - test_csrf_token_required_for_post
+│   │   - test_jwt_token_expired_returns_401
+│   │   - test_db_user_cannot_write_to_public_schema
+│   └── test_scheduled_tasks.py
+│       - test_scheduled_scan_triggers_at_configured_time
+│       - test_scheduled_archive_runs_monthly
+│       - test_export_file_cleanup_after_24h
+│       - test_scheduled_task_not_duplicate_with_redis_lock
 └── e2e/
     └── test_unified_db_flow.py
         - test_geoflow_distribution_visible_to_index_checker
@@ -1726,6 +1741,9 @@ index-monitor/tests/
         - test_export_contains_both_geoflow_and_manual_records
         - test_sso_login_then_view_dashboard
         - test_batch_scan_triggers_multiple_checks
+        - test_mobile_responsive_layout（Chrome DevTools 模拟手机/平板/PC）
+        - test_performance_dashboard_loads_under_3s
+        - test_performance_api_p95_under_500ms
 ```
 
 ### 16.2 GEOFlow 侧测试（PHPUnit）
@@ -1973,6 +1991,15 @@ alembic upgrade head
 33. **文章删除保留历史**：GEOFlow 删除文章后，监测系统仍可查看历史记录（标注「已归档」）
 34. **数据归档**：超过 1 年的检测结果/审计日志自动归档，dashboard 查询热表+归档表无感知
 35. **用户协议与隐私政策**：客户首次登录弹窗同意；隐私政策写明数据保留期限
+36. **Excel 导出格式正确**：4 个 sheet 数据完整、表头正确、中文无乱码、数字格式合理
+37. **审计日志权限隔离**：admin 只看自己的操作日志，super_admin 看所有人的日志
+38. **定时检测任务正常**：配置定时任务后，到时间自动触发检测，无需人工干预
+39. **导出文件 24h 自动清理**：导出文件下载后 24 小时自动删除，`/data/exports/` 目录不堆积
+40. **页面加载性能**：dashboard 首屏加载 <3s（PC 端），API 响应 <500ms（P95）
+41. **HTTPS + 安全响应头**：全站 HTTPS；响应头含 X-Content-Type-Options/X-Frame-Options/CSP
+42. **DB 权限隔离**：监测系统 DB 用户对 `public` schema 只读（SELECT），对 `monitor` schema 读写
+43. **并发安全**：两个 admin 同时创建同一 client_id → 第二个返回 409，不产生重复记录
+44. **SSO 登出失效**：admin 在 GEOFlow 登出后，监测系统 JWT 在过期前仍可用，但刷新时 SSO 失败→跳转登录
 
 ---
 
@@ -1998,6 +2025,12 @@ alembic upgrade head
 | **数据归档误删** | 归档前先 pg_dump 备份 + 本地验证归档逻辑 + 归档表与热表分离 |
 | **移动端兼容性问题** | 多设备测试（Chrome DevTools 模拟 + 真机测试）+ Element Plus 响应式保障 |
 | **GEOFlow 文章删除后历史丢失** | 定时扫描归档 + archived_distributions 表保留快照 |
+| **Playwright 中文字体缺失**（PDF 显示方块） | Dockerfile 装 fonts-noto-cjk + 本地验证生僻字渲染 |
+| **定时任务重复执行**（多容器同时跑） | 单容器运行定时任务；或用 Redis 分布式锁（SETNX） |
+| **磁盘空间不足**（导出+归档+日志堆积） | 导出文件 24h 自动清理 + 归档文件 3 年清理 + 日志轮转 + 磁盘监控告警 |
+| **并发写入冲突**（多 admin 同时操作） | DB UNIQUE 约束兜底 + 应用层捕获 IntegrityError + 乐观锁（version 字段） |
+| **JWT 密钥泄露** | 密钥存 .env.prod（gitignored）+ 定期轮换 + 泄露后立即刷新所有 token |
+| **跨 schema DB 权限过大** | 创建专用 DB 用户：`monitor_user` 对 public 只 SELECT，对 monitor 读写 |
 
 ---
 
