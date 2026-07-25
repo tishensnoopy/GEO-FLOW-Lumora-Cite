@@ -62,3 +62,29 @@ async def test_audit_log_table_exists_in_db(db_session):
         assert db_cols == model_cols, f"DB 列={db_cols}，模型列={model_cols}"
     finally:
         engine.dispose()
+
+
+def test_audit_log_column_types():
+    """验证关键列类型（裁定 3）。"""
+    from sqlalchemy import String, DateTime, Text, Integer
+    from sqlalchemy.dialects.postgresql import UUID as PGUUID
+    columns = AdminAuditLog.__table__.columns
+    assert isinstance(columns["id"].type, PGUUID), "id 期望 UUID"
+    assert isinstance(columns["admin_user_id"].type, Integer), f"admin_user_id 期望 Integer，实际 {type(columns['admin_user_id'].type).__name__}"
+    assert isinstance(columns["admin_name"].type, String)
+    assert isinstance(columns["action"].type, String)
+    assert isinstance(columns["detail"].type, Text)
+    assert isinstance(columns["created_at"].type, DateTime)
+    assert columns["created_at"].type.timezone is True, "created_at 必须带 timezone=True"
+
+
+def test_audit_log_indexes():
+    """验证单列索引存在（admin_user_id/action/created_at）。"""
+    table = AdminAuditLog.__table__
+    indexed_cols = set()
+    for idx in table.indexes:
+        for col in idx.columns:
+            indexed_cols.add(col.name)
+    assert "admin_user_id" in indexed_cols, "admin_user_id 应有索引"
+    assert "action" in indexed_cols, "action 应有索引"
+    assert "created_at" in indexed_cols, "created_at 应有索引"

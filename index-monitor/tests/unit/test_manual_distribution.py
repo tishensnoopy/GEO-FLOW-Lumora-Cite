@@ -72,3 +72,40 @@ async def test_manual_distribution_table_exists_in_db(db_session):
         assert db_cols == model_cols, f"DB 列={db_cols}，模型列={model_cols}"
     finally:
         engine.dispose()
+
+
+def test_manual_distribution_column_types():
+    """验证关键列类型（裁定 3：不只是列名，还要验证类型）。"""
+    from sqlalchemy import String, DateTime, UUID, Text, Integer
+    from sqlalchemy.dialects.postgresql import UUID as PGUUID
+    columns = ManualDistribution.__table__.columns
+    # id 是 UUID
+    assert isinstance(columns["id"].type, PGUUID), f"id 期望 UUID，实际 {type(columns['id'].type).__name__}"
+    # client_id 是 String(64)
+    assert isinstance(columns["client_id"].type, String), f"client_id 期望 String，实际 {type(columns['client_id'].type).__name__}"
+    # remote_url 是 String(512)
+    assert isinstance(columns["remote_url"].type, String)
+    # status 是 String
+    assert isinstance(columns["status"].type, String)
+    # note 是 Text
+    assert isinstance(columns["note"].type, Text)
+    # created_by_admin_id 是 Integer
+    assert isinstance(columns["created_by_admin_id"].type, Integer), f"created_by_admin_id 期望 Integer，实际 {type(columns['created_by_admin_id'].type).__name__}"
+    # created_at/updated_at 是 DateTime(timezone=True)
+    assert isinstance(columns["created_at"].type, DateTime)
+    assert columns["created_at"].type.timezone is True, "created_at 必须带 timezone=True"
+    assert isinstance(columns["updated_at"].type, DateTime)
+    assert columns["updated_at"].type.timezone is True
+
+
+def test_manual_distribution_indexes():
+    """验证单列索引存在（client_id/remote_url/status）。"""
+    from sqlalchemy import Table
+    table = ManualDistribution.__table__
+    indexed_cols = set()
+    for idx in table.indexes:
+        for col in idx.columns:
+            indexed_cols.add(col.name)
+    assert "client_id" in indexed_cols, "client_id 应有索引"
+    assert "remote_url" in indexed_cols, "remote_url 应有索引"
+    assert "status" in indexed_cols, "status 应有索引"

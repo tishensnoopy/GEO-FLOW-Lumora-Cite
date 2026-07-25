@@ -20,6 +20,10 @@ from app.models.article import ArticleDistribution
 from app.models.index_result import IndexResult, IndexHistory
 from app.models.citation_result import CitationResult
 from app.models.client import Client, ClientSite
+from app.models.manual_distribution import ManualDistribution
+from app.models.admin_audit_log import AdminAuditLog
+from app.models.export_task import ExportTask
+from app.models.archived_distribution import ArchivedDistribution
 
 
 # 监测系统表所在的 schema（Task 4 起为 monitor，GEOFlow 表在 public）
@@ -49,6 +53,10 @@ MODELS = [
     CitationResult,
     Client,
     ClientSite,
+    ManualDistribution,
+    AdminAuditLog,
+    ExportTask,
+    ArchivedDistribution,
 ]
 
 
