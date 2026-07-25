@@ -260,6 +260,9 @@ class DistributionQueryService:
 
         client_id 为 None 时自动通过 domain 匹配。
         重复检测：手动表 + GEOFlow 表。
+
+        admin_user_id / admin_name 预留用于 Task 7 审计日志接入
+        （当前未引用，计划强制保留签名）。
         """
         if client_id is None:
             client_id, _ = await self._match_client_by_domain(remote_url)

@@ -285,3 +285,154 @@ async def test_create_manual_duplicate_url_raises_409(db_session):
         await db_session.delete(site)
         await db_session.delete(client)
         await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_create_manual_distribution_auto_match_by_domain(db_session):
+    """client_id=None 时通过 domain 自动匹配 client_sites。
+
+    覆盖 _match_client_by_domain 路径（核心需求）：
+    URL 的 domain 命中 active client_sites 时自动取 client_id。
+    """
+    from app.models.client import Client, ClientSite
+    from app.models.manual_distribution import ManualDistribution
+    from sqlalchemy import select
+
+    client = Client(
+        client_id="test_auto_match", username="auto_match",
+        password_hash="x", status="active",
+    )
+    db_session.add(client)
+    await db_session.flush()
+    site = ClientSite(
+        client_id="test_auto_match", site_name="自动匹配测试站",
+        domain="auto-match.example.com", site_type="official", status="active",
+    )
+    db_session.add(site)
+    await db_session.commit()
+
+    service = DistributionQueryService(db_session)
+    try:
+        # 不传 client_id，触发 domain 自动匹配
+        result = await service.create_manual_distribution(
+            remote_url="https://www.auto-match.example.com/post/1",
+            admin_user_id=1,
+            admin_name="admin",
+            client_id=None,
+            note="auto",
+        )
+        assert result["action"] == "created"
+        assert result["client_id"] == "test_auto_match"
+        assert result["source"] == "manual"
+    finally:
+        # 清理：删 ManualDistribution（若写入）→ site → client
+        md_result = await db_session.execute(
+            select(ManualDistribution).where(
+                ManualDistribution.remote_url == "https://www.auto-match.example.com/post/1"
+            )
+        )
+        md = md_result.scalar_one_or_none()
+        if md is not None:
+            await db_session.delete(md)
+        await db_session.delete(site)
+        await db_session.delete(client)
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_create_manual_distribution_unknown_domain_raises_400(db_session):
+    """client_id=None 且 URL 的 domain 未登记返回 400。
+
+    覆盖 _match_client_by_domain 抛 HTTPException(400) 路径。
+    """
+    from app.models.client import Client, ClientSite
+    from fastapi import HTTPException
+
+    client = Client(
+        client_id="test_unknown_domain", username="unknown_domain",
+        password_hash="x", status="active",
+    )
+    db_session.add(client)
+    await db_session.flush()
+    site = ClientSite(
+        client_id="test_unknown_domain", site_name="已登记域名站",
+        domain="known.example.com", site_type="official", status="active",
+    )
+    db_session.add(site)
+    await db_session.commit()
+
+    service = DistributionQueryService(db_session)
+    try:
+        # URL 的 domain 未登记 → 400
+        with pytest.raises(HTTPException) as exc:
+            await service.create_manual_distribution(
+                remote_url="https://www.unknown-domain.example.com/post",
+                admin_user_id=1,
+                admin_name="admin",
+                client_id=None,
+            )
+        assert exc.value.status_code == 400
+        assert "未在客户站点中登记" in exc.value.detail
+    finally:
+        # 清理：无 ManualDistribution 写入；仅删 site + client
+        await db_session.delete(site)
+        await db_session.delete(client)
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_create_manual_duplicate_url_in_geoflow_raises_409(db_session):
+    """URL 已在 GEOFlow article_distributions 表（status='synced'）→ 409。
+
+    覆盖 create_manual_distribution 中 GEOFlow 表重复检测分支。
+    """
+    from app.models.client import Client, ClientSite
+    from app.models.geoflow_models import (
+        GeoflowArticle, GeoflowArticleDistribution,
+    )
+    from fastapi import HTTPException
+
+    client = Client(
+        client_id="test_geo_dup", username="geo_dup",
+        password_hash="x", status="active",
+    )
+    db_session.add(client)
+    await db_session.flush()
+    site = ClientSite(
+        client_id="test_geo_dup", site_name="GEOFlow 去重测试站",
+        domain="geo-dup.example.com", site_type="official", status="active",
+    )
+    db_session.add(site)
+    await db_session.flush()
+
+    article = GeoflowArticle(
+        title="GEO 去重测试", slug="geo-dup-test",
+        content="内容", category_id=1, author_id=1, status="published",
+    )
+    db_session.add(article)
+    await db_session.flush()
+    existing_geoflow = GeoflowArticleDistribution(
+        article_id=article.id, distribution_channel_id=1,
+        action="publish", status="synced",
+        remote_url="https://www.geo-dup.example.com/existing",
+    )
+    db_session.add(existing_geoflow)
+    await db_session.commit()
+
+    service = DistributionQueryService(db_session)
+    try:
+        with pytest.raises(HTTPException) as exc:
+            await service.create_manual_distribution(
+                remote_url="https://www.geo-dup.example.com/existing",
+                admin_user_id=1, admin_name="admin",
+                client_id="test_geo_dup",
+            )
+        assert exc.value.status_code == 409
+        assert "GEOFlow" in exc.value.detail
+    finally:
+        # 清理：删 GeoflowArticleDistribution → GeoflowArticle → site → client
+        await db_session.delete(existing_geoflow)
+        await db_session.delete(article)
+        await db_session.delete(site)
+        await db_session.delete(client)
+        await db_session.commit()
