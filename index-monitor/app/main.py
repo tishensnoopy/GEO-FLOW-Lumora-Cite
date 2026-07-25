@@ -52,6 +52,17 @@ app.include_router(admin_router, prefix="/api/v1")
 from app.api.admin_routes import distribution_router
 app.include_router(distribution_router, prefix="/api/v1")
 
+# 导出端点（设计文档第 12.3 节）：
+# - POST /api/v1/admin/exports（admin 导出全部 / 指定客户）
+# - POST /api/v1/exports（客户导出自己）
+# - GET /api/v1/exports（分页列表，admin 全部 / client 自己）
+# - GET /api/v1/exports/{task_id}（查状态，client 403 隔离）
+# - GET /api/v1/exports/{task_id}/download（下载，client 403 隔离）
+# 端点只创建 ExportTask 记录（status="pending"）立即返回 202，
+# 实际导出处理由 ExportService（M3 任务 4）异步执行，不在请求路径内同步调用。
+from app.api.export_routes import router as export_router
+app.include_router(export_router, prefix="/api/v1")
+
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "version": settings.APP_VERSION}
