@@ -7,8 +7,6 @@
 - 水印 + Logo 每页（position: fixed）
 - 图表用 base64 内联（不依赖文件路径）
 """
-import base64
-import os
 from datetime import datetime
 from pathlib import Path
 
@@ -65,7 +63,6 @@ class PdfExportService:
             distributions=report_data.get("distributions", []),
             charts=report_data.get("charts", {}),
             logo_base64=logo_base64,
-            page_number=1,
         )
 
         # Playwright 渲染 PDF
