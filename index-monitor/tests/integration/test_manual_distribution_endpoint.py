@@ -177,3 +177,182 @@ async def test_list_distributions_endpoint(client, db_session):
     resp = await client.get("/api/v1/admin/distributions", headers=_admin_headers())
     assert resp.status_code == 200
     assert "items" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_manual_create_success_and_audit_log(client, db_session):
+    """POST /api/v1/distributions 成功路径：返回 201 + service 结果形状 + 审计日志写入。
+
+    覆盖核心正路径行为：
+    - 已登记 domain 的 URL 录入成功返回 201
+    - 响应体与 ``DistributionQueryService.create_manual_distribution`` 返回形状一致
+      （action="created" / source="manual" / client_id=匹配到的客户）
+    - ``manual_create_distribution`` 审计日志真的被写入 AdminAuditLog，
+      detail JSON 中包含 url 与 client_id
+    """
+    from app.models.client import Client, ClientSite
+    from app.models.manual_distribution import ManualDistribution
+    from app.models.admin_audit_log import AdminAuditLog
+    from sqlalchemy import select, delete
+
+    # 前置：Client + ClientSite（domain 标准化后为 manual-ep.example.com，
+    # 匹配 URL https://www.manual-ep.example.com/article/1 提取出的 domain）
+    c = Client(
+        client_id="test_manual_ep",
+        username="manual_ep",
+        password_hash="x",
+        status="active",
+    )
+    site = ClientSite(
+        client_id="test_manual_ep",
+        site_name="站",
+        domain="manual-ep.example.com",
+        site_type="official",
+        status="active",
+    )
+    db_session.add(c)
+    db_session.add(site)
+    await db_session.commit()
+
+    try:
+        resp = await client.post(
+            "/api/v1/distributions",
+            json={
+                "remote_url": "https://www.manual-ep.example.com/article/1",
+                "note": "测试录入",
+            },
+            headers=_admin_headers(),
+        )
+        assert resp.status_code == 201, (
+            f"unexpected status: {resp.status_code} body: {resp.text}"
+        )
+        body = resp.json()
+        assert body["action"] == "created"
+        assert body["source"] == "manual"
+        assert body["client_id"] == "test_manual_ep"
+
+        # 审计日志断言：manual_create_distribution 已写入，detail JSON 包含 domain
+        # （AuditLogService.log 把 detail 序列化为 JSON 字符串存储）
+        audit_result = await db_session.execute(
+            select(AdminAuditLog).where(
+                AdminAuditLog.action == "manual_create_distribution",
+                AdminAuditLog.target_type == "distribution",
+            )
+        )
+        logs = audit_result.scalars().all()
+        matching = [
+            l for l in logs
+            if l.detail and "manual-ep.example.com" in l.detail
+        ]
+        assert len(matching) >= 1, "审计日志未写入或 detail 不包含录入 URL 的 domain"
+    finally:
+        # 清理：ManualDistribution → AdminAuditLog → ClientSite → Client
+        # （无 FK 约束，顺序无关，但按依赖顺序清理更直观）
+        await db_session.execute(
+            delete(ManualDistribution).where(
+                ManualDistribution.remote_url
+                == "https://www.manual-ep.example.com/article/1"
+            )
+        )
+        await db_session.execute(
+            delete(AdminAuditLog).where(
+                AdminAuditLog.action == "manual_create_distribution",
+                AdminAuditLog.target_type == "distribution",
+            )
+        )
+        await db_session.execute(
+            delete(ClientSite).where(ClientSite.domain == "manual-ep.example.com")
+        )
+        await db_session.execute(
+            delete(Client).where(Client.client_id == "test_manual_ep")
+        )
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_list_distributions_returns_total_and_filters(client, db_session):
+    """GET /api/v1/admin/distributions 正路径：返回 total + source/client_id 过滤生效。
+
+    覆盖核心正路径行为：
+    - 无参数返回 ``total`` 字段且 >= 1（包含我们插入的 manual 记录）
+    - ``?source=manual`` 过滤：所有 item source == "manual"
+    - ``?client_id=test_list_dist`` 过滤：所有 item client_id == "test_list_dist"
+    """
+    from app.models.client import Client, ClientSite
+    from app.models.manual_distribution import ManualDistribution
+    from sqlalchemy import delete
+
+    # 前置：Client + ClientSite + ManualDistribution（status=synced 才会被查询）
+    c = Client(
+        client_id="test_list_dist",
+        username="list_dist",
+        password_hash="x",
+        status="active",
+    )
+    site = ClientSite(
+        client_id="test_list_dist",
+        site_name="列表测试站点",
+        domain="list-test.example.com",
+        site_type="official",
+        status="active",
+    )
+    record = ManualDistribution(
+        client_id="test_list_dist",
+        remote_url="https://list-test.example.com/post",
+        status="synced",
+        note="list filter test",
+    )
+    db_session.add(c)
+    db_session.add(site)
+    db_session.add(record)
+    await db_session.commit()
+
+    try:
+        # 1) 无参数 → 200, total 字段存在, total >= 1（至少包含我们刚插入的记录）
+        resp = await client.get(
+            "/api/v1/admin/distributions", headers=_admin_headers()
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "total" in body, "响应缺少 total 字段"
+        assert body["total"] >= 1, f"total 应 >= 1，实际: {body['total']}"
+
+        # 2) source=manual → 200, 所有 item source == "manual"
+        resp = await client.get(
+            "/api/v1/admin/distributions?source=manual",
+            headers=_admin_headers(),
+        )
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        assert len(items) >= 1, "source=manual 应至少返回 1 条（我们插入的记录）"
+        for it in items:
+            assert it["source"] == "manual", (
+                f"source=manual 过滤失效：item source={it.get('source')}"
+            )
+
+        # 3) client_id=test_list_dist → 200, 所有 item client_id == "test_list_dist"
+        resp = await client.get(
+            "/api/v1/admin/distributions?client_id=test_list_dist",
+            headers=_admin_headers(),
+        )
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        assert len(items) >= 1, "client_id 过滤应至少返回 1 条（我们插入的记录）"
+        for it in items:
+            assert it["client_id"] == "test_list_dist", (
+                f"client_id 过滤失效：item client_id={it.get('client_id')}"
+            )
+    finally:
+        # 清理：ManualDistribution → ClientSite → Client
+        await db_session.execute(
+            delete(ManualDistribution).where(
+                ManualDistribution.remote_url == "https://list-test.example.com/post"
+            )
+        )
+        await db_session.execute(
+            delete(ClientSite).where(ClientSite.domain == "list-test.example.com")
+        )
+        await db_session.execute(
+            delete(Client).where(Client.client_id == "test_list_dist")
+        )
+        await db_session.commit()
