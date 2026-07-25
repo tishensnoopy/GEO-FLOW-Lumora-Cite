@@ -599,3 +599,27 @@ async def test_super_admin_views_all_audit_logs(client, db_session):
             delete(AdminAuditLog).where(AdminAuditLog.target_id == "test_super")
         )
         await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_list_audit_logs_returns_total(client, db_session):
+    """list_audit_logs 返回 total 字段（D15 修复）。"""
+    from app.models.admin_audit_log import AdminAuditLog
+    from sqlalchemy import delete
+
+    log = AdminAuditLog(
+        admin_user_id=1, admin_name="test", action="test_action",
+        target_type="test", target_id="d15_test",
+    )
+    db_session.add(log)
+    await db_session.commit()
+
+    try:
+        resp = await client.get("/api/v1/admin/audit_logs", headers=_admin_headers())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "total" in data
+        assert data["total"] >= 1
+    finally:
+        await db_session.execute(delete(AdminAuditLog).where(AdminAuditLog.target_id == "d15_test"))
+        await db_session.commit()

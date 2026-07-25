@@ -413,6 +413,14 @@ async def list_audit_logs(
     db: AsyncSession = Depends(get_db),
 ):
     """审计日志列表。admin 看自己，super_admin 看所有。设计文档第 10 节。"""
+    # D15 修复：先查 total（与分页查询同样过滤条件）
+    count_query = select(func.count()).select_from(AdminAuditLog)
+    if admin["role"] != "super_admin":
+        count_query = count_query.where(AdminAuditLog.admin_user_id == admin["user_id"])
+    if action:
+        count_query = count_query.where(AdminAuditLog.action == action)
+    total = (await db.execute(count_query)).scalar()
+
     query = select(AdminAuditLog)
 
     # 权限隔离：普通 admin 只看自己的日志
@@ -444,6 +452,7 @@ async def list_audit_logs(
         ],
         "page": page,
         "page_size": page_size,
+        "total": total,  # D15 修复
     }
 
 
