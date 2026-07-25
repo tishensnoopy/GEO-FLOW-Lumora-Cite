@@ -47,6 +47,8 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     client = result.scalar_one_or_none()
     if not client or not verify_password(req.password, client.password_hash):
         raise HTTPException(status_code=401, detail="用户名或密码错误")
+    if client.status != "active":
+        raise HTTPException(status_code=401, detail="客户账号已停用或删除")
     token = create_access_token({"sub": client.client_id})
     return {"access_token": token, "token_type": "bearer"}
 
