@@ -18,6 +18,23 @@
           value-format="YYYY-MM-DD"
         />
       </el-form-item>
+      <!-- 缺口任务 5：图表提示信息 -->
+      <el-form-item v-if="hasCharts && form.export_type === 'pdf'">
+        <el-alert
+          title="本次导出将包含当前图表截图（趋势图 + AI 采信分布）"
+          type="info"
+          :closable="false"
+          show-icon
+        />
+      </el-form-item>
+      <el-form-item v-if="!hasCharts && form.export_type === 'pdf'">
+        <el-alert
+          title="本次导出不含图表截图（从导出报告页触发）。如需含图表，请从数据总览页导出。"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
+      </el-form-item>
     </el-form>
     <template #footer>
       <el-button @click="visible = false">取消</el-button>
@@ -33,9 +50,8 @@ import { api } from '@/api'
 
 const props = defineProps({
   modelValue: Boolean,
-  // charts: 由 Dashboard.vue 通过 getChartsDataURL() 生成的 base64 数据 URL 字典，
-  // 格式 {"trend": "data:image/png;base64,...", "pie": "..."}。
-  // 仅在 PDF 导出且非空时随请求一并提交（后端 ExportRequest.charts: Optional[dict]）。
+  // charts：可选，前端 ECharts getDataURL() 生成的 base64 字典。
+  // 从 Dashboard 触发时传入，从 Exports 页面触发时不传（undefined 或空对象）。
   charts: { type: Object, default: () => ({}) },
 })
 const emit = defineEmits(['update:modelValue', 'created'])
@@ -49,6 +65,9 @@ const loading = ref(false)
 const dateRange = ref([])
 const form = reactive({ export_type: 'pdf' })
 
+// 是否携带图表截图（charts 非空对象）
+const hasCharts = computed(() => props.charts && Object.keys(props.charts).length > 0)
+
 async function submit() {
   loading.value = true
   try {
@@ -58,9 +77,8 @@ async function submit() {
       date_from: dateRange.value?.[0] || null,
       date_to: dateRange.value?.[1] || null,
     }
-    // 仅 PDF 报告携带图表截图（Excel 明细无需图表）。
-    // 后端 ExportRequest.charts: Optional[dict] = None，None/缺省均向后兼容。
-    if (form.export_type === 'pdf' && props.charts && Object.keys(props.charts).length > 0) {
+    // 仅 PDF 且有图表时上传 charts（Excel 不需要图表，减小 payload）
+    if (form.export_type === 'pdf' && hasCharts.value) {
       payload.charts = props.charts
     }
     const resp = await api.post(endpoint, payload)
@@ -68,7 +86,8 @@ async function submit() {
     visible.value = false
     emit('created', resp.data.task_id)
   } catch (err) {
-    ElMessage.error('导出失败')
+    // 缺口任务 5：详细错误信息（含后端 detail 字段）
+    ElMessage.error(err.response?.data?.detail || '导出失败')
   } finally {
     loading.value = false
   }

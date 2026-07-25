@@ -5,6 +5,7 @@
       <el-menu :default-active="activeMenu" mode="horizontal" router class="nav-menu">
         <el-menu-item index="/">仪表盘</el-menu-item>
         <el-menu-item index="/articles">文章列表</el-menu-item>
+        <el-menu-item index="/exports">导出报告</el-menu-item>
         <el-menu-item index="/settings">系统设置</el-menu-item>
       </el-menu>
       <el-button text type="primary" @click="logout">退出登录</el-button>
