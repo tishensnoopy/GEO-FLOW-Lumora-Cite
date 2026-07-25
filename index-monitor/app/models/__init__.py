@@ -13,3 +13,4 @@
 from app.models.manual_distribution import ManualDistribution  # noqa: F401
 from app.models.admin_audit_log import AdminAuditLog  # noqa: F401
 from app.models.export_task import ExportTask  # noqa: F401
+from app.models.archived_distribution import ArchivedDistribution  # noqa: F401
