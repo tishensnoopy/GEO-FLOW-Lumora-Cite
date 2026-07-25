@@ -543,3 +543,59 @@ async def test_admin_reset_client_password(client, db_session):
             delete(AdminAuditLog).where(AdminAuditLog.target_id == "reset_test")
         )
         await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_admin_views_own_audit_logs(client, db_session):
+    """admin 只看自己的操作日志。"""
+    from app.services.audit_log import AuditLogService
+    from app.models.admin_audit_log import AdminAuditLog
+    from sqlalchemy import delete
+
+    try:
+        await AuditLogService.log(
+            db_session, admin_user_id=1, admin_name="测试管理员",
+            action="create_client", target_type="client", target_id="test_audit",
+        )
+
+        resp = await client.get("/api/v1/admin/audit_logs", headers=_admin_headers())
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "items" in data
+        # admin_user_id=1 的日志应在结果中
+        for item in data["items"]:
+            assert item["admin_user_id"] == 1
+    finally:
+        # 清理：本测试写入的审计日志（target_id="test_audit"）
+        # 必须清理，否则会污染 test_log_creates_audit_record（按 action="create_client" 宽查询）
+        await db_session.execute(
+            delete(AdminAuditLog).where(AdminAuditLog.target_id == "test_audit")
+        )
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_super_admin_views_all_audit_logs(client, db_session):
+    """super_admin 看所有人的日志。"""
+    from app.services.audit_log import AuditLogService
+    from app.models.admin_audit_log import AdminAuditLog
+    from sqlalchemy import delete
+
+    try:
+        await AuditLogService.log(
+            db_session, admin_user_id=2, admin_name="其他管理员",
+            action="create_client", target_type="client", target_id="test_super",
+        )
+
+        resp = await client.get("/api/v1/admin/audit_logs", headers=_admin_headers(role="super_admin"))
+        assert resp.status_code == 200
+        data = resp.json()
+        # super_admin 应能看到 admin_user_id=2 的日志
+        admin_ids = {item["admin_user_id"] for item in data["items"]}
+        assert 2 in admin_ids
+    finally:
+        # 清理：本测试写入的审计日志（target_id="test_super"）
+        await db_session.execute(
+            delete(AdminAuditLog).where(AdminAuditLog.target_id == "test_super")
+        )
+        await db_session.commit()

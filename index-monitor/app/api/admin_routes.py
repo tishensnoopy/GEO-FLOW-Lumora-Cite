@@ -387,3 +387,46 @@ async def batch_scan(
     # 实际检测入队逻辑在 M4 定时任务/后台任务中实现
     # 此处只返回入队确认（异步处理）
     return {"queued": len(req.distribution_ids), "scan_type": req.scan_type}
+
+
+@router.get("/audit_logs")
+async def list_audit_logs(
+    page: int = 1,
+    page_size: int = 50,
+    action: Optional[str] = None,
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """审计日志列表。admin 看自己，super_admin 看所有。设计文档第 10 节。"""
+    query = select(AdminAuditLog)
+
+    # 权限隔离：普通 admin 只看自己的日志
+    if admin["role"] != "super_admin":
+        query = query.where(AdminAuditLog.admin_user_id == admin["user_id"])
+
+    if action:
+        query = query.where(AdminAuditLog.action == action)
+
+    query = query.order_by(AdminAuditLog.created_at.desc())
+    query = query.offset((page - 1) * page_size).limit(page_size)
+
+    result = await db.execute(query)
+    logs = result.scalars().all()
+
+    return {
+        "items": [
+            {
+                "id": str(log.id),
+                "admin_user_id": log.admin_user_id,
+                "admin_name": log.admin_name,
+                "action": log.action,
+                "target_type": log.target_type,
+                "target_id": log.target_id,
+                "detail": log.detail,
+                "created_at": log.created_at.isoformat() if log.created_at else None,
+            }
+            for log in logs
+        ],
+        "page": page,
+        "page_size": page_size,
+    }
