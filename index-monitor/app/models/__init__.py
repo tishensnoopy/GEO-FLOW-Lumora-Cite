@@ -11,3 +11,4 @@
 定义，未在此处集中注册——保持现状以避免本次任务扩大改动范围。
 """
 from app.models.manual_distribution import ManualDistribution  # noqa: F401
+from app.models.admin_audit_log import AdminAuditLog  # noqa: F401
