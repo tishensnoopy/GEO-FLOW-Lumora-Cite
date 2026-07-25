@@ -18,6 +18,11 @@
 #
 # 幂等：可重复执行。角色已存在则跳过创建 + 更新密码；GRANT 天然幂等。
 #
+# 执行者权限约束：
+#   `ALTER DEFAULT PRIVILEGES FOR ROLE geo_user` 要求执行者是 geo_user 本身、
+#   geo_user 的成员角色、或超级用户。脚本默认 PGUSER=geo_user（既是 DB owner 又是
+#   超级用户），满足此约束。若用其他管理账号执行，须为 geo_user 成员或超级用户。
+#
 # 用法：
 #   MONITOR_DB_PASSWORD=xxx bash deploy/scripts/setup-db-roles.sh
 #
@@ -48,6 +53,13 @@ if ! [[ "$MONITOR_DB_USER" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
     exit 1
 fi
 
+# PGUSER 同样拼进 SQL 标识符位置（ALTER DEFAULT PRIVILEGES FOR ROLE ${PGUSER}），
+# 做同样的标识符校验保持一致（审查 B2：与 MONITOR_DB_USER 校验对齐）
+if ! [[ "$PGUSER" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
+    echo "ERROR: PGUSER 含非法字符（仅允许字母/数字/下划线，首字符非数字）: $PGUSER" >&2
+    exit 1
+fi
+
 # PGPASSWORD 由环境变量提供（geo_user 的密码）
 if [ -z "$PGPASSWORD" ]; then
     echo "ERROR: PGPASSWORD 环境变量未设置（geo_user 的密码）" >&2
@@ -62,7 +74,9 @@ echo "    DB owner: ${PGUSER}"
 # --------------------------------------------------------------------------- #
 # 2. 幂等创建角色（已存在则跳过）                                              #
 # --------------------------------------------------------------------------- #
-ROLE_EXISTS=$($PSQL -tAc "SELECT 1 FROM pg_roles WHERE rolname='${MONITOR_DB_USER}'" 2>/dev/null || true)
+# 不吞 stderr：让 PG 连接错误显式暴露（审查次要 1）；|| true 防 set -e 在角色
+# 查询无返回时退出（查询本身不报错，空返回是正常分支）
+ROLE_EXISTS=$($PSQL -tAc "SELECT 1 FROM pg_roles WHERE rolname='${MONITOR_DB_USER}'" || true)
 if [ "$ROLE_EXISTS" != "1" ]; then
     $PSQL -c "CREATE ROLE ${MONITOR_DB_USER} LOGIN;"
     echo "    ✓ 已创建角色 ${MONITOR_DB_USER}（LOGIN）"

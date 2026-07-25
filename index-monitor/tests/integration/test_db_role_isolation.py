@@ -151,6 +151,45 @@ async def test_monitor_user_can_insert_monitor_table(db_session):
 
 
 @pytest.mark.asyncio
+async def test_monitor_user_can_update_monitor_table(db_session):
+    """monitor_user 对 monitor 表有 UPDATE（审查 B4：补 monitor 写权限对称覆盖）。"""
+    result = await db_session.execute(
+        text("SELECT has_table_privilege('monitor_user', 'monitor.clients', 'UPDATE')")
+    )
+    assert result.scalar() is True
+
+
+@pytest.mark.asyncio
+async def test_monitor_user_can_delete_monitor_table(db_session):
+    """monitor_user 对 monitor 表有 DELETE（审查 B4：补 monitor 写权限对称覆盖）。"""
+    result = await db_session.execute(
+        text("SELECT has_table_privilege('monitor_user', 'monitor.clients', 'DELETE')")
+    )
+    assert result.scalar() is True
+
+
+@pytest.mark.asyncio
+async def test_monitor_user_has_sequence_privilege_when_exists(db_session):
+    """monitor_user 对 monitor 序列有权限（若存在序列）。
+
+    monitor 表用 ``uuid_generate_v4()`` 而非 SERIAL，通常无序列。此测试在有序列时
+    验证 USAGE 授权，无序列时跳过。脚本 ``GRANT ALL ON ALL SEQUENCES IN SCHEMA monitor``
+    保证未来新增序列自动覆盖。
+    """
+    result = await db_session.execute(
+        text("SELECT sequencename FROM pg_sequences WHERE schemaname = 'monitor' LIMIT 1")
+    )
+    seq_name = result.scalar()
+    if seq_name is None:
+        pytest.skip("monitor schema 无序列（表用 uuid_generate_v4），跳过序列权限测试")
+    # 有序列时验证 USAGE（seq_name 来自系统目录，非用户输入，安全拼接）
+    result = await db_session.execute(
+        text(f"SELECT has_sequence_privilege('monitor_user', 'monitor.{seq_name}', 'USAGE')")
+    )
+    assert result.scalar() is True, f"monitor_user 应对 monitor.{seq_name} 有 USAGE"
+
+
+@pytest.mark.asyncio
 async def test_monitor_user_cannot_create_in_monitor_schema(db_session):
     """monitor_user 对 monitor schema 无 CREATE（DDL 留给 alembic/geo_user）。"""
     result = await db_session.execute(
@@ -197,4 +236,30 @@ async def test_default_privileges_do_not_grant_insert_on_new_public_table(db_ses
     finally:
         await db_session.rollback()
         await db_session.execute(text("DROP TABLE IF EXISTS public._test_default_priv"))
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_default_privileges_grant_all_on_new_monitor_table(db_session):
+    """ALTER DEFAULT PRIVILEGES 生效：geo_user 新建 monitor 表自动授予 monitor_user ALL。
+
+    验证未来 alembic 新建的 monitor 表也自动可读写，无需手动 GRANT（审查 B4 补 monitor 侧）。
+    """
+    await db_session.execute(text("DROP TABLE IF EXISTS monitor._test_default_priv"))
+    await db_session.execute(text("CREATE TABLE monitor._test_default_priv (id int)"))
+    await db_session.commit()
+    try:
+        for priv in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+            result = await db_session.execute(
+                text(
+                    f"SELECT has_table_privilege('monitor_user', "
+                    f"'monitor._test_default_priv', '{priv}')"
+                )
+            )
+            assert result.scalar() is True, (
+                f"新 monitor 表未自动授予 {priv}（DEFAULT PRIVILEGES 未生效？）"
+            )
+    finally:
+        await db_session.rollback()
+        await db_session.execute(text("DROP TABLE IF EXISTS monitor._test_default_priv"))
         await db_session.commit()

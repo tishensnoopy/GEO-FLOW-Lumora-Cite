@@ -73,6 +73,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-geo_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       # 应用层实际消费的 DATABASE_URL（database.py 直接读取，需与 POSTGRES_HOST 对齐）
+      # 注意：启用 MONITOR_DB_USER 时，config.py validator 会重写此值为 monitor_user 凭据
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-geo_user}:${POSTGRES_PASSWORD}@geoflow-postgres-prod:5432/geo_flow
       # 可选：启用 DB 层权限隔离（需先执行 deploy/scripts/setup-db-roles.sh 创建 monitor_user）
       # 设 MONITOR_DB_USER 后 config.py 自动重建 DATABASE_URL 使用此用户（对 public 只读 / monitor 读写）

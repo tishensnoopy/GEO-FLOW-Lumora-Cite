@@ -122,8 +122,9 @@ class Settings(BaseSettings):
         设计要点：
         1. ``MONITOR_DB_USER`` 是启用 DB 层隔离的开关——设了就覆盖默认 URL，
            确保操作者明确选择隔离用户（不会与 geo_user 默认 URL 冲突）；
-        2. 用 ``object.__setattr__`` 绕过 pydantic v2 的 frozen 模型约束（与
-           ``_derive_sso_userinfo_url`` 同模式）；
+        2. 用 ``object.__setattr__`` 在 validator 中派生字段值（与
+           ``_derive_sso_userinfo_url`` 同模式——pydantic v2 推荐的 after
+           validator 修改字段方式，避免触发重新验证）；
         3. host/port/db 沿用 ``POSTGRES_*`` 而非从原 DATABASE_URL 解析，避免
            URL 解析复杂度，且与 docker-compose 注入的 POSTGRES_* 一致。
         """
