@@ -55,20 +55,30 @@ else
 fi
 
 # 4. 验证监测系统 callback 拒绝无效 code（期望 401）
+#    CSRF 保护：先从 /sso/login 获取有效 state，再用无效 code 测试
 echo "[4/5] 验证 callback 拒绝无效 code..."
-STATUS=$(curl "${CURL_OPTS[@]}" "$MONITOR_URL/sso/callback?code=invalid")
+LOGIN_REDIRECT=$(curl -s -k -o /dev/null -w "%{redirect_url}" "$MONITOR_URL/sso/login")
+STATE=$(echo "$LOGIN_REDIRECT" | grep -oP 'state=\K[^&]+')
+if [ -z "$STATE" ]; then
+    echo "  ❌ 无法从 /sso/login 提取 state 参数"
+    exit 1
+fi
+STATUS=$(curl "${CURL_OPTS[@]}" "$MONITOR_URL/sso/callback?code=invalid&state=$STATE")
 if [ "$STATUS" = "401" ]; then
-    echo "  ✅ 无效 code 被拒绝"
+    echo "  ✅ 无效 code 被拒绝（401，使用有效 state）"
 else
     echo "  ❌ 无效 code 返回 $STATUS（期望 401）"
     exit 1
 fi
 
 # 5. 验证监测系统 callback 拒绝缺少 code（期望 400）
+#    使用新的有效 state（state 一次性消费，上次已用掉）
 echo "[5/5] 验证 callback 拒绝缺少 code..."
-STATUS=$(curl "${CURL_OPTS[@]}" "$MONITOR_URL/sso/callback")
+LOGIN_REDIRECT2=$(curl -s -k -o /dev/null -w "%{redirect_url}" "$MONITOR_URL/sso/login")
+STATE2=$(echo "$LOGIN_REDIRECT2" | grep -oP 'state=\K[^&]+')
+STATUS=$(curl "${CURL_OPTS[@]}" "$MONITOR_URL/sso/callback?state=$STATE2")
 if [ "$STATUS" = "400" ]; then
-    echo "  ✅ 缺少 code 被拒绝"
+    echo "  ✅ 缺少 code 被拒绝（400，使用有效 state）"
 else
     echo "  ❌ 缺少 code 返回 $STATUS（期望 400）"
     exit 1

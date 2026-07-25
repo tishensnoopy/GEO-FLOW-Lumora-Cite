@@ -18,7 +18,9 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
     CREATE SCHEMA IF NOT EXISTS monitor;
 
     -- 后续 CREATE TABLE / CREATE INDEX 默认在 monitor schema 下创建
-    SET search_path TO monitor;
+    -- search_path 包含 public：uuid-ossp 扩展装在 public，需通过 search_path
+    -- 引用 uuid_generate_v4()；monitor 在前优先，确保表建到 monitor schema
+    SET search_path TO monitor, public;
 
     CREATE TABLE IF NOT EXISTS article_distributions (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
