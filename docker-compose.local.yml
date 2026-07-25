@@ -80,6 +80,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-geo_password}
       # 应用层实际消费的 DATABASE_URL（database.py 直接读取，需与 POSTGRES_HOST 对齐）
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-geo_user}:${POSTGRES_PASSWORD:-geo_password}@geoflow-postgres:5432/geo_flow
+      # 可选：启用 DB 层权限隔离（需先执行 deploy/scripts/setup-db-roles.sh 创建 monitor_user）
+      # 设 MONITOR_DB_USER 后 config.py 自动重建 DATABASE_URL 使用此用户（对 public 只读 / monitor 读写）
+      MONITOR_DB_USER: ${MONITOR_DB_USER:-}
+      MONITOR_DB_PASSWORD: ${MONITOR_DB_PASSWORD:-}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-RedisLocal2026}

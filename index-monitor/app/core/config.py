@@ -49,6 +49,19 @@ class Settings(BaseSettings):
     )
 
     # ------------------------------------------------------------------ #
+    # DB 层权限隔离（改进 2）                                             #
+    # ------------------------------------------------------------------ #
+    # 可选：启用后应用改用专用 monitor_user 连接 PG（对 public 只读、对
+    # monitor 读写），DB 层强制隔离防误写 GEOFlow 数据。
+    # - 未设（默认）→ 继续用 POSTGRES_USER（geo_user），向后兼容；
+    # - 设 MONITOR_DB_USER → 下方 _apply_monitor_db_user validator 重建
+    #   DATABASE_URL 使用 monitor_user 凭据（host/port/db 仍取自 POSTGRES_*）。
+    # 密码未设时回退 POSTGRES_PASSWORD（便利场景）。
+    # 角色 + 权限由 deploy/scripts/setup-db-roles.sh 创建。
+    MONITOR_DB_USER: Optional[str] = None
+    MONITOR_DB_PASSWORD: Optional[str] = None
+
+    # ------------------------------------------------------------------ #
     # Redis 配置                                                          #
     # ------------------------------------------------------------------ #
     REDIS_HOST: str = "localhost"
@@ -95,6 +108,31 @@ class Settings(BaseSettings):
         if not self.SSO_GEOFLOW_USERINFO_URL:
             base = self.SSO_GEOFLOW_BASE_URL.rstrip("/")
             object.__setattr__(self, "SSO_GEOFLOW_USERINFO_URL", f"{base}/api/sso/userinfo")
+        return self
+
+    @model_validator(mode="after")
+    def _apply_monitor_db_user(self) -> "Settings":
+        """启用 DB 层权限隔离时，重建 DATABASE_URL 使用 monitor_user 凭据。
+
+        - ``MONITOR_DB_USER`` 为空（默认）→ 不动 ``DATABASE_URL``，继续用
+          ``POSTGRES_USER``（geo_user），向后兼容；
+        - ``MONITOR_DB_USER`` 非空 → 用 monitor_user + 密码重建 URL，host/port/db
+          仍取自 ``POSTGRES_*``。密码未设时回退 ``POSTGRES_PASSWORD``。
+
+        设计要点：
+        1. ``MONITOR_DB_USER`` 是启用 DB 层隔离的开关——设了就覆盖默认 URL，
+           确保操作者明确选择隔离用户（不会与 geo_user 默认 URL 冲突）；
+        2. 用 ``object.__setattr__`` 绕过 pydantic v2 的 frozen 模型约束（与
+           ``_derive_sso_userinfo_url`` 同模式）；
+        3. host/port/db 沿用 ``POSTGRES_*`` 而非从原 DATABASE_URL 解析，避免
+           URL 解析复杂度，且与 docker-compose 注入的 POSTGRES_* 一致。
+        """
+        if self.MONITOR_DB_USER:
+            password = self.MONITOR_DB_PASSWORD or self.POSTGRES_PASSWORD
+            object.__setattr__(self, "DATABASE_URL", (
+                f"postgresql+asyncpg://{self.MONITOR_DB_USER}:{password}"
+                f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+            ))
         return self
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
