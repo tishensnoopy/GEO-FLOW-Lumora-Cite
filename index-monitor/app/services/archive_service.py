@@ -13,10 +13,8 @@
 """
 import json
 import logging
-from datetime import date, datetime, timezone
-from typing import Optional
 
-from sqlalchemy import select, delete
+from sqlalchemy import select, exists
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.archived_distribution import ArchivedDistribution
@@ -66,6 +64,7 @@ class ArchiveService:
         不是 status=="deleted"（status 默认是 queued/synced）。
         """
         # D06：查 action=='delete' 的记录
+        # 去重：排除已归档的 remote_url（scheduler 每日运行，避免重复归档）
         query = (
             select(GeoflowArticleDistribution, GeoflowArticle, GeoflowDistributionChannel)
             .join(GeoflowArticle, GeoflowArticle.id == GeoflowArticleDistribution.article_id)
@@ -76,6 +75,9 @@ class ArchiveService:
             .where(
                 GeoflowArticleDistribution.action == "delete",  # D06
                 GeoflowArticleDistribution.remote_url.isnot(None),
+                ~exists(select(ArchivedDistribution).where(
+                    ArchivedDistribution.remote_url == GeoflowArticleDistribution.remote_url
+                )),
             )
         )
         rows = (await self.db.execute(query)).fetchall()
@@ -106,7 +108,7 @@ class ArchiveService:
                 meta_description=article.meta_description if article else None,
                 original_keyword=article.original_keyword if article else None,
                 published_at=article.published_at if article else None,
-                archived_at=datetime.now(timezone.utc),
+                # archived_at 由 DB server_default=func.now() 自动填值，无需显式赋值
                 # 模型有 geoflow_article_id 列（Integer），简报步骤 3 遗漏——补上以
                 # 保留跨 schema 关联（article.id 来自 public.articles）。
                 geoflow_article_id=article.id if article else None,
