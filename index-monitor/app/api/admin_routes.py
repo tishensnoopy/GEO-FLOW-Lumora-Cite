@@ -65,6 +65,10 @@ class ManualDistributionRequest(BaseModel):
     note: Optional[str] = None
 
 
+class ResetPasswordRequest(BaseModel):
+    new_password: str
+
+
 # ---------- Client Lifecycle ----------
 
 @router.post("/clients", status_code=201)
@@ -246,6 +250,30 @@ async def delete_client(
     )
 
     return {"client_id": client_id, "status": "deleted"}
+
+
+@router.put("/clients/{client_id}/password")
+async def admin_reset_password(
+    client_id: str,
+    req: ResetPasswordRequest,
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """admin 重置客户密码。不需旧密码，但记录审计日志。"""
+    result = await db.execute(select(Client).where(Client.client_id == client_id))
+    client = result.scalar_one_or_none()
+    if not client:
+        raise HTTPException(status_code=404, detail="客户不存在")
+
+    validate_password_strength(req.new_password)
+    client.password_hash = hash_password(req.new_password)
+    await db.commit()
+
+    await AuditLogService.log(
+        db, admin_user_id=admin["user_id"], admin_name=admin["name"],
+        action="reset_client_password", target_type="client", target_id=client_id,
+    )
+    return {"message": f"客户 {client_id} 密码已重置"}
 
 
 # ---------- Client Sites ----------

@@ -497,3 +497,49 @@ async def test_client_change_password_wrong_old_returns_400(client, db_session):
     finally:
         await db_session.delete(c)
         await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_admin_reset_client_password(client, db_session):
+    """admin 重置客户密码（不需旧密码 + 审计日志）。"""
+    from app.models.client import Client
+    from app.core.security import hash_password
+
+    c = Client(
+        client_id="reset_test", username="reset",
+        password_hash=hash_password("OldPass123"), status="active",
+    )
+    db_session.add(c)
+    await db_session.commit()
+
+    try:
+        resp = await client.put(
+            f"/api/v1/admin/clients/{c.client_id}/password",
+            json={"new_password": "NewReset123"},
+            headers=_admin_headers(),
+        )
+        assert resp.status_code == 200
+
+        # 用新密码登录
+        resp = await client.post(
+            "/api/v1/auth/login",
+            json={"client_id": "reset_test", "password": "NewReset123"},
+        )
+        assert resp.status_code == 200
+
+        # 验证审计日志
+        from app.models.admin_audit_log import AdminAuditLog
+        from sqlalchemy import select
+        log_result = await db_session.execute(
+            select(AdminAuditLog).where(AdminAuditLog.action == "reset_client_password")
+        )
+        assert log_result.scalar_one_or_none() is not None
+    finally:
+        # 清理：客户 + 关联审计日志（PUT 会写一条 reset_client_password 日志）
+        from app.models.admin_audit_log import AdminAuditLog
+        from sqlalchemy import delete
+        await db_session.delete(c)
+        await db_session.execute(
+            delete(AdminAuditLog).where(AdminAuditLog.target_id == "reset_test")
+        )
+        await db_session.commit()
