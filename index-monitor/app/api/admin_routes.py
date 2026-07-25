@@ -9,6 +9,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_admin
@@ -68,6 +69,13 @@ async def create_client(
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="client_id 已存在")
 
+    # 检查 username 唯一（DB 层 UNIQUE 约束，预先检查避免 IntegrityError）
+    existing_username = await db.execute(
+        select(Client).where(Client.username == req.username)
+    )
+    if existing_username.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="username 已存在")
+
     # 检查 email 唯一
     if req.contact_email:
         existing_email = await db.execute(
@@ -87,7 +95,11 @@ async def create_client(
         status="active",
     )
     db.add(client)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="数据冲突（唯一约束违反）")
 
     await AuditLogService.log(
         db, admin_user_id=admin["user_id"], admin_name=admin["name"],
@@ -159,7 +171,16 @@ async def update_client(
         client.company_name = req.company_name
     if req.contact_name is not None:
         client.contact_name = req.contact_name
-    if req.contact_email is not None:
+    if req.contact_email is not None and req.contact_email != client.contact_email:
+        # 唯一性检查：排除自身（Client.id != client.id），避免 TOCTOU 后触发 500
+        existing_email = await db.execute(
+            select(Client).where(
+                Client.contact_email == req.contact_email,
+                Client.id != client.id,
+            )
+        )
+        if existing_email.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="contact_email 已被其他客户使用")
         client.contact_email = req.contact_email
     if req.contact_phone is not None:
         client.contact_phone = req.contact_phone
@@ -167,7 +188,11 @@ async def update_client(
         validate_password_strength(req.password)
         client.password_hash = hash_password(req.password)
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="数据冲突（唯一约束违反）")
 
     action_map = {"active": "restore_client", "inactive": "deactivate_client", "deleted": "delete_client"}
     if req.status and req.status != old_status:
@@ -197,7 +222,11 @@ async def delete_client(
         raise HTTPException(status_code=404, detail="客户不存在")
 
     client.status = "deleted"
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="数据冲突（唯一约束违反）")
 
     await AuditLogService.log(
         db, admin_user_id=admin["user_id"], admin_name=admin["name"],
@@ -234,7 +263,11 @@ async def create_client_site(
         status="active",
     )
     db.add(site)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="数据冲突（唯一约束违反）")
 
     await AuditLogService.log(
         db, admin_user_id=admin["user_id"], admin_name=admin["name"],

@@ -74,6 +74,17 @@ async def test_create_client_success(client, db_session):
         data = resp.json()
         assert data["client_id"] == "test_create_endpoint"
         assert data["status"] == "active"
+
+        # 审计日志断言：create_client 已写入
+        from app.models.admin_audit_log import AdminAuditLog
+        from sqlalchemy import select
+        audit_result = await db_session.execute(
+            select(AdminAuditLog).where(
+                AdminAuditLog.action == "create_client",
+                AdminAuditLog.target_id == "test_create_endpoint",
+            )
+        )
+        assert audit_result.scalar_one_or_none() is not None, "审计日志未写入"
     finally:
         # 清理：客户 + 关联审计日志（POST 成功时会写一条 create_client 日志）
         from app.models.client import Client
@@ -153,6 +164,17 @@ async def test_deactivate_client_blocks_login(client, db_session):
         )
         assert resp.status_code == 200
 
+        # 审计日志断言：deactivate_client 已写入
+        from app.models.admin_audit_log import AdminAuditLog
+        from sqlalchemy import select
+        audit_result = await db_session.execute(
+            select(AdminAuditLog).where(
+                AdminAuditLog.action == "deactivate_client",
+                AdminAuditLog.target_id == "deactivate_test",
+            )
+        )
+        assert audit_result.scalar_one_or_none() is not None, "审计日志未写入"
+
         # 尝试登录应失败
         resp = await client.post(
             "/api/v1/auth/login",
@@ -166,5 +188,250 @@ async def test_deactivate_client_blocks_login(client, db_session):
         await db_session.delete(c)
         await db_session.execute(
             delete(AdminAuditLog).where(AdminAuditLog.target_id == "deactivate_test")
+        )
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_list_clients_pagination_and_include_deleted(client, db_session):
+    """客户列表分页 + include_deleted 过滤。"""
+    from app.models.client import Client
+
+    active_c = Client(
+        client_id="list_active_1", username="list_active_1",
+        password_hash="x", status="active",
+    )
+    deleted_c = Client(
+        client_id="list_deleted_1", username="list_deleted_1",
+        password_hash="x", status="deleted",
+    )
+    db_session.add_all([active_c, deleted_c])
+    await db_session.commit()
+
+    try:
+        # include_deleted=false → 只返回 active（deleted 不在结果中）
+        resp = await client.get(
+            "/api/v1/admin/clients?include_deleted=false",
+            headers=_admin_headers(),
+        )
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        client_ids = {it["client_id"] for it in items}
+        assert "list_active_1" in client_ids
+        assert "list_deleted_1" not in client_ids
+
+        # include_deleted=true → 两个都返回
+        resp = await client.get(
+            "/api/v1/admin/clients?include_deleted=true",
+            headers=_admin_headers(),
+        )
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        client_ids = {it["client_id"] for it in items}
+        assert "list_active_1" in client_ids
+        assert "list_deleted_1" in client_ids
+
+        # page=1&page_size=1 → 返回 1 个
+        resp = await client.get(
+            "/api/v1/admin/clients?page=1&page_size=1",
+            headers=_admin_headers(),
+        )
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        assert len(items) == 1
+    finally:
+        await db_session.delete(active_c)
+        await db_session.delete(deleted_c)
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_delete_client_soft_delete(client, db_session):
+    """DELETE 软删除客户（status=deleted，不真删）。"""
+    from app.models.client import Client
+    from app.models.admin_audit_log import AdminAuditLog
+    from sqlalchemy import select, delete
+
+    c = Client(
+        client_id="del_soft_test", username="del_soft",
+        password_hash="x", status="active",
+    )
+    db_session.add(c)
+    await db_session.commit()
+
+    try:
+        # DELETE → 200, status=deleted
+        resp = await client.delete(
+            f"/api/v1/admin/clients/{c.client_id}",
+            headers=_admin_headers(),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "deleted"
+
+        # 查 DB 确认软删除（status=deleted，记录仍在）
+        # refresh 以获取 HTTP 请求通过另一 session 写入的最新状态
+        await db_session.refresh(c)
+        assert c.status == "deleted", "客户未被软删除"
+
+        # 审计日志断言：delete_client 已写入
+        audit_result = await db_session.execute(
+            select(AdminAuditLog).where(
+                AdminAuditLog.action == "delete_client",
+                AdminAuditLog.target_id == "del_soft_test",
+            )
+        )
+        assert audit_result.scalar_one_or_none() is not None, "审计日志未写入"
+
+        # DELETE 不存在的 client_id → 404
+        resp = await client.delete(
+            "/api/v1/admin/clients/non_existent_del_test",
+            headers=_admin_headers(),
+        )
+        assert resp.status_code == 404
+    finally:
+        await db_session.delete(c)
+        await db_session.execute(
+            delete(AdminAuditLog).where(AdminAuditLog.target_id == "del_soft_test")
+        )
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_create_client_site_normalizes_domain(client, db_session):
+    """POST /client_sites 标准化 domain（去 www）+ 唯一性检查。"""
+    from app.models.client import Client, ClientSite
+    from app.models.admin_audit_log import AdminAuditLog
+    from sqlalchemy import select, delete
+
+    # 先创建一个 client（client_site.client_id 是字符串引用）
+    c = Client(
+        client_id="site_norm_test", username="site_norm",
+        password_hash="x", status="active",
+    )
+    db_session.add(c)
+    await db_session.commit()
+
+    site_id = None
+    try:
+        # POST domain="www.test-site.example.com" → 201, domain="test-site.example.com"
+        resp = await client.post(
+            "/api/v1/admin/client_sites",
+            json={
+                "client_id": "site_norm_test",
+                "site_name": "测试站点",
+                "domain": "www.test-site.example.com",
+            },
+            headers=_admin_headers(),
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["domain"] == "test-site.example.com"
+        site_id = data["id"]
+
+        # 查 DB 确认 domain 已标准化
+        result = await db_session.execute(
+            select(ClientSite).where(ClientSite.domain == "test-site.example.com")
+        )
+        site = result.scalar_one_or_none()
+        assert site is not None
+        assert site.domain == "test-site.example.com"
+
+        # 审计日志断言：create_client_site 已写入
+        audit_result = await db_session.execute(
+            select(AdminAuditLog).where(
+                AdminAuditLog.action == "create_client_site",
+                AdminAuditLog.target_id == site_id,
+            )
+        )
+        assert audit_result.scalar_one_or_none() is not None, "审计日志未写入"
+
+        # POST 同一 domain → 409（标准化后相同，唯一性冲突）
+        resp = await client.post(
+            "/api/v1/admin/client_sites",
+            json={
+                "client_id": "site_norm_test",
+                "site_name": "重复站点",
+                "domain": "www.test-site.example.com",
+            },
+            headers=_admin_headers(),
+        )
+        assert resp.status_code == 409
+    finally:
+        # 清理：site + client + 审计日志
+        result = await db_session.execute(
+            select(ClientSite).where(ClientSite.domain == "test-site.example.com")
+        )
+        s = result.scalar_one_or_none()
+        if s is not None:
+            await db_session.delete(s)
+        await db_session.delete(c)
+        if site_id is not None:
+            await db_session.execute(
+                delete(AdminAuditLog).where(AdminAuditLog.target_id == site_id)
+            )
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_update_client_reset_password_and_info(client, db_session):
+    """PUT /clients 重置密码 + 编辑信息 + 校验。"""
+    from app.models.client import Client
+    from app.models.admin_audit_log import AdminAuditLog
+    from app.core.security import hash_password, verify_password
+    from sqlalchemy import select, delete
+
+    c = Client(
+        client_id="upd_pw_test", username="upd_pw",
+        password_hash=hash_password("Pass1234"), status="active",
+        company_name="旧公司",
+    )
+    db_session.add(c)
+    await db_session.commit()
+
+    try:
+        # PUT 重置密码 + 改公司名
+        resp = await client.put(
+            f"/api/v1/admin/clients/{c.client_id}",
+            json={"password": "NewPass5678", "company_name": "新公司"},
+            headers=_admin_headers(),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "active"  # status 未变
+
+        # 查 DB 确认密码已重置 + 公司名已更新
+        # refresh 以获取 HTTP 请求通过另一 session 写入的最新状态
+        await db_session.refresh(c)
+        assert verify_password("NewPass5678", c.password_hash), "密码未重置"
+        assert not verify_password("Pass1234", c.password_hash), "旧密码仍可用"
+        assert c.company_name == "新公司"
+
+        # 审计日志断言：update_client 已写入
+        audit_result = await db_session.execute(
+            select(AdminAuditLog).where(
+                AdminAuditLog.action == "update_client",
+                AdminAuditLog.target_id == "upd_pw_test",
+            )
+        )
+        assert audit_result.scalar_one_or_none() is not None, "审计日志未写入"
+
+        # PUT 无效 status → 400
+        resp = await client.put(
+            f"/api/v1/admin/clients/{c.client_id}",
+            json={"status": "invalid_status"},
+            headers=_admin_headers(),
+        )
+        assert resp.status_code == 400
+
+        # PUT 不存在的 client_id → 404
+        resp = await client.put(
+            "/api/v1/admin/clients/non_existent_upd_test",
+            json={"company_name": "不存在"},
+            headers=_admin_headers(),
+        )
+        assert resp.status_code == 404
+    finally:
+        await db_session.delete(c)
+        await db_session.execute(
+            delete(AdminAuditLog).where(AdminAuditLog.target_id == "upd_pw_test")
         )
         await db_session.commit()
