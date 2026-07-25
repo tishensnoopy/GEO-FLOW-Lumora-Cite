@@ -13,7 +13,7 @@ from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_admin
+from app.api.deps import get_current_admin, get_current_user
 from app.core.database import get_db
 from app.core.security import hash_password, verify_password
 from app.models.admin_audit_log import AdminAuditLog
@@ -347,6 +347,31 @@ async def create_manual_distribution(
         detail={"url": req.remote_url, "client_id": result.get("client_id")},
     )
     return result
+
+
+# GET /distributions：client 查询自己的分发记录（D04 修复）
+# 挂在 distribution_router（无 prefix），实际路径 /api/v1/distributions
+# admin 应使用 GET /admin/distributions（跨客户视图）
+@distribution_router.get("/distributions")
+async def list_client_distributions(
+    user_client: tuple = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """client 查看自己的分发记录（按 client_id 过滤）。
+
+    用 get_current_user 统一鉴权，client 角色按 user.client_id 过滤；
+    非 client 角色（admin）返回 403，引导其走 /admin/distributions。
+    """
+    user, role = user_client
+    if role != "client":
+        raise HTTPException(
+            status_code=403,
+            detail="本端点仅供客户使用；admin 请用 /admin/distributions",
+        )
+
+    service = DistributionQueryService(db)
+    items = await service.list_distributions(client_id=user.client_id)
+    return {"items": items, "total": len(items)}
 
 
 # GET /admin/distributions：admin 查询所有分发记录（跨客户），挂在原 router 上
