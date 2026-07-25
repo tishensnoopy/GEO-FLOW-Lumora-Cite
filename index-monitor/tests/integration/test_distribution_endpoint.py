@@ -8,6 +8,32 @@ from datetime import datetime, timedelta, timezone
 from app.core.config import settings
 
 
+@pytest.fixture(autouse=True, scope="module")
+def ensure_geoflow_tables():
+    """Module 级 autouse fixture：确保 GEOFlow public schema 表存在。
+
+    ``tests/integration/test_cross_schema_join.py`` 和
+    ``test_manual_distribution_endpoint.py`` 的 module fixture teardown
+    会 DROP ``public.articles`` + ``public.article_distributions``。
+    本 fixture 在模块开始时用 ``GeoflowBase.metadata.create_all`` 建表
+    （IF NOT EXISTS 幂等），保证本模块测试可运行。
+
+    参考 ``test_checker_geoflow_read.py`` 的同类处理。
+    """
+    from sqlalchemy import create_engine
+    from app.models.geoflow_models import GeoflowBase
+
+    url = (
+        f"postgresql+psycopg2://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
+        f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
+    )
+    engine = create_engine(url)
+    try:
+        GeoflowBase.metadata.create_all(engine)
+    finally:
+        engine.dispose()
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def _override_app_db():
     """为每个测试 override ``get_db`` 依赖，使用当前事件循环的全新 engine。

@@ -19,6 +19,33 @@ from sqlalchemy import select, delete
 from app.services.archive_service import ArchiveService
 
 
+@pytest.fixture(autouse=True, scope="module")
+def ensure_geoflow_tables():
+    """Module 级 autouse fixture：确保 GEOFlow public schema 表存在。
+
+    ``tests/integration/test_cross_schema_join.py`` 和
+    ``test_manual_distribution_endpoint.py`` 的 module fixture teardown
+    会 DROP ``public.articles`` + ``public.article_distributions``。
+    本 fixture 在模块开始时用 ``GeoflowBase.metadata.create_all`` 建表
+    （IF NOT EXISTS 幂等），保证本模块测试可运行。
+
+    参考 ``test_checker_geoflow_read.py`` 的同类处理。
+    """
+    from sqlalchemy import create_engine
+    from app.core.config import settings
+    from app.models.geoflow_models import GeoflowBase
+
+    url = (
+        f"postgresql+psycopg2://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
+        f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
+    )
+    engine = create_engine(url)
+    try:
+        GeoflowBase.metadata.create_all(engine)
+    finally:
+        engine.dispose()
+
+
 @pytest.mark.asyncio
 async def test_archive_deleted_distributions_matches_client_by_domain(db_session):
     """D01：归档前通过 domain_map 匹配 client_id，None 时跳过。

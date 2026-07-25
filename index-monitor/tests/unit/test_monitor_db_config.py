@@ -25,17 +25,23 @@ from app.core.config import Settings
 
 # --------------------------------------------------------------------------- #
 # 1. 默认值：MONITOR_DB_USER / PASSWORD 为 None                                #
+#    用 monkeypatch 清除环境变量，确保测试的是 Settings 默认值而非 env 覆盖    #
+#    （Docker 中 MONITOR_DB_USER= 为空串会覆盖 None 默认值）                   #
 # --------------------------------------------------------------------------- #
-def test_monitor_db_user_defaults_to_none():
+def test_monitor_db_user_defaults_to_none(monkeypatch):
     """MONITOR_DB_USER 默认 None（未启用 DB 层隔离）。"""
+    monkeypatch.delenv("MONITOR_DB_USER", raising=False)
+    monkeypatch.delenv("MONITOR_DB_PASSWORD", raising=False)
     s = Settings()
     assert s.MONITOR_DB_USER is None, (
         f"MONITOR_DB_USER 默认应为 None，实际: {s.MONITOR_DB_USER!r}"
     )
 
 
-def test_monitor_db_password_defaults_to_none():
+def test_monitor_db_password_defaults_to_none(monkeypatch):
     """MONITOR_DB_PASSWORD 默认 None。"""
+    monkeypatch.delenv("MONITOR_DB_USER", raising=False)
+    monkeypatch.delenv("MONITOR_DB_PASSWORD", raising=False)
     s = Settings()
     assert s.MONITOR_DB_PASSWORD is None, (
         f"MONITOR_DB_PASSWORD 默认应为 None，实际: {s.MONITOR_DB_PASSWORD!r}"
