@@ -1,0 +1,173 @@
+<!-- index-monitor/app/templates/report.html -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>监测报告 - {{ client_name }}</title>
+    <style>
+        @page {
+            size: A4;
+            margin: 20mm 15mm 25mm 15mm;
+        }
+        body {
+            font-family: "Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+            font-size: 12px;
+            color: #333;
+            line-height: 1.6;
+        }
+        /* 水印 + Logo 每页显示 */
+        .watermark {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%) rotate(-45deg);
+            font-size: 60px;
+            color: rgba(0, 0, 0, 0.05);
+            z-index: -1;
+            pointer-events: none;
+        }
+        .header-logo {
+            position: fixed;
+            top: 5mm;
+            right: 15mm;
+            width: 30mm;
+            z-index: 100;
+        }
+        .footer {
+            position: fixed;
+            bottom: 10mm;
+            left: 15mm;
+            right: 15mm;
+            text-align: center;
+            font-size: 10px;
+            color: #999;
+            border-top: 1px solid #eee;
+            padding-top: 5mm;
+        }
+        /* 图表/卡片不跨页切割 */
+        .chart-container, .stat-card, .distribution-row {
+            page-break-inside: avoid;
+            break-inside: avoid;
+        }
+        h1 {
+            font-size: 20px;
+            color: #2c3e50;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 5px;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            margin: 15px 0;
+        }
+        .stat-card {
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 10px;
+            text-align: center;
+        }
+        .stat-card .value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #3498db;
+        }
+        .stat-card .label {
+            font-size: 11px;
+            color: #666;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 10px 0;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 6px 8px;
+            text-align: left;
+            font-size: 11px;
+        }
+        th {
+            background-color: #f5f5f5;
+            font-weight: bold;
+        }
+        .chart-img {
+            max-width: 100%;
+            height: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="watermark">知氪AI监测</div>
+    <img class="header-logo" src="data:image/png;base64,{{ logo_base64 }}" alt="Logo">
+
+    <h1>监测报告</h1>
+    <p>
+        <strong>客户：</strong>{{ client_name }}<br>
+        <strong>报告周期：</strong>{{ date_from }} 至 {{ date_to }}<br>
+        <strong>生成时间：</strong>{{ generated_at }}
+    </p>
+
+    <h2>一、数据概览</h2>
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="value">{{ stats.total_distributions }}</div>
+            <div class="label">分发总数</div>
+        </div>
+        <div class="stat-card">
+            <div class="value">{{ stats.indexed_count }}</div>
+            <div class="label">已收录</div>
+        </div>
+        <div class="stat-card">
+            <div class="value">{{ stats.citation_count }}</div>
+            <div class="label">AI 采信</div>
+        </div>
+        <div class="stat-card">
+            <div class="value">{{ "%.1f"|format(stats.avg_index_rate * 100) }}%</div>
+            <div class="label">平均收录率</div>
+        </div>
+    </div>
+
+    <h2>二、收录趋势</h2>
+    <div class="chart-container">
+        <img class="chart-img" src="{{ charts.trend }}" alt="收录趋势图">
+    </div>
+
+    <h2>三、AI 采信分布</h2>
+    <div class="chart-container">
+        <img class="chart-img" src="{{ charts.pie }}" alt="AI 采信分布">
+    </div>
+
+    <h2>四、分发明细</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>序号</th>
+                <th>文章标题</th>
+                <th>URL</th>
+                <th>来源</th>
+                <th>百度</th>
+                <th>必应</th>
+                <th>状态</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for dist in distributions %}
+            <tr class="distribution-row">
+                <td>{{ loop.index }}</td>
+                <td>{{ dist.content_title or '-' }}</td>
+                <td style="word-break: break-all; max-width: 200px;">{{ dist.remote_url }}</td>
+                <td>{{ dist.source }}</td>
+                <td>{{ dist.index_status.baidu }}</td>
+                <td>{{ dist.index_status.bing }}</td>
+                <td>{{ dist.status }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <div class="footer">
+        知氪AI全链路监测平台 | 机密报告 | 第 {{ page_number }} 页
+    </div>
+</body>
+</html>
