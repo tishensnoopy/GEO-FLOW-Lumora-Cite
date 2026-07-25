@@ -1,0 +1,246 @@
+# index-monitor/app/api/admin_routes.py
+"""管理员端点：客户生命周期 + 站点管理 + 手动录入 + 批量检测。
+
+设计文档第 9 节。前缀 /api/v1/admin。
+"""
+import uuid
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, EmailStr
+from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import get_current_admin
+from app.core.database import get_db
+from app.core.security import hash_password, verify_password
+from app.models.admin_audit_log import AdminAuditLog
+from app.models.client import Client, ClientSite
+from app.services.audit_log import AuditLogService
+from app.services.distribution_query import DistributionQueryService
+from app.utils.validators import validate_password_strength, normalize_domain
+
+router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+# ---------- Request Models ----------
+
+class CreateClientRequest(BaseModel):
+    client_id: str
+    username: str
+    password: str
+    company_name: Optional[str] = None
+    contact_name: Optional[str] = None
+    contact_email: Optional[EmailStr] = None
+    contact_phone: Optional[str] = None
+
+
+class UpdateClientRequest(BaseModel):
+    status: Optional[str] = None  # active/inactive/deleted
+    company_name: Optional[str] = None
+    contact_name: Optional[str] = None
+    contact_email: Optional[EmailStr] = None
+    contact_phone: Optional[str] = None
+    password: Optional[str] = None  # 重置密码
+
+
+class CreateClientSiteRequest(BaseModel):
+    client_id: str
+    site_name: str
+    domain: str
+    site_type: str = "official"
+    has_wordpress: bool = False
+
+
+# ---------- Client Lifecycle ----------
+
+@router.post("/clients", status_code=201)
+async def create_client(
+    req: CreateClientRequest,
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """创建客户账号。"""
+    validate_password_strength(req.password)
+
+    # 检查 client_id 唯一
+    existing = await db.execute(select(Client).where(Client.client_id == req.client_id))
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="client_id 已存在")
+
+    # 检查 email 唯一
+    if req.contact_email:
+        existing_email = await db.execute(
+            select(Client).where(Client.contact_email == req.contact_email)
+        )
+        if existing_email.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="contact_email 已存在")
+
+    client = Client(
+        client_id=req.client_id,
+        username=req.username,
+        password_hash=hash_password(req.password),
+        company_name=req.company_name,
+        contact_name=req.contact_name,
+        contact_email=req.contact_email,
+        contact_phone=req.contact_phone,
+        status="active",
+    )
+    db.add(client)
+    await db.commit()
+
+    await AuditLogService.log(
+        db, admin_user_id=admin["user_id"], admin_name=admin["name"],
+        action="create_client", target_type="client", target_id=req.client_id,
+        detail={"company_name": req.company_name},
+    )
+
+    return {
+        "id": str(client.id),
+        "client_id": client.client_id,
+        "status": client.status,
+    }
+
+
+@router.get("/clients")
+async def list_clients(
+    include_deleted: bool = False,
+    page: int = 1,
+    page_size: int = 20,
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """客户列表（分页）。"""
+    query = select(Client)
+    if not include_deleted:
+        query = query.where(Client.status != "deleted")
+    query = query.offset((page - 1) * page_size).limit(page_size)
+    result = await db.execute(query)
+    clients = result.scalars().all()
+    return {
+        "items": [
+            {
+                "id": str(c.id),
+                "client_id": c.client_id,
+                "username": c.username,
+                "company_name": c.company_name,
+                "contact_name": c.contact_name,
+                "contact_email": c.contact_email,
+                "status": c.status,
+                "last_login_at": c.last_login_at.isoformat() if c.last_login_at else None,
+            }
+            for c in clients
+        ],
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+@router.put("/clients/{client_id}")
+async def update_client(
+    client_id: str,
+    req: UpdateClientRequest,
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """更新客户（状态变更/重置密码/编辑信息）。"""
+    result = await db.execute(select(Client).where(Client.client_id == client_id))
+    client = result.scalar_one_or_none()
+    if not client:
+        raise HTTPException(status_code=404, detail="客户不存在")
+
+    old_status = client.status
+
+    if req.status:
+        if req.status not in ("active", "inactive", "deleted"):
+            raise HTTPException(status_code=400, detail="无效状态")
+        client.status = req.status
+    if req.company_name is not None:
+        client.company_name = req.company_name
+    if req.contact_name is not None:
+        client.contact_name = req.contact_name
+    if req.contact_email is not None:
+        client.contact_email = req.contact_email
+    if req.contact_phone is not None:
+        client.contact_phone = req.contact_phone
+    if req.password:
+        validate_password_strength(req.password)
+        client.password_hash = hash_password(req.password)
+
+    await db.commit()
+
+    action_map = {"active": "restore_client", "inactive": "deactivate_client", "deleted": "delete_client"}
+    if req.status and req.status != old_status:
+        action = action_map.get(req.status, "update_client")
+    else:
+        action = "update_client"
+
+    await AuditLogService.log(
+        db, admin_user_id=admin["user_id"], admin_name=admin["name"],
+        action=action, target_type="client", target_id=client_id,
+        detail={"old_status": old_status, "new_status": client.status},
+    )
+
+    return {"client_id": client_id, "status": client.status}
+
+
+@router.delete("/clients/{client_id}")
+async def delete_client(
+    client_id: str,
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """软删除客户（status=deleted）。"""
+    result = await db.execute(select(Client).where(Client.client_id == client_id))
+    client = result.scalar_one_or_none()
+    if not client:
+        raise HTTPException(status_code=404, detail="客户不存在")
+
+    client.status = "deleted"
+    await db.commit()
+
+    await AuditLogService.log(
+        db, admin_user_id=admin["user_id"], admin_name=admin["name"],
+        action="delete_client", target_type="client", target_id=client_id,
+    )
+
+    return {"client_id": client_id, "status": "deleted"}
+
+
+# ---------- Client Sites ----------
+
+@router.post("/client_sites", status_code=201)
+async def create_client_site(
+    req: CreateClientSiteRequest,
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """登记客户站点（domain 自动标准化去 www）。"""
+    normalized = normalize_domain(req.domain)
+
+    # 检查 domain 唯一
+    existing = await db.execute(
+        select(ClientSite).where(ClientSite.domain == normalized)
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail=f"domain '{normalized}' 已登记")
+
+    site = ClientSite(
+        client_id=req.client_id,
+        site_name=req.site_name,
+        domain=normalized,
+        site_type=req.site_type,
+        has_wordpress=req.has_wordpress,
+        status="active",
+    )
+    db.add(site)
+    await db.commit()
+
+    await AuditLogService.log(
+        db, admin_user_id=admin["user_id"], admin_name=admin["name"],
+        action="create_client_site", target_type="client_site",
+        target_id=str(site.id),
+        detail={"client_id": req.client_id, "domain": normalized},
+    )
+
+    return {"id": str(site.id), "domain": normalized}

@@ -35,6 +35,10 @@ app.include_router(router, prefix="/api/v1")
 # 3. 与 GEOFlow SsoController 约定的 redirect_uri=https://monitor.zkeeeai.com/sso/callback 一致。
 app.include_router(sso_router)
 
+# admin 后台路由：客户生命周期 + 站点管理 + 手动录入 + 批量检测（设计文档第 9 节）
+from app.api.admin_routes import router as admin_router
+app.include_router(admin_router, prefix="/api/v1")
+
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "version": settings.APP_VERSION}

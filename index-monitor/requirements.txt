@@ -6,6 +6,8 @@ psycopg2-binary==2.9.9
 redis==5.0.1
 pydantic==2.5.3
 pydantic-settings==2.1.0
+# pydantic.EmailStr 需要 email-validator 后端（admin_routes.py 客户联系邮箱校验）
+email-validator==2.2.0
 python-dotenv==1.0.0
 httpx==0.26.0
 beautifulsoup4==4.12.3
