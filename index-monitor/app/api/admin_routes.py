@@ -358,3 +358,32 @@ async def list_distributions(
     service = DistributionQueryService(db)
     items = await service.list_distributions(client_id=client_id, source=source)
     return {"items": items, "total": len(items)}
+
+
+class BatchScanRequest(BaseModel):
+    distribution_ids: list[str]
+    scan_type: str  # 'index' | 'citation' | 'both'
+
+
+@router.post("/distributions/batch-scan")
+async def batch_scan(
+    req: BatchScanRequest,
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """批量触发检测。设计文档第 9.1 节。"""
+    if req.scan_type not in ("index", "citation", "both"):
+        raise HTTPException(status_code=400, detail="scan_type 必须是 index/citation/both")
+
+    if not req.distribution_ids:
+        raise HTTPException(status_code=400, detail="distribution_ids 不能为空")
+
+    await AuditLogService.log(
+        db, admin_user_id=admin["user_id"], admin_name=admin["name"],
+        action="batch_scan",
+        detail={"ids": req.distribution_ids, "type": req.scan_type},
+    )
+
+    # 实际检测入队逻辑在 M4 定时任务/后台任务中实现
+    # 此处只返回入队确认（异步处理）
+    return {"queued": len(req.distribution_ids), "scan_type": req.scan_type}
