@@ -33,3 +33,22 @@ def test_start_scheduler_registers_index_check():
     index_job = scheduler.get_job("index_check")
     assert index_job is not None
     assert index_job.trigger.__class__.__name__ == "CronTrigger"
+
+
+def test_start_scheduler_registers_archive_scan():
+    """start_scheduler 注册 archive_scan 任务（任务 9 补丁，每日 02:00 归档扫描）。
+
+    验证 D03 修复：scheduler.py 增量追加 scheduled_archive_scan，不替换现有任务。
+    """
+    scheduler.remove_all_jobs()
+    start_scheduler()
+
+    archive_job = scheduler.get_job("archive_scan")
+    assert archive_job is not None, "归档扫描定时任务未注册（D03 修复未生效）"
+    assert archive_job.trigger.__class__.__name__ == "CronTrigger"
+
+    # 现有任务仍应存在（D03：增量追加，不替换）
+    job_ids = [job.id for job in scheduler.get_jobs()]
+    assert "index_check" in job_ids, "D03 增量追加破坏了现有 index_check"
+    assert "export_processor" in job_ids, "D03 增量追加破坏了现有 export_processor"
+    assert "archive_scan" in job_ids

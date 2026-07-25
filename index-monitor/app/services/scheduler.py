@@ -75,15 +75,46 @@ def start_scheduler():
         id="export_processor",
         replace_existing=True,
     )
+    # 归档扫描：每日 02:00 归档已删除的分发记录（任务 9 补丁，D03 增量追加）
+    scheduler.add_job(
+        scheduled_archive_scan,
+        CronTrigger(hour=2, minute=0),
+        id="archive_scan",
+        replace_existing=True,
+    )
     # 幂等启动：若 scheduler 已在运行（如测试中多次调用 start_scheduler），
     # 跳过 start() 避免 SchedulerAlreadyRunningError；add_job 已用 replace_existing=True 兜底。
     if not scheduler.running:
         scheduler.start()
         logger.info(
-            "APScheduler 已启动：收录检测(每日 02:00) + 导出处理(每 30 秒)"
+            "APScheduler 已启动：收录检测(每日 02:00) + 导出处理(每 30 秒) + 归档扫描(每日 02:00)"
         )
 
 
 def stop_scheduler():
     # wait=True：等待当前正在执行的任务完成后再关闭，避免定时任务被强制中断
     scheduler.shutdown(wait=True)
+
+
+# D03 修复：增量追加 scheduled_archive_scan（不替换现有 scheduled_export_processor）。
+# 控制者裁定 1：用 async_session（不是 async_session_factory，该符号不存在）。
+# 控制者裁定 2：不实现 scheduled_monthly_archive（不在任务 9 范围）。
+# 控制者裁定 5：timezone 已在 archive_service.py 顶部导入，本函数只需延迟导入
+# ArchiveService 和 async_session。
+async def scheduled_archive_scan():
+    """每日 02:00 归档已删除的分发记录（任务 9 补丁）。
+
+    查 action=='delete' 的 GeoflowArticleDistribution，按 remote_url 的 domain
+    匹配 ClientSite.client_id，写入 monitor.archived_distributions 表。
+    D01/D02/D06 修复详见 ArchiveService.archive_deleted_distributions。
+    """
+    # 延迟导入避免循环依赖
+    from app.services.archive_service import ArchiveService
+
+    # 注：async_session 已在文件顶部导入（from app.core.database import async_session），
+    # 此处直接复用。控制者裁定 5 提到"延迟导入 async_session"——但既已在模块作用域，
+    # 重复延迟导入会造成冗余，故直接使用。
+    async with async_session() as db:
+        service = ArchiveService(db)
+        count = await service.archive_deleted_distributions()
+        logger.info(f"归档扫描完成：归档 {count} 条已删除分发记录")
