@@ -14,7 +14,6 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.article import ArticleDistribution
 from app.models.geoflow_models import GeoflowArticleDistribution
 from app.models.manual_distribution import ManualDistribution
 from app.models.citation_result import CitationResult

@@ -436,3 +436,203 @@ async def test_create_manual_duplicate_url_in_geoflow_raises_409(db_session):
         await db_session.delete(site)
         await db_session.delete(client)
         await db_session.commit()
+
+
+# ===========================================================================
+# C10 修复（整分支代码审查发现）：list_distributions 日期过滤
+#
+# 原实现 list_distributions 只支持 client_id / source 过滤，无日期范围。
+# 但 ExportTask.date_from / date_to 字段已存在，_assemble_data 调用
+# list_distributions 时未传递日期 → 导出报告包含全量数据，与用户选择的
+# 日期范围不符。本组测试覆盖 date_from / date_to 过滤路径。
+# ===========================================================================
+
+from datetime import datetime, timezone, timedelta  # noqa: E402
+
+
+def _make_manual_with_date(client_id: str, url: str, created_at: datetime):
+    """构造 ManualDistribution 并显式设置 created_at（覆盖 server_default）。"""
+    from app.models.manual_distribution import ManualDistribution
+    return ManualDistribution(
+        client_id=client_id,
+        remote_url=url,
+        status="synced",
+        created_at=created_at,
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_distributions_filters_by_date_range(db_session):
+    """date_from + date_to 同时提供：只返回范围内的记录。
+
+    插入 3 条手动记录（7/10、7/20、7/30），过滤 7/15-7/25 → 只返回 7/20。
+    """
+    from app.models.client import Client
+
+    client = Client(
+        client_id="test_date_range", username="date_range",
+        password_hash="x", status="active",
+    )
+    db_session.add(client)
+    await db_session.flush()
+
+    urls_by_date = {
+        "https://date-range.example.com/early": datetime(2026, 7, 10, tzinfo=timezone.utc),
+        "https://date-range.example.com/mid": datetime(2026, 7, 20, tzinfo=timezone.utc),
+        "https://date-range.example.com/late": datetime(2026, 7, 30, tzinfo=timezone.utc),
+    }
+    records = [
+        _make_manual_with_date("test_date_range", url, ts)
+        for url, ts in urls_by_date.items()
+    ]
+    db_session.add_all(records)
+    await db_session.commit()
+
+    try:
+        service = DistributionQueryService(db_session)
+        from datetime import date
+        result = await service.list_distributions(
+            client_id="test_date_range",
+            source="manual",
+            date_from=date(2026, 7, 15),
+            date_to=date(2026, 7, 25),
+        )
+        # 只返回 7/20 那一条
+        assert len(result) == 1
+        assert result[0]["remote_url"] == "https://date-range.example.com/mid"
+    finally:
+        for r in records:
+            await db_session.delete(r)
+        await db_session.delete(client)
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_list_distributions_date_from_only(db_session):
+    """只提供 date_from：返回 >= date_from 的所有记录。"""
+    from app.models.client import Client
+
+    client = Client(
+        client_id="test_date_from", username="date_from",
+        password_hash="x", status="active",
+    )
+    db_session.add(client)
+    await db_session.flush()
+
+    records = [
+        _make_manual_with_date(
+            "test_date_from", "https://date-from.example.com/early",
+            datetime(2026, 7, 10, tzinfo=timezone.utc),
+        ),
+        _make_manual_with_date(
+            "test_date_from", "https://date-from.example.com/late",
+            datetime(2026, 7, 25, tzinfo=timezone.utc),
+        ),
+    ]
+    db_session.add_all(records)
+    await db_session.commit()
+
+    try:
+        service = DistributionQueryService(db_session)
+        from datetime import date
+        result = await service.list_distributions(
+            client_id="test_date_from",
+            source="manual",
+            date_from=date(2026, 7, 20),
+        )
+        # 只返回 7/25 那一条（7/10 < 7/20 被过滤）
+        assert len(result) == 1
+        assert result[0]["remote_url"] == "https://date-from.example.com/late"
+    finally:
+        for r in records:
+            await db_session.delete(r)
+        await db_session.delete(client)
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_list_distributions_date_to_only(db_session):
+    """只提供 date_to：返回 <= date_to 的所有记录（包含当天）。"""
+    from app.models.client import Client
+
+    client = Client(
+        client_id="test_date_to", username="date_to",
+        password_hash="x", status="active",
+    )
+    db_session.add(client)
+    await db_session.flush()
+
+    records = [
+        _make_manual_with_date(
+            "test_date_to", "https://date-to.example.com/early",
+            datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc),
+        ),
+        _make_manual_with_date(
+            "test_date_to", "https://date-to.example.com/edge",
+            datetime(2026, 7, 20, 23, 59, tzinfo=timezone.utc),
+        ),
+        _make_manual_with_date(
+            "test_date_to", "https://date-to.example.com/late",
+            datetime(2026, 7, 25, tzinfo=timezone.utc),
+        ),
+    ]
+    db_session.add_all(records)
+    await db_session.commit()
+
+    try:
+        service = DistributionQueryService(db_session)
+        from datetime import date
+        result = await service.list_distributions(
+            client_id="test_date_to",
+            source="manual",
+            date_to=date(2026, 7, 20),
+        )
+        # 返回 7/10 和 7/20（含当天结束），7/25 被过滤
+        urls = {r["remote_url"] for r in result}
+        assert "https://date-to.example.com/early" in urls
+        assert "https://date-to.example.com/edge" in urls
+        assert "https://date-to.example.com/late" not in urls
+    finally:
+        for r in records:
+            await db_session.delete(r)
+        await db_session.delete(client)
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_list_distributions_no_date_filter_returns_all(db_session):
+    """无日期参数：返回全部记录（向后兼容）。"""
+    from app.models.client import Client
+
+    client = Client(
+        client_id="test_no_date", username="no_date",
+        password_hash="x", status="active",
+    )
+    db_session.add(client)
+    await db_session.flush()
+
+    records = [
+        _make_manual_with_date(
+            "test_no_date", "https://no-date.example.com/a",
+            datetime(2026, 7, 10, tzinfo=timezone.utc),
+        ),
+        _make_manual_with_date(
+            "test_no_date", "https://no-date.example.com/b",
+            datetime(2026, 7, 25, tzinfo=timezone.utc),
+        ),
+    ]
+    db_session.add_all(records)
+    await db_session.commit()
+
+    try:
+        service = DistributionQueryService(db_session)
+        result = await service.list_distributions(
+            client_id="test_no_date",
+            source="manual",
+        )
+        assert len(result) == 2
+    finally:
+        for r in records:
+            await db_session.delete(r)
+        await db_session.delete(client)
+        await db_session.commit()

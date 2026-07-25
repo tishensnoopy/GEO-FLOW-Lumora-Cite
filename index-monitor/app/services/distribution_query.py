@@ -12,6 +12,7 @@
 合并后按 distributed_at 降序排列。
 """
 import json
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 
 from fastapi import HTTPException
@@ -27,6 +28,16 @@ from app.models.geoflow_models import (
 from app.models.index_result import IndexResult
 from app.models.manual_distribution import ManualDistribution
 from app.utils.validators import normalize_domain
+
+
+def _date_from_lower_bound(d: date) -> datetime:
+    """date_from → 当天 00:00:00 UTC（含当天起始）。"""
+    return datetime.combine(d, time.min, tzinfo=timezone.utc)
+
+
+def _date_to_upper_bound(d: date) -> datetime:
+    """date_to → 次日 00:00:00 UTC（用 < 比较，含当天结束）。"""
+    return datetime.combine(d + timedelta(days=1), time.min, tzinfo=timezone.utc)
 
 
 class DistributionConflictError(HTTPException):
@@ -56,11 +67,18 @@ class DistributionQueryService:
         }
 
     async def _query_geoflow_distributions(
-        self, client_id: Optional[str] = None
+        self,
+        client_id: Optional[str] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
     ) -> list[dict]:
         """查 GEOFlow 的 article_distributions（跨 schema JOIN）。
 
         domain 匹配采用 Python 层处理：先查所有 client_sites 建映射，再匹配。
+
+        日期过滤（C10 修复）：按 ``GeoflowArticleDistribution.created_at`` 过滤，
+        与序列化字段 ``distributed_at`` 同源。``date_from`` 含当天起始，
+        ``date_to`` 含当天结束（用 < 次日零点比较）。
         """
         query = (
             select(
@@ -81,6 +99,15 @@ class DistributionQueryService:
                 GeoflowArticleDistribution.remote_url.isnot(None),
             )
         )
+        # C10：日期范围过滤（distributed_at = dist.created_at）
+        if date_from is not None:
+            query = query.where(
+                GeoflowArticleDistribution.created_at >= _date_from_lower_bound(date_from)
+            )
+        if date_to is not None:
+            query = query.where(
+                GeoflowArticleDistribution.created_at < _date_to_upper_bound(date_to)
+            )
         result = await self.db.execute(query)
         rows = result.fetchall()
 
@@ -143,12 +170,28 @@ class DistributionQueryService:
         }
 
     async def _query_manual_distributions(
-        self, client_id: Optional[str] = None
+        self,
+        client_id: Optional[str] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
     ) -> list[dict]:
-        """查手动录入的记录（monitor.manual_distributions）。"""
+        """查手动录入的记录（monitor.manual_distributions）。
+
+        日期过滤（C10 修复）：按 ``ManualDistribution.created_at`` 过滤，
+        与序列化字段 ``distributed_at`` 同源。
+        """
         query = select(ManualDistribution).where(ManualDistribution.status == "synced")
         if client_id:
             query = query.where(ManualDistribution.client_id == client_id)
+        # C10：日期范围过滤（distributed_at = record.created_at）
+        if date_from is not None:
+            query = query.where(
+                ManualDistribution.created_at >= _date_from_lower_bound(date_from)
+            )
+        if date_to is not None:
+            query = query.where(
+                ManualDistribution.created_at < _date_to_upper_bound(date_to)
+            )
         result = await self.db.execute(query)
         records = result.scalars().all()
 
@@ -210,6 +253,8 @@ class DistributionQueryService:
         client_id: Optional[str] = None,
         source: Optional[str] = None,
         include_manual: bool = True,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
     ) -> list[dict]:
         """查询分发记录（合并 GEOFlow + 手动录入）。
 
@@ -221,13 +266,23 @@ class DistributionQueryService:
             'geoflow' / 'manual' / None（全部）。
         include_manual : bool
             是否包含手动录入（默认 True）。
+        date_from : datetime.date | None
+            起始日期（含当天），按 ``distributed_at``（即 ``created_at``）过滤。
+            None = 不限下界。C10 修复新增。
+        date_to : datetime.date | None
+            结束日期（含当天），按 ``distributed_at`` 过滤。
+            None = 不限上界。C10 修复新增。
         """
         results = []
         if source in (None, "geoflow"):
-            geoflow_records = await self._query_geoflow_distributions(client_id)
+            geoflow_records = await self._query_geoflow_distributions(
+                client_id=client_id, date_from=date_from, date_to=date_to
+            )
             results.extend(geoflow_records)
         if include_manual and source in (None, "manual"):
-            manual_records = await self._query_manual_distributions(client_id)
+            manual_records = await self._query_manual_distributions(
+                client_id=client_id, date_from=date_from, date_to=date_to
+            )
             results.extend(manual_records)
         # 按时间降序
         results.sort(

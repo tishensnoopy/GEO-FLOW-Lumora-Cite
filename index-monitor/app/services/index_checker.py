@@ -3,7 +3,6 @@ from datetime import datetime, timezone
 from typing import List, Dict, Tuple
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.article import ArticleDistribution
 from app.models.geoflow_models import GeoflowArticleDistribution
 from app.models.manual_distribution import ManualDistribution
 from app.models.index_result import IndexResult, IndexHistory

@@ -5,7 +5,6 @@
 2. 表名正确未受影响；
 3. 已有 __table_args__ 复合唯一约束的模型，约束与 schema dict 共存。
 """
-from app.models.article import ArticleDistribution
 from app.models.citation_result import CitationResult
 from app.models.client import Client, ClientSite
 from app.models.index_result import IndexHistory, IndexResult
@@ -23,10 +22,10 @@ def test_client_model_tablename():
 
 
 # 其余模型同样必须在 monitor schema 下
+# 注：ArticleDistribution 已在迁移 009 中删除，不再纳入 schema 校验
 ALL_MODELS = [
     Client,
     ClientSite,
-    ArticleDistribution,
     CitationResult,
     IndexResult,
     IndexHistory,

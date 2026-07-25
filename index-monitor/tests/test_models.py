@@ -16,7 +16,6 @@ import pytest
 from sqlalchemy import create_engine, inspect, Date
 
 from app.core.config import settings
-from app.models.article import ArticleDistribution
 from app.models.index_result import IndexResult, IndexHistory
 from app.models.citation_result import CitationResult
 from app.models.client import Client, ClientSite
@@ -46,8 +45,10 @@ def db_inspector():
 
 
 # 所有应映射的 ORM 模型类
+# 注：ArticleDistribution（monitor.article_distributions）已在迁移 009 中删除
+# ——该表为孤儿表，所有 GEOFlow 分发数据通过 GeoflowArticleDistribution
+# （public schema 只读）访问。详见迁移 009。
 MODELS = [
-    ArticleDistribution,
     IndexResult,
     IndexHistory,
     CitationResult,

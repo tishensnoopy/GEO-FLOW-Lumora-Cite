@@ -80,12 +80,19 @@ class ExportService:
             await self.db.commit()
 
     async def _assemble_data(self, task: ExportTask) -> dict:
-        """组装导出数据。"""
+        """组装导出数据。
+
+        C10 修复：把 ``task.date_from`` / ``task.date_to`` 透传给
+        ``list_distributions``，使导出报告的数据范围与用户在导出对话框中
+        选择的日期范围一致（原实现未传递，导出报告始终包含全量数据）。
+        """
         query_service = DistributionQueryService(self.db)
 
-        # 查分发记录
+        # 查分发记录（C10：透传 task 的日期范围）
         distributions = await query_service.list_distributions(
-            client_id=task.client_id
+            client_id=task.client_id,
+            date_from=task.date_from,
+            date_to=task.date_to,
         )
 
         # 查收录检测结果

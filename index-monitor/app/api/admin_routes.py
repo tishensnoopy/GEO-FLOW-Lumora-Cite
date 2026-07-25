@@ -4,6 +4,7 @@
 设计文档第 9 节。前缀 /api/v1/admin。
 """
 import uuid
+from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -17,6 +18,8 @@ from app.core.database import get_db
 from app.core.security import hash_password, verify_password
 from app.models.admin_audit_log import AdminAuditLog
 from app.models.client import Client, ClientSite
+from app.models.citation_result import CitationResult
+from app.models.index_result import IndexResult
 from app.services.audit_log import AuditLogService
 from app.services.distribution_query import DistributionQueryService
 from app.utils.validators import validate_password_strength, normalize_domain
@@ -347,16 +350,28 @@ async def create_manual_distribution(
 
 
 # GET /admin/distributions：admin 查询所有分发记录（跨客户），挂在原 router 上
+# C10 修复：新增 date_from / date_to 查询参数，透传给 list_distributions
 @router.get("/distributions")
 async def list_distributions(
     client_id: Optional[str] = None,
     source: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
     admin: dict = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """admin 查看所有分发记录（跨客户）。"""
+    """admin 查看所有分发记录（跨客户）。
+
+    支持按 client_id / source / date_from / date_to 过滤。
+    日期范围与导出报告一致（C10 修复）。
+    """
     service = DistributionQueryService(db)
-    items = await service.list_distributions(client_id=client_id, source=source)
+    items = await service.list_distributions(
+        client_id=client_id,
+        source=source,
+        date_from=date_from,
+        date_to=date_to,
+    )
     return {"items": items, "total": len(items)}
 
 
@@ -430,3 +445,37 @@ async def list_audit_logs(
         "page": page,
         "page_size": page_size,
     }
+
+
+# ---------- Admin Stats ----------
+#
+# C7 修复（整分支代码审查发现）：
+# 原 /stats/citation 端点用 get_current_client_id（client JWT 鉴权），
+# admin JWT 用 SSO_JWT_SECRET 签发 → decode_token 必抛 InvalidTokenError → 401，
+# 导致 Dashboard.vue 静默回退 citation_count=0。
+# 本端点用 get_current_admin 鉴权，提供 admin 全量聚合视图。
+# 聚合口径与 /stats/citation 对齐：total = 全部采信记录数，cited = hit_type != "none"。
+@router.get("/stats/citation")
+async def get_admin_citation_stats(
+    client_id: Optional[str] = None,
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """admin 获取采信统计（全量聚合，可按 client_id 过滤）。
+
+    - 无 client_id：跨所有客户聚合（admin 全局视图）
+    - 有 client_id：只统计该客户的 URL 对应的采信记录
+
+    返回 ``{"total": N, "cited": M}``，其中 ``cited`` = hit_type != "none"。
+    """
+    # 基础查询：CitationResult 全量
+    base_query = select(CitationResult)
+    if client_id:
+        # 按 client_id 过滤：限定 URL 属于该客户的 IndexResult.url 集合
+        url_subquery = select(IndexResult.url).where(IndexResult.client_id == client_id)
+        base_query = base_query.where(CitationResult.url.in_(url_subquery))
+
+    rows = (await db.execute(base_query)).scalars().all()
+    total = len(rows)
+    cited = sum(1 for r in rows if r.hit_type != "none")
+    return {"total": total, "cited": cited}
