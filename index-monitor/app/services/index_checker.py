@@ -4,7 +4,11 @@ from typing import List, Dict, Tuple
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.article import ArticleDistribution
+from app.models.geoflow_models import GeoflowArticleDistribution
+from app.models.manual_distribution import ManualDistribution
 from app.models.index_result import IndexResult, IndexHistory
+from app.models.client import ClientSite
+from app.utils.validators import normalize_domain
 from app.services.spider import spider
 
 class IndexChecker:
@@ -13,16 +17,54 @@ class IndexChecker:
         self.spider = spider
 
     async def get_pending_urls(self) -> List[Tuple[str, str]]:
-        result = await self.db.execute(
-            select(ArticleDistribution.remote_url, ArticleDistribution.client_id)
-            .where(ArticleDistribution.status == "synced")
+        """获取待检测 URL：GEOFlow 分发 + 手动录入，排除已检测。
+
+        Returns
+        -------
+        list[tuple[str, str]]
+            [(url, client_id), ...]
+        """
+        # 1. 查 GEOFlow 分发记录（public.article_distributions）
+        geoflow_result = await self.db.execute(
+            select(GeoflowArticleDistribution.remote_url)
+            .where(
+                GeoflowArticleDistribution.status == "synced",
+                GeoflowArticleDistribution.action != "delete",
+                GeoflowArticleDistribution.remote_url.isnot(None),
+            )
         )
-        distributed = {row[0]: row[1] for row in result.fetchall()}
+        geoflow_urls = {row[0] for row in geoflow_result.fetchall()}
 
-        result = await self.db.execute(select(IndexResult.url))
-        checked_urls = {row[0] for row in result.fetchall()}
+        # 2. 查手动录入记录
+        manual_result = await self.db.execute(
+            select(ManualDistribution.remote_url, ManualDistribution.client_id)
+            .where(ManualDistribution.status == "synced")
+        )
+        distributed: dict[str, str] = {}  # url → client_id
 
-        return [(url, distributed[url]) for url in distributed if url not in checked_urls]
+        # 手动录入直接有 client_id
+        for url, client_id in manual_result.fetchall():
+            distributed[url] = client_id
+
+        # GEOFlow 分发通过 domain 匹配 client_sites
+        sites_result = await self.db.execute(
+            select(ClientSite).where(ClientSite.status == "active")
+        )
+        domain_map = {
+            normalize_domain(s.domain): s.client_id
+            for s in sites_result.scalars().all()
+        }
+        for url in geoflow_urls:
+            domain = normalize_domain(url)
+            client_id = domain_map.get(domain)
+            if client_id:
+                distributed.setdefault(url, client_id)  # GEOFlow 优先
+
+        # 3. 排除已检测
+        checked_result = await self.db.execute(select(IndexResult.url))
+        checked_urls = {row[0] for row in checked_result.fetchall()}
+
+        return [(url, cid) for url, cid in distributed.items() if url not in checked_urls]
 
     async def check_url(self, url: str, client_id: str, site_type: str):
         results = await self.spider.check_all_engines(url)

@@ -15,8 +15,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.article import ArticleDistribution
+from app.models.geoflow_models import GeoflowArticleDistribution
+from app.models.manual_distribution import ManualDistribution
 from app.models.citation_result import CitationResult
 from app.models.index_result import IndexResult
+from app.models.client import ClientSite
+from app.utils.validators import normalize_domain
 from app.models.system_config import SystemConfig
 from app.services.llm_client import (
     call_deepseek,
@@ -76,17 +80,43 @@ class CitationChecker:
     async def get_pending_urls(self) -> list[tuple[str, str]]:
         """获取待检测采信的 URL 列表。
 
-        筛选条件：article_distributions.status='synced' 且 citation_results 中无记录。
+        筛选条件：GEOFlow 分发 + 手动录入 status='synced' 且 citation_results 中无记录。
         返回 [(remote_url, client_id), ...]。
         """
-        result = await self.db.execute(
-            select(ArticleDistribution.remote_url, ArticleDistribution.client_id)
-            .where(ArticleDistribution.status == "synced")
+        geoflow_result = await self.db.execute(
+            select(GeoflowArticleDistribution.remote_url)
+            .where(
+                GeoflowArticleDistribution.status == "synced",
+                GeoflowArticleDistribution.action != "delete",
+                GeoflowArticleDistribution.remote_url.isnot(None),
+            )
         )
-        distributed = {row[0]: row[1] for row in result.fetchall()}
+        geoflow_urls = {row[0] for row in geoflow_result.fetchall()}
 
-        result = await self.db.execute(select(CitationResult.url))
-        checked_urls = {row[0] for row in result.fetchall()}
+        manual_result = await self.db.execute(
+            select(ManualDistribution.remote_url, ManualDistribution.client_id)
+            .where(ManualDistribution.status == "synced")
+        )
+        distributed: dict[str, str] = {}
+        for url, client_id in manual_result.fetchall():
+            distributed[url] = client_id
+
+        sites_result = await self.db.execute(
+            select(ClientSite).where(ClientSite.status == "active")
+        )
+        domain_map = {
+            normalize_domain(s.domain): s.client_id
+            for s in sites_result.scalars().all()
+        }
+        for url in geoflow_urls:
+            domain = normalize_domain(url)
+            client_id = domain_map.get(domain)
+            if client_id:
+                distributed.setdefault(url, client_id)
+
+        # 排除已有采信记录的 URL
+        checked_result = await self.db.execute(select(CitationResult.url))
+        checked_urls = {row[0] for row in checked_result.fetchall()}
 
         return [
             (url, client_id)
