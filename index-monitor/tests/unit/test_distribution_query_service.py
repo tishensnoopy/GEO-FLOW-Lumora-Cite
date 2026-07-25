@@ -150,8 +150,47 @@ async def test_list_distributions_merges_geoflow_and_manual(db_session):
 
 @pytest.mark.asyncio
 async def test_list_distributions_filters_by_source(db_session):
-    """source='manual' 只返回手动记录。"""
-    service = DistributionQueryService(db_session)
-    result = await service.list_distributions(source="manual")
-    for r in result:
-        assert r["source"] == "manual"
+    """source='manual' 只返回手动记录。
+
+    先插入 client + client_site + 一条 manual 记录，确保结果非空
+    （避免空列表 vacuous pass），再断言所有记录 source == 'manual'。
+    """
+    from app.models.client import Client, ClientSite
+    from app.models.manual_distribution import ManualDistribution
+
+    client = Client(
+        client_id="test_source_filter", username="source_filter",
+        password_hash="x", status="active",
+    )
+    db_session.add(client)
+    await db_session.flush()
+
+    site = ClientSite(
+        client_id="test_source_filter", site_name="源过滤测试站",
+        domain="source-filter.example.com", site_type="official", status="active",
+    )
+    db_session.add(site)
+    await db_session.flush()
+
+    manual = ManualDistribution(
+        client_id="test_source_filter",
+        remote_url="https://source-filter.example.com/manual",
+        status="synced",
+    )
+    db_session.add(manual)
+    await db_session.commit()
+
+    try:
+        service = DistributionQueryService(db_session)
+        result = await service.list_distributions(source="manual")
+        # 必须有数据可验证，避免空列表 vacuous pass
+        assert len(result) >= 1
+        # 所有返回记录都必须是 manual 源
+        for r in result:
+            assert r["source"] == "manual"
+    finally:
+        # 清理（try/finally 确保断言失败也能清理，避免污染 DB）
+        await db_session.delete(manual)
+        await db_session.delete(site)
+        await db_session.delete(client)
+        await db_session.commit()

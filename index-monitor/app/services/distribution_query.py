@@ -152,21 +152,34 @@ class DistributionQueryService:
         return [self._serialize_manual(r, index_map) for r in records]
 
     def _serialize_manual(self, record, index_map: dict) -> dict:
-        """序列化手动录入记录。"""
+        """序列化手动录入记录。
+
+        字段对齐 ``_serialize_geoflow``：无对应内容数据的字段填 None
+        （content_keywords 填空列表 []，与 geoflow 默认值一致）。
+        ``note`` 是 manual 特有字段，放在 distributed_at 之后、index_status 之前。
+        """
         url = record.remote_url
         idx = index_map.get(url)
         return {
             "id": str(record.id),
             "source": "manual",
             "client_id": record.client_id,
+            "site_type": None,
             "remote_url": url,
             "action": "manual",
             "status": record.status,
             "channel_name": None,
             "channel_type": None,
             "content_title": None,
-            "note": record.note,
+            "content_slug": None,
+            "content_excerpt": None,
+            "content_body": None,
+            "content_keywords": [],
+            "meta_description": None,
+            "original_keyword": None,
+            "published_at": None,
             "distributed_at": record.created_at.isoformat() if record.created_at else None,
+            "note": record.note,
             "index_status": {
                 "baidu": idx.baidu_status if idx else "pending",
                 "toutiao": idx.toutiao_status if idx else "pending",
