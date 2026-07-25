@@ -4,7 +4,6 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.core.database import get_db
-from app.core.security import create_access_token, verify_password
 from app.api.deps import get_current_client_id
 from app.models.client import Client
 from app.models.index_result import IndexResult
@@ -34,23 +33,6 @@ def _mask_api_key(value: str) -> str:
     return f"{value[:3]}****{value[-4:]}"
 
 router = APIRouter()
-
-
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-
-
-@router.post("/auth/login")
-async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Client).where(Client.username == req.username))
-    client = result.scalar_one_or_none()
-    if not client or not verify_password(req.password, client.password_hash):
-        raise HTTPException(status_code=401, detail="用户名或密码错误")
-    if client.status != "active":
-        raise HTTPException(status_code=401, detail="客户账号已停用或删除")
-    token = create_access_token({"sub": client.client_id})
-    return {"access_token": token, "token_type": "bearer"}
 
 
 @router.get("/stats/index")

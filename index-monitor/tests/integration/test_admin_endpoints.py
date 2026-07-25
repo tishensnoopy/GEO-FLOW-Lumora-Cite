@@ -178,7 +178,7 @@ async def test_deactivate_client_blocks_login(client, db_session):
         # 尝试登录应失败
         resp = await client.post(
             "/api/v1/auth/login",
-            json={"username": "deact", "password": "Pass1234"},
+            json={"client_id": "deactivate_test", "password": "Pass1234"},
         )
         assert resp.status_code == 401
     finally:
@@ -434,4 +434,66 @@ async def test_update_client_reset_password_and_info(client, db_session):
         await db_session.execute(
             delete(AdminAuditLog).where(AdminAuditLog.target_id == "upd_pw_test")
         )
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_client_change_password_success(client, db_session):
+    """客户改密码：旧密码正确 + 新密码合规 → 成功。"""
+    from app.models.client import Client
+    from app.core.security import hash_password, create_access_token
+
+    c = Client(
+        client_id="changepw_test", username="changepw",
+        password_hash=hash_password("OldPass123"), status="active",
+    )
+    db_session.add(c)
+    await db_session.commit()
+
+    try:
+        token = create_access_token({"sub": "changepw_test", "role": "client", "type": "client"})
+        headers = {"Authorization": f"Bearer {token}"}
+
+        resp = await client.put(
+            "/api/v1/auth/password",
+            json={"old_password": "OldPass123", "new_password": "NewPass456"},
+            headers=headers,
+        )
+        assert resp.status_code == 200
+
+        # 用新密码登录
+        resp = await client.post(
+            "/api/v1/auth/login",
+            json={"client_id": "changepw_test", "password": "NewPass456"},
+        )
+        assert resp.status_code == 200
+    finally:
+        await db_session.delete(c)
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_client_change_password_wrong_old_returns_400(client, db_session):
+    """旧密码错误返回 400。"""
+    from app.models.client import Client
+    from app.core.security import hash_password, create_access_token
+
+    c = Client(
+        client_id="wrongold_test", username="wrongold",
+        password_hash=hash_password("Correct123"), status="active",
+    )
+    db_session.add(c)
+    await db_session.commit()
+
+    try:
+        token = create_access_token({"sub": "wrongold_test", "role": "client", "type": "client"})
+        resp = await client.put(
+            "/api/v1/auth/password",
+            json={"old_password": "WrongOld123", "new_password": "NewPass456"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 400
+        assert "旧密码" in resp.json()["detail"]
+    finally:
+        await db_session.delete(c)
         await db_session.commit()

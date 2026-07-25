@@ -29,6 +29,13 @@ app.add_middleware(
 
 app.include_router(router, prefix="/api/v1")
 
+# 客户认证路由：POST /auth/login（client_id 登录）+ PUT /auth/password（改密码）
+# + PUT /auth/profile（修改资料）。设计文档第 5.4 节 + 第 9.3 节。
+# 控制者裁定：统一用 client_id 登录（更稳定的业务标识符），原 routes.py 中的
+# username 登录端点已删除避免路由冲突。
+from app.api.client_auth_routes import router as client_auth_router
+app.include_router(client_auth_router, prefix="/api/v1")
+
 # SSO 路由不挂 /api/v1 前缀：
 # 1. callback 是 GEOFlow 回跳的目标 URL，顶层路径 /sso/callback 更直观；
 # 2. 前端可直接 window.location.href='/sso/login' 触发跳转，无需拼接 /api/v1；
