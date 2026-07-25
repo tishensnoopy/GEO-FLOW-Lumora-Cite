@@ -35,6 +35,9 @@ redis_data/
 # 备份
 db_backup/
 
+# 运行时导出产物（PDF/Excel 测试文件，由 ExportService 生成）
+index-monitor/exports/
+
 # 外部项目源码（云端单独上传/克隆，不入本仓库）
 GEOFlow-main/
 lumora-cite-main/
