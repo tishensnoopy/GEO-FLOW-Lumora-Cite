@@ -83,6 +83,25 @@ async def test_batch_scan_queues_index_check(client, db_session):
         data = resp.json()
         assert data["queued"] == 3
         assert data["scan_type"] == "index"
+
+        # 审计日志断言：端点在入队前必须写一条 action='batch_scan' 的日志，
+        # detail 含 ids 和 type 字段。端点用的 db session 与本 fixture 不同
+        # （_override_app_db 替换了 get_db），但同一 DB，且 AuditLogService.log
+        # 已 commit，故 db_session 重新查询可见（READ COMMITTED）。
+        from app.models.admin_audit_log import AdminAuditLog
+        from sqlalchemy import select
+        import json
+
+        audit_result = await db_session.execute(
+            select(AdminAuditLog).where(AdminAuditLog.action == "batch_scan")
+        )
+        audit_logs = audit_result.scalars().all()
+        assert len(audit_logs) >= 1, "审计日志未写入"
+        # 验证最新一条的 detail
+        latest = audit_logs[-1]
+        detail = json.loads(latest.detail) if isinstance(latest.detail, str) else latest.detail
+        assert detail["ids"] == ["id1", "id2", "id3"], f"detail.ids 不匹配: {detail.get('ids')}"
+        assert detail["type"] == "index", f"detail.type 不匹配: {detail.get('type')}"
     finally:
         await _cleanup_batch_scan_logs(db_session)
 
@@ -114,4 +133,19 @@ async def test_batch_scan_invalid_type_returns_400(client, db_session):
         assert resp.status_code == 400
     finally:
         # invalid scan_type 不会写审计日志（端点在 log 之前 raise），但 finally 仍兜底清理
+        await _cleanup_batch_scan_logs(db_session)
+
+
+@pytest.mark.asyncio
+async def test_batch_scan_empty_ids_returns_400(client, db_session):
+    """空 distribution_ids 返回 400（端点 admin_routes.py:43-44 已实现）。"""
+    try:
+        resp = await client.post(
+            "/api/v1/admin/distributions/batch-scan",
+            json={"distribution_ids": [], "scan_type": "index"},
+            headers=_admin_headers(),
+        )
+        assert resp.status_code == 400
+    finally:
+        # 400 在审计日志写入之前 raise，理论上无副作用；finally 仍兜底清理防御性
         await _cleanup_batch_scan_logs(db_session)
