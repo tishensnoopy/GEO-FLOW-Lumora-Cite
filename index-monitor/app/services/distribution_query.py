@@ -14,6 +14,7 @@
 import json
 from typing import Optional
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +27,12 @@ from app.models.geoflow_models import (
 from app.models.index_result import IndexResult
 from app.models.manual_distribution import ManualDistribution
 from app.utils.validators import normalize_domain
+
+
+class DistributionConflictError(HTTPException):
+    """URL 重复冲突（409）。"""
+    def __init__(self, detail: str):
+        super().__init__(status_code=409, detail=detail)
 
 
 class DistributionQueryService:
@@ -229,4 +236,62 @@ class DistributionQueryService:
         )
         return results
 
-    # create_manual_distribution 在后续任务实现
+    async def _match_client_by_domain(self, remote_url: str) -> tuple[str, str]:
+        """通过 URL 的 domain 匹配 client_sites，返回 (client_id, site_type)。"""
+        domain = self._extract_domain(remote_url)
+        domain_map = await self._build_domain_map()
+        matched = domain_map.get(domain)
+        if matched is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"URL 的 domain '{domain}' 未在客户站点中登记",
+            )
+        return matched
+
+    async def create_manual_distribution(
+        self,
+        remote_url: str,
+        admin_user_id: int,
+        admin_name: str,
+        client_id: Optional[str] = None,
+        note: Optional[str] = None,
+    ) -> dict:
+        """运营手动录入 URL。
+
+        client_id 为 None 时自动通过 domain 匹配。
+        重复检测：手动表 + GEOFlow 表。
+        """
+        if client_id is None:
+            client_id, _ = await self._match_client_by_domain(remote_url)
+
+        # 检查手动表重复
+        existing_manual = await self.db.execute(
+            select(ManualDistribution).where(
+                ManualDistribution.client_id == client_id,
+                ManualDistribution.remote_url == remote_url,
+            )
+        )
+        if existing_manual.scalar_one_or_none():
+            raise DistributionConflictError(f"URL 已存在（手动录入）：{remote_url}")
+
+        # 检查 GEOFlow 表重复
+        existing_geoflow = await self.db.execute(
+            select(GeoflowArticleDistribution).where(
+                GeoflowArticleDistribution.remote_url == remote_url,
+                GeoflowArticleDistribution.status == "synced",
+            )
+        )
+        if existing_geoflow.scalar_one_or_none():
+            raise DistributionConflictError(f"URL 已存在（GEOFlow 推送）：{remote_url}")
+
+        record = ManualDistribution(
+            client_id=client_id,
+            remote_url=remote_url,
+            status="synced",
+            note=note,
+            created_by_admin_id=admin_user_id,
+        )
+        self.db.add(record)
+        await self.db.commit()
+
+        return {"action": "created", "client_id": client_id, "source": "manual"}

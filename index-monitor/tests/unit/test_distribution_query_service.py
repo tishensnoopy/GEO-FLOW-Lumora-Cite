@@ -194,3 +194,94 @@ async def test_list_distributions_filters_by_source(db_session):
         await db_session.delete(site)
         await db_session.delete(client)
         await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_create_manual_distribution_success(db_session):
+    """手动录入 URL 成功（client_id 显式指定）。"""
+    from app.models.client import Client, ClientSite
+    from app.models.manual_distribution import ManualDistribution
+    from sqlalchemy import select
+
+    client = Client(
+        client_id="test_manual_create", username="mc",
+        password_hash="x", status="active",
+    )
+    db_session.add(client)
+    await db_session.flush()
+    site = ClientSite(
+        client_id="test_manual_create", site_name="站",
+        domain="manual-create.com", site_type="official", status="active",
+    )
+    db_session.add(site)
+    await db_session.commit()
+
+    service = DistributionQueryService(db_session)
+    try:
+        result = await service.create_manual_distribution(
+            remote_url="https://www.manual-create.com/article/1",
+            admin_user_id=1,
+            admin_name="测试管理员",
+            client_id="test_manual_create",
+            note="测试录入",
+        )
+        assert result["action"] == "created"
+        assert result["source"] == "manual"
+    finally:
+        # 清理（含被新建的 manual 记录；scalar_one_or_none 避免断言失败时
+        # 还未写入记录导致 cleanup 二次抛错）
+        md_result = await db_session.execute(
+            select(ManualDistribution).where(
+                ManualDistribution.remote_url == "https://www.manual-create.com/article/1"
+            )
+        )
+        md = md_result.scalar_one_or_none()
+        if md is not None:
+            await db_session.delete(md)
+        await db_session.delete(site)
+        await db_session.delete(client)
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_create_manual_duplicate_url_raises_409(db_session):
+    """重复录入同一 URL 返回 409。"""
+    from app.models.client import Client, ClientSite
+    from app.models.manual_distribution import ManualDistribution
+    from fastapi import HTTPException
+
+    client = Client(
+        client_id="test_dup", username="dup",
+        password_hash="x", status="active",
+    )
+    db_session.add(client)
+    await db_session.flush()
+    site = ClientSite(
+        client_id="test_dup", site_name="站",
+        domain="dup.com", site_type="official", status="active",
+    )
+    db_session.add(site)
+    await db_session.flush()
+    existing = ManualDistribution(
+        client_id="test_dup",
+        remote_url="https://dup.com/existing",
+        status="synced",
+    )
+    db_session.add(existing)
+    await db_session.commit()
+
+    service = DistributionQueryService(db_session)
+    try:
+        with pytest.raises(HTTPException) as exc:
+            await service.create_manual_distribution(
+                remote_url="https://dup.com/existing",
+                admin_user_id=1, admin_name="admin",
+                client_id="test_dup",
+            )
+        assert exc.value.status_code == 409
+    finally:
+        # 清理（断言失败时仍执行）
+        await db_session.delete(existing)
+        await db_session.delete(site)
+        await db_session.delete(client)
+        await db_session.commit()
