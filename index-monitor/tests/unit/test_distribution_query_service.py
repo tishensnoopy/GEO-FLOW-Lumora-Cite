@@ -112,3 +112,46 @@ async def test_query_geoflow_skips_deleted_action(db_session):
     result = await service._query_geoflow_distributions(client_id=None)
     for record in result:
         assert record.get("action") != "delete"
+
+
+@pytest.mark.asyncio
+async def test_list_distributions_merges_geoflow_and_manual(db_session):
+    """list_distributions 合并 GEOFlow + 手动录入，按时间降序。"""
+    from app.models.client import Client, ClientSite
+    from app.models.manual_distribution import ManualDistribution
+
+    # 插入测试数据
+    client = Client(client_id="test_merge", username="merge", password_hash="x", status="active")
+    db_session.add(client)
+    await db_session.flush()
+
+    site = ClientSite(client_id="test_merge", site_name="站", domain="merge.com", site_type="official", status="active")
+    db_session.add(site)
+    await db_session.flush()
+
+    manual = ManualDistribution(client_id="test_merge", remote_url="https://merge.com/manual", status="synced")
+    db_session.add(manual)
+    await db_session.commit()
+
+    try:
+        service = DistributionQueryService(db_session)
+        result = await service.list_distributions(client_id="test_merge")
+        # 至少有 1 条手动记录
+        manual_records = [r for r in result if r["source"] == "manual"]
+        assert len(manual_records) >= 1
+        assert manual_records[0]["remote_url"] == "https://merge.com/manual"
+    finally:
+        # 清理（用 try/finally 包裹，确保断言失败也能清理，避免污染 DB）
+        await db_session.delete(manual)
+        await db_session.delete(site)
+        await db_session.delete(client)
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_list_distributions_filters_by_source(db_session):
+    """source='manual' 只返回手动记录。"""
+    service = DistributionQueryService(db_session)
+    result = await service.list_distributions(source="manual")
+    for r in result:
+        assert r["source"] == "manual"

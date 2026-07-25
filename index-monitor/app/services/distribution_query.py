@@ -135,5 +135,85 @@ class DistributionQueryService:
             },
         }
 
-    # _query_manual_distributions / list_distributions / create_manual_distribution
-    # 在后续任务实现
+    async def _query_manual_distributions(
+        self, client_id: Optional[str] = None
+    ) -> list[dict]:
+        """查手动录入的记录（monitor.manual_distributions）。"""
+        query = select(ManualDistribution).where(ManualDistribution.status == "synced")
+        if client_id:
+            query = query.where(ManualDistribution.client_id == client_id)
+        result = await self.db.execute(query)
+        records = result.scalars().all()
+
+        # 批量查 index_results
+        urls = [r.remote_url for r in records]
+        index_map = await self._aggregate_index_results(urls)
+
+        return [self._serialize_manual(r, index_map) for r in records]
+
+    def _serialize_manual(self, record, index_map: dict) -> dict:
+        """序列化手动录入记录。"""
+        url = record.remote_url
+        idx = index_map.get(url)
+        return {
+            "id": str(record.id),
+            "source": "manual",
+            "client_id": record.client_id,
+            "remote_url": url,
+            "action": "manual",
+            "status": record.status,
+            "channel_name": None,
+            "channel_type": None,
+            "content_title": None,
+            "note": record.note,
+            "distributed_at": record.created_at.isoformat() if record.created_at else None,
+            "index_status": {
+                "baidu": idx.baidu_status if idx else "pending",
+                "toutiao": idx.toutiao_status if idx else "pending",
+                "sogou": idx.sogou_status if idx else "pending",
+                "so360": idx.so360_status if idx else "pending",
+                "bing": idx.bing_status if idx else "pending",
+            } if idx else {k: "pending" for k in ("baidu", "toutiao", "sogou", "so360", "bing")},
+        }
+
+    async def _aggregate_index_results(self, urls: list[str]) -> dict:
+        """批量查 index_results，返回 url → IndexResult 映射。"""
+        if not urls:
+            return {}
+        result = await self.db.execute(
+            select(IndexResult).where(IndexResult.url.in_(urls))
+        )
+        return {r.url: r for r in result.scalars().all()}
+
+    async def list_distributions(
+        self,
+        client_id: Optional[str] = None,
+        source: Optional[str] = None,
+        include_manual: bool = True,
+    ) -> list[dict]:
+        """查询分发记录（合并 GEOFlow + 手动录入）。
+
+        Parameters
+        ----------
+        client_id : str | None
+            按客户过滤。None = 全部客户（admin）。
+        source : str | None
+            'geoflow' / 'manual' / None（全部）。
+        include_manual : bool
+            是否包含手动录入（默认 True）。
+        """
+        results = []
+        if source in (None, "geoflow"):
+            geoflow_records = await self._query_geoflow_distributions(client_id)
+            results.extend(geoflow_records)
+        if include_manual and source in (None, "manual"):
+            manual_records = await self._query_manual_distributions(client_id)
+            results.extend(manual_records)
+        # 按时间降序
+        results.sort(
+            key=lambda x: x.get("distributed_at") or x.get("created_at") or "",
+            reverse=True,
+        )
+        return results
+
+    # create_manual_distribution 在后续任务实现
