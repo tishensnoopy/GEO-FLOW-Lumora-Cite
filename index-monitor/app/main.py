@@ -39,6 +39,12 @@ app.include_router(sso_router)
 from app.api.admin_routes import router as admin_router
 app.include_router(admin_router, prefix="/api/v1")
 
+# 手动录入端点专用 router（无 /admin 前缀，POST /api/v1/distributions）：
+# 控制者裁定——测试期望 POST /api/v1/distributions（无 /admin），
+# GET /api/v1/admin/distributions（有 /admin），两个端点分别挂在不同 router 上。
+from app.api.admin_routes import distribution_router
+app.include_router(distribution_router, prefix="/api/v1")
+
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "version": settings.APP_VERSION}

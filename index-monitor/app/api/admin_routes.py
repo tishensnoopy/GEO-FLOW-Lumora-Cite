@@ -23,6 +23,12 @@ from app.utils.validators import validate_password_strength, normalize_domain
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
+# 手动录入端点专用 router：不挂 /admin 前缀（设计文档第 9 节：POST /distributions）
+# 但仍走 admin 鉴权（Depends(get_current_admin)）。
+# 控制者裁定：测试期望 POST /api/v1/distributions（无 /admin），GET /api/v1/admin/distributions
+# （有 /admin），故两个端点分别挂在不同 router 上。
+distribution_router = APIRouter(tags=["distributions"])
+
 
 # ---------- Request Models ----------
 
@@ -51,6 +57,12 @@ class CreateClientSiteRequest(BaseModel):
     domain: str
     site_type: str = "official"
     has_wordpress: bool = False
+
+
+class ManualDistributionRequest(BaseModel):
+    remote_url: str
+    client_id: Optional[str] = None
+    note: Optional[str] = None
 
 
 # ---------- Client Lifecycle ----------
@@ -277,3 +289,44 @@ async def create_client_site(
     )
 
     return {"id": str(site.id), "domain": normalized}
+
+
+# ---------- Manual Distribution + Distribution Query ----------
+
+# POST /distributions：手动录入端点不挂 /admin 前缀（设计文档第 9 节）
+# 挂在 distribution_router（无 prefix），实际路径 /api/v1/distributions
+@distribution_router.post("/distributions", status_code=201)
+async def create_manual_distribution(
+    req: ManualDistributionRequest,
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """运营手动录入 URL。"""
+    service = DistributionQueryService(db)
+    result = await service.create_manual_distribution(
+        remote_url=req.remote_url,
+        admin_user_id=admin["user_id"],
+        admin_name=admin["name"],
+        client_id=req.client_id,
+        note=req.note,
+    )
+    await AuditLogService.log(
+        db, admin_user_id=admin["user_id"], admin_name=admin["name"],
+        action="manual_create_distribution", target_type="distribution",
+        detail={"url": req.remote_url, "client_id": result.get("client_id")},
+    )
+    return result
+
+
+# GET /admin/distributions：admin 查询所有分发记录（跨客户），挂在原 router 上
+@router.get("/distributions")
+async def list_distributions(
+    client_id: Optional[str] = None,
+    source: Optional[str] = None,
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """admin 查看所有分发记录（跨客户）。"""
+    service = DistributionQueryService(db)
+    items = await service.list_distributions(client_id=client_id, source=source)
+    return {"items": items, "total": len(items)}
