@@ -97,6 +97,16 @@ class Settings(BaseSettings):
     SSO_JWT_SECRET: str = "change-me-in-prod"
     SSO_JWT_EXPIRE_DAYS: int = 7
 
+    # ------------------------------------------------------------------ #
+    # 检测频率控制（设计文档第 21.1 节）                                  #
+    # ------------------------------------------------------------------ #
+    SCAN_MIN_INTERVAL_HOURS: int = 6
+    SCAN_MAX_CONCURRENCY: int = 5
+    SCAN_REQUEST_DELAY_MIN: int = 2
+    SCAN_REQUEST_DELAY_MAX: int = 5
+    SCAN_TIMEOUT_SECONDS: int = 30
+    SCAN_DAILY_QUOTA_PER_CLIENT: int = 100
+
     @model_validator(mode="after")
     def _derive_sso_userinfo_url(self) -> "Settings":
         """如果 USERINFO_URL 未显式注入，则从 BASE_URL 派生。
