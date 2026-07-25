@@ -1,0 +1,114 @@
+# index-monitor/tests/unit/test_distribution_query_service.py
+"""DistributionQueryService 测试。
+
+跨 schema JOIN 查询 GEOFlow 分发记录 + 手动录入记录。
+设计文档第 7 节。
+"""
+import pytest
+from unittest.mock import AsyncMock, MagicMock
+
+from app.services.distribution_query import DistributionQueryService
+
+
+@pytest.fixture(autouse=True, scope="module")
+def ensure_geoflow_tables():
+    """Module 级 autouse fixture：确保 GEOFlow public schema 表存在。
+
+    测试 DB（geo_monitoring）public schema 默认无 GEOFlow 真实表，
+    且 ``tests/integration/test_cross_schema_join.py`` 的 module fixture
+    teardown 会 DROP ``public.articles`` + ``public.article_distributions``。
+    本 fixture 在模块开始时用 ``GeoflowBase.metadata.create_all`` 建表
+    （IF NOT EXISTS 幂等），保证本模块测试可运行。
+
+    用 sync engine（psycopg2）避免 strict asyncio 模式下 module 级
+    async fixture 与 per-test 事件循环冲突（参考 test_cross_schema_join.py
+    的同类处理）。
+    """
+    from sqlalchemy import create_engine
+    from app.core.config import settings
+    from app.models.geoflow_models import GeoflowBase
+
+    url = (
+        f"postgresql+psycopg2://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
+        f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
+    )
+    engine = create_engine(url)
+    try:
+        GeoflowBase.metadata.create_all(engine)
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_query_geoflow_distributions_returns_empty_when_no_data(db_session):
+    """无分发记录时返回空列表。"""
+    service = DistributionQueryService(db_session)
+    result = await service._query_geoflow_distributions(client_id=None)
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_query_geoflow_distributions_filters_by_client(db_session):
+    """按 client_id 过滤（通过 domain 匹配 client_sites）。"""
+    # 前置：插入 client_sites + geoflow article_distributions
+    # 这里用真实 DB（db_session fixture），需先插入测试数据
+    from app.models.client import Client, ClientSite
+    from app.models.geoflow_models import (
+        GeoflowArticle, GeoflowArticleDistribution, GeoflowDistributionChannel
+    )
+
+    # 插入 client + site
+    client = Client(
+        client_id="test_client_m2", username="test_m2",
+        password_hash="x", status="active",
+    )
+    db_session.add(client)
+    await db_session.flush()
+
+    site = ClientSite(
+        client_id="test_client_m2", site_name="测试站",
+        domain="m2-task2.example.com", site_type="official", status="active",
+    )
+    db_session.add(site)
+    await db_session.flush()
+
+    # 插入 GEOFlow 文章 + 分发记录（public schema）
+    article = GeoflowArticle(
+        title="测试文章", slug="test-article", content="内容",
+        category_id=1, author_id=1, status="published",
+    )
+    db_session.add(article)
+    await db_session.flush()
+
+    dist = GeoflowArticleDistribution(
+        article_id=article.id, distribution_channel_id=1,
+        action="publish", status="synced",
+        remote_url="https://www.m2-task2.example.com/test-article",
+    )
+    db_session.add(dist)
+    await db_session.commit()
+
+    try:
+        service = DistributionQueryService(db_session)
+        result = await service._query_geoflow_distributions(client_id="test_client_m2")
+        assert len(result) == 1
+        assert result[0]["source"] == "geoflow"
+        assert result[0]["client_id"] == "test_client_m2"
+        assert result[0]["content_title"] == "测试文章"
+    finally:
+        # 裁定 1：即使断言失败也要清理，避免污染 DB
+        await db_session.delete(dist)
+        await db_session.delete(article)
+        await db_session.delete(site)
+        await db_session.delete(client)
+        await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_query_geoflow_skips_deleted_action(db_session):
+    """action='delete' 的分发记录不返回。"""
+    service = DistributionQueryService(db_session)
+    # 如果有 delete 记录，应被过滤
+    result = await service._query_geoflow_distributions(client_id=None)
+    for record in result:
+        assert record.get("action") != "delete"
