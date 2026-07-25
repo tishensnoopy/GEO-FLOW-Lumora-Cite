@@ -67,7 +67,10 @@ class PdfExportService:
 
         # Playwright 渲染 PDF
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--font-render-hinting=none"],
+            )
             page = await browser.new_page()
             await page.set_content(html_content, wait_until="networkidle")
             await page.pdf(

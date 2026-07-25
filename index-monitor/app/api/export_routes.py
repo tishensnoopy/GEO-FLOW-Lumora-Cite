@@ -173,11 +173,14 @@ async def get_export_status(
     if role == "client" and task.client_id != user.client_id:
         raise HTTPException(status_code=403, detail="无权查看此任务")
 
+    # 安全：不返回服务器内部 file_path（绝对路径），避免信息泄露。
+    # 前端通过 GET /exports/{task_id}/download 下载文件，无需知道路径。
+    # file_size 仅在完成时返回，供前端展示文件大小。
     return {
         "task_id": str(task.id),
         "status": task.status,
         "export_type": task.export_type,
-        "file_path": task.file_path if task.status == "completed" else None,
+        "file_size": task.file_size if task.status == "completed" else None,
         "error_message": task.error_message,
         "created_at": task.created_at.isoformat() if task.created_at else None,
         "completed_at": task.completed_at.isoformat() if task.completed_at else None,
