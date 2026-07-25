@@ -47,6 +47,10 @@ class ExportRequest(BaseModel):
     # 直接传给 ExportTask.date_from（Date 列），asyncpg 原生支持 date 类型。
     date_from: Optional[date] = None
     date_to: Optional[date] = None
+    # charts：前端 ECharts getDataURL() 生成的 base64 数据 URL 字典。
+    # 格式 {"trend": "data:image/png;base64,...", "pie": "..."}。
+    # 设计文档第 12.4 节。None = 不带图表（向后兼容）。
+    charts: Optional[dict] = None
 
 
 @router.post("/admin/exports", status_code=202)
@@ -70,6 +74,7 @@ async def admin_create_export(
         export_type=req.export_type,
         date_from=req.date_from,
         date_to=req.date_to,
+        charts=req.charts,
         status="pending",
     )
     db.add(task)
@@ -109,6 +114,7 @@ async def client_create_export(
         export_type=req.export_type,
         date_from=req.date_from,
         date_to=req.date_to,
+        charts=req.charts,
         status="pending",
     )
     db.add(task)

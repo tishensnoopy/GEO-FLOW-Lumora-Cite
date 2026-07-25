@@ -146,5 +146,5 @@ class ExportService:
             "citation_results": citation_results,
             "summary": summary,
             "stats": summary,  # PDF 模板用 stats 字段
-            "charts": {},  # 图表 base64 由前端生成或后续实现
+            "charts": task.charts or {},  # 从 task.charts 读取（M4 补全，替换写死的 {}）
         }

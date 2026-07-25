@@ -121,3 +121,56 @@ async def test_process_task_records_error_on_failure(db_session, monkeypatch):
 
     await db_session.delete(task)
     await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_assemble_data_reads_charts_from_task(db_session, ensure_geoflow_tables):
+    """_assemble_data 从 task.charts 读取 charts 字段（而非写死 {}）。
+
+    闭合 M3 审查缺口 2：ExportService._assemble_data 写死 "charts": {}。
+    """
+    from app.services.export_service import ExportService
+    from app.models.export_task import ExportTask
+
+    task = ExportTask(
+        requested_by="test_admin",
+        requested_by_role="admin",
+        export_type="pdf",
+        status="pending",
+        charts={
+            "trend": "data:image/png;base64,AAA",
+            "pie": "data:image/png;base64,BBB",
+        },
+    )
+    db_session.add(task)
+    await db_session.commit()
+
+    service = ExportService(db_session)
+    data = await service._assemble_data(task)
+
+    assert data["charts"] == {
+        "trend": "data:image/png;base64,AAA",
+        "pie": "data:image/png;base64,BBB",
+    }
+
+
+@pytest.mark.asyncio
+async def test_assemble_data_charts_empty_when_task_charts_none(db_session, ensure_geoflow_tables):
+    """task.charts 为 NULL 时，_assemble_data 返回空字典（向后兼容）。"""
+    from app.services.export_service import ExportService
+    from app.models.export_task import ExportTask
+
+    task = ExportTask(
+        requested_by="test_admin",
+        requested_by_role="admin",
+        export_type="pdf",
+        status="pending",
+        # charts=None
+    )
+    db_session.add(task)
+    await db_session.commit()
+
+    service = ExportService(db_session)
+    data = await service._assemble_data(task)
+
+    assert data["charts"] == {}
