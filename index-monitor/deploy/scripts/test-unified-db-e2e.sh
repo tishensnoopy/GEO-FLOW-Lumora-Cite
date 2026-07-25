@@ -6,7 +6,7 @@
 # - D17：补充核心链路测试（步骤 11-15：创建客户→录入→检测→查询→审计→清理）
 # - D24：CORS 预检路径同步修正为 /config
 #
-# 共 15 步：1-10 冒烟测试 + 11-15 核心链路测试（需 ADMIN_TOKEN）
+# 共 15 步：1-9 冒烟测试 + 11-15 核心链路测试（需 ADMIN_TOKEN） + 10 生产域名最终确认（最后执行）
 set -euo pipefail
 
 MONITOR_URL="${MONITOR_URL:-http://localhost:8000}"
@@ -14,9 +14,9 @@ ADMIN_TOKEN="${ADMIN_TOKEN:-}"
 
 echo "=== M4 E2E 冒烟测试 ==="
 
-# 步骤 1：健康检查
+# 步骤 1：健康检查（精确匹配 "status":"healthy"，避免误匹配 "unhealthy"）
 echo "[1/10] 健康检查"
-curl -sf "$MONITOR_URL/api/v1/health" | grep -q "healthy" || { echo "FAIL: 健康检查"; exit 1; }
+curl -sf "$MONITOR_URL/api/v1/health" | grep -qE '"status"\s*:\s*"healthy"' || { echo "FAIL: 健康检查"; exit 1; }
 
 # 步骤 2：SSO 登录页可达（接受 302/307/308 重定向）
 echo "[2/10] SSO 登录页"
@@ -58,11 +58,7 @@ if [ -n "$ADMIN_TOKEN" ]; then
   echo "$TASK_RESP" | grep -q "task_id" || { echo "FAIL: 导出"; exit 1; }
 fi
 
-# 步骤 10：域名状态（生产环境检查，本地无法验证，预期失败）
-echo "[10/10] 域名状态"
-curl -sf -o /dev/null -w "%{http_code}" "https://monitor.zkeeeai.com" | grep -q "200" || { echo "FAIL: 域名"; exit 1; }
-
-echo "=== E2E 冒烟测试全部通过 ==="
+echo "=== 冒烟测试通过（步骤 1-9）==="
 
 # === D17 修复：核心链路测试（步骤 11-15，需 ADMIN_TOKEN）===
 if [ -n "$ADMIN_TOKEN" ]; then
@@ -84,7 +80,7 @@ if [ -n "$ADMIN_TOKEN" ]; then
     -d '{"remote_url":"https://e2e-test.example.com/page","client_id":"e2e_test"}' \
     | grep -q "created" || { echo "FAIL: 手动录入"; exit 1; }
 
-  # 步骤 13：查询分发记录（D04：client 端点）
+  # 步骤 13：查询分发记录（D04：按 client_id 过滤分发记录）
   echo "[13/15] 查询分发记录"
   curl -sf -H "Authorization: Bearer $ADMIN_TOKEN" \
     "$MONITOR_URL/api/v1/admin/distributions?client_id=e2e_test" \
@@ -107,9 +103,15 @@ if [ -n "$ADMIN_TOKEN" ]; then
     "$MONITOR_URL/api/v1/admin/audit_logs?action=create_client" \
     | grep -q "e2e_test" || { echo "FAIL: 审计日志"; exit 1; }
 
-  # 清理：删除测试客户
+  # 清理：删除测试客户（不阻塞测试结果，避免清理失败掩盖已通过的核心链路）
   curl -sf -X DELETE "$MONITOR_URL/api/v1/admin/clients/e2e_test" \
-    -H "Authorization: Bearer $ADMIN_TOKEN" > /dev/null
+    -H "Authorization: Bearer $ADMIN_TOKEN" > /dev/null || true
 
   echo "=== 核心链路测试通过 ==="
 fi
+
+# 步骤 10：生产域名最终确认（最后执行，不阻塞核心链路测试；本地环境会失败，仅生产可验证）
+echo "[10/15] 生产域名最终确认"
+curl -sf -o /dev/null -w "%{http_code}" "https://monitor.zkeeeai.com" | grep -q "200" || { echo "FAIL: 域名"; exit 1; }
+
+echo "=== 全部测试通过 ==="
