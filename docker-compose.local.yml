@@ -91,6 +91,10 @@ services:
       SECRET_KEY: ${SECRET_KEY:-local-jwt-secret-key-for-testing}
     ports:
       - "8090:8090"
+    # 挂载源码到 /app，主机改代码容器即时生效（Python 包在 site-packages 不受影响）
+    # M3 起加：避免每次改代码都要 docker cp 或重建镜像
+    volumes:
+      - ./index-monitor:/app
     networks:
       - default          # 与 redis 通信
       - geoflow_net      # 与 geoflow-postgres 通信
