@@ -5,9 +5,13 @@
 更新 status='completed' + file_path。设计文档第 12.6 节。
 
 状态机：pending → processing → completed / failed
+
+charts 字段（M4 补全）：JSONB，存储前端 ECharts getDataURL() 生成的
+base64 数据 URL 字典，如 {"trend": "data:image/png;base64,...", "pie": "..."}。
+设计文档第 12.4 节：图表用 base64 内联。
 """
 from sqlalchemy import Column, String, DateTime, Text, Integer, Date
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
 
 from app.models.base import Base, monitor_table_args
@@ -29,5 +33,6 @@ class ExportTask(Base):
     file_path = Column(String(512), nullable=True)
     file_size = Column(Integer, nullable=True)
     error_message = Column(Text, nullable=True)
+    charts = Column(JSONB, nullable=True)  # 图表 base64 数据 URL 字典（M4 补全）
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     completed_at = Column(DateTime(timezone=True), nullable=True)

@@ -36,6 +36,7 @@ def test_export_task_required_columns():
         "id", "client_id", "requested_by", "requested_by_role",
         "export_type", "date_from", "date_to", "status",
         "file_path", "file_size", "error_message",
+        "charts",  # M4 补全：JSONB，存储 ECharts base64 数据 URL 字典
         "created_at", "completed_at",
     }
     assert cols == expected, f"缺失：{expected - cols}，多余：{cols - expected}"
