@@ -28,6 +28,9 @@ class ManualDistribution(Base):
     remote_url = Column(String(512), nullable=False, index=True)
     status = Column(String(32), nullable=False, default="synced", index=True)
     note = Column(Text, nullable=True)
+    # 修复：新增 content_title 字段，存储抓取到的文章标题
+    # 原逻辑只更新已存在的 IndexResult，手动添加时 IndexResult 不存在，标题被丢弃
+    content_title = Column(String(512), nullable=True)
     created_by_admin_id = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

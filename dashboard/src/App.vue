@@ -11,8 +11,13 @@
         <el-menu-item index="/audit-logs" v-if="isAdmin"><el-icon><List /></el-icon>审计日志</el-menu-item>
         <el-menu-item index="/settings" v-if="isAdmin"><el-icon><Setting /></el-icon>系统设置</el-menu-item>
       </el-menu>
-      <!-- GEOFlow 后台：外链（仅 admin 可见），用 a 标签 target=_blank 新窗口打开 -->
-      <a v-if="isAdmin" href="https://zkeeeai.com/geo_admin" target="_blank" rel="noopener" class="external-link">
+      <!-- GEOFlow 后台：仅 admin 可见，点击后在新标签页打开 GEOFlow 后台 -->
+      <a v-if="isAdmin"
+         href="https://zkeeeai.com/geo_admin"
+         target="_blank"
+         rel="noopener"
+         class="external-link"
+         @click="handleGeoFlowClick">
         <el-icon><Link /></el-icon>GEOFlow 后台
       </a>
       <el-button text type="primary" @click="logout">退出登录</el-button>
@@ -22,25 +27,40 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useStore } from 'vuex'
+import { ElMessage } from 'element-plus'
 import { DataLine, Document, Share, Download, List, Setting, Link, User } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
+const store = useStore()
 
 // 仅在非登录页显示导航栏
 const showNav = computed(() => route.path !== '/login')
 // 当前激活的菜单项（基于路由路径）
 const activeMenu = computed(() => route.path)
-// 仅 admin 可见审计日志菜单项
-const isAdmin = computed(() => localStorage.getItem('role') === 'admin')
+// 修复：改用 Vuex store 的响应式 role，而非直接读 localStorage
+// localStorage 不是 Vue 响应式数据源，computed 求值一次后永久缓存
+// App.vue 作为根组件永不卸载，导致退出登录后 isAdmin 不更新
+const isAdmin = computed(() => store.state.role === 'admin')
 
-// 退出登录：清除 token / role / client_id 并跳转登录页
+// GEOFlow 后台跳转提示：点击后提示用户正在打开新窗口
+const handleGeoFlowClick = () => {
+  ElMessage({
+    message: '正在打开 GEOFlow 后台，如需登录请使用管理员账号',
+    type: 'info',
+    duration: 3000
+  })
+}
+
+// 退出登录：清除 token / role / client_id / user_name 并跳转登录页
+// 修复：调用 Vuex logout action 清理 store 状态（响应式），并补清 user_name
 const logout = () => {
-  localStorage.removeItem('token')
-  localStorage.removeItem('role')
+  store.dispatch('logout')  // 清 Vuex state.token/role + localStorage.token/role
   localStorage.removeItem('client_id')
+  localStorage.removeItem('user_name')  // 补清 SSO 写入的 user_name
   router.push('/login')
 }
 </script>

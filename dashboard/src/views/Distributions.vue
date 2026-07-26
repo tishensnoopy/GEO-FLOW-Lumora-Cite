@@ -17,17 +17,17 @@
 
     <!-- 筛选栏（仅 admin 可见客户筛选） -->
     <div class="filter-bar">
-      <el-select v-if="isAdmin" v-model="filter.client_id" placeholder="按客户筛选" clearable style="width: 180px" @change="fetchList">
+      <el-select v-if="isAdmin" v-model="filter.client_id" placeholder="按客户筛选" clearable style="width: 180px" @change="applyFilter">
         <el-option v-for="c in clientOptions" :key="c.client_id" :label="`${c.client_id} (${c.company_name || c.username})`" :value="c.client_id" />
       </el-select>
-      <el-select v-model="filter.source" placeholder="按来源筛选" clearable style="width: 140px" @change="fetchList">
+      <el-select v-model="filter.source" placeholder="按来源筛选" clearable style="width: 140px" @change="applyFilter">
         <el-option label="手动录入" value="manual" />
         <el-option label="GEOFlow 同步" value="geoflow" />
       </el-select>
       <el-date-picker
         v-model="filter.dateRange" type="daterange" range-separator="至"
         start-placeholder="开始日期" end-placeholder="结束日期"
-        value-format="YYYY-MM-DD" style="width: 260px" @change="fetchList"
+        value-format="YYYY-MM-DD" style="width: 260px" @change="applyFilter"
       />
       <el-button @click="resetFilter">重置</el-button>
     </div>
@@ -35,6 +35,12 @@
     <!-- 分发记录列表 -->
     <el-table :data="pagedItems" v-loading="loading" border @selection-change="onSelectionChange">
       <el-table-column type="selection" width="45" />
+      <el-table-column prop="content_title" label="文章标题" min-width="200" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span v-if="row.content_title">{{ row.content_title }}</span>
+          <span v-else class="text-muted">—</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="remote_url" label="链接 URL" min-width="300" show-overflow-tooltip>
         <template #default="{ row }">
           <a :href="row.remote_url" target="_blank" rel="noopener" class="url-link">{{ row.remote_url }}</a>
@@ -119,11 +125,15 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
+import { useStore } from 'vuex'
 import { ElMessage } from 'element-plus'
 import { Plus, Refresh, InfoFilled } from '@element-plus/icons-vue'
 import api from '@/api'
 
-const isAdmin = computed(() => localStorage.getItem('role') === 'admin')
+const store = useStore()
+// 修复：改用 Vuex store 的 role（响应式），原 localStorage 读取非响应式，
+// 退出管理员后用客户登录时 isAdmin 仍为 true，显示管理员界面。
+const isAdmin = computed(() => store.state.role === 'admin')
 
 // ---------- 列表状态 ----------
 const items = ref([])
@@ -191,6 +201,13 @@ async function fetchList() {
 
 // 后端分页：直接用 items，不需要前端 slice
 const pagedItems = computed(() => items.value)
+
+// 修复：筛选条件变更时重置到第 1 页，避免停留在高页码导致筛选结果为空。
+// 原 @change="fetchList" 直接请求当前页，若原在第 3 页筛选后只剩 1 页会返回空。
+async function applyFilter() {
+  currentPage.value = 1
+  await fetchList()
+}
 
 function resetFilter() {
   filter.client_id = ''
@@ -274,6 +291,7 @@ function formatTime(iso) {
 .pagination-bar { margin-top: 20px; display: flex; justify-content: flex-end; }
 .url-link { color: #409eff; text-decoration: none; }
 .url-link:hover { text-decoration: underline; }
+.text-muted { color: #c0c4cc; }
 .dialog-tip {
   margin-top: 12px; padding: 10px 12px; background: #f4f4f5;
   border-radius: 4px; color: #909399; font-size: 13px;

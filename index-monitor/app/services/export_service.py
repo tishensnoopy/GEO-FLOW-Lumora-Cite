@@ -171,10 +171,13 @@ class ExportService:
             1 for ir in index_results
             if any(ir.get(k) == "indexed" for k in ("baidu", "toutiao", "sogou", "so360", "bing"))
         )
+        # 修复 AI 采信数：只统计 hit_type != "none" 的记录（真正被采信的）
+        # 原逻辑用 len(citation_results) 包含所有检测记录（含未命中），导致虚高
+        cited_count = sum(1 for cr in citation_results if cr.get("hit_type") != "none")
         summary = {
             "total_distributions": len(distributions),
             "indexed_count": indexed_count,
-            "citation_count": len(citation_results),
+            "citation_count": cited_count,
             "avg_index_rate": indexed_count / len(distributions) if distributions else 0,
         }
 

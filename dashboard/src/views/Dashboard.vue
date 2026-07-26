@@ -9,6 +9,12 @@
       <StatCard :value="indexRate + '%'" label="平均收录率" icon="TrendCharts" color="purple" />
     </div>
 
+    <!-- 图表数据说明 -->
+    <div class="data-notice">
+      <el-icon><InfoFilled /></el-icon>
+      <span>下方图表为示例数据展示，统计卡片为真实数据。图表接入真实数据功能开发中。</span>
+    </div>
+
     <!-- 操作栏（所有用户可见导出按钮，含图表截图） -->
     <div class="action-bar">
       <el-button type="primary" @click="openExportDialog" :disabled="!chartsReady">
@@ -48,16 +54,19 @@
 
 <script setup>
 import { ref, onMounted, computed, nextTick } from 'vue'
+import { useStore } from 'vuex'
 import * as echarts from 'echarts'
 import { ElMessage } from 'element-plus'
-import { Download } from '@element-plus/icons-vue'
+import { Download, InfoFilled } from '@element-plus/icons-vue'
 import StatCard from '@/components/StatCard.vue'
 import ExportDialog from '@/components/ExportDialog.vue'
 import { api } from '@/api'
 
+const store = useStore()
 const stats = ref({ total_distributions: 0, indexed_count: 0, citation_count: 0, avg_index_rate: 0 })
 const indexRate = computed(() => (stats.value.avg_index_rate * 100).toFixed(1))
-const isAdmin = computed(() => localStorage.getItem('role') === 'admin')
+// 修复：改用 Vuex store 的响应式 role，而非直接读 localStorage（localStorage 非响应式）
+const isAdmin = computed(() => store.state.role === 'admin')
 
 // ECharts 实例引用（用于 getDataURL 截图导出）
 const chartInstances = {}
@@ -86,15 +95,23 @@ async function fetchStats() {
     const endpoint = isAdmin.value ? '/admin/distributions' : '/distributions'
     const resp = await api.get(endpoint)
     const items = resp.data.items || []
+
+    // 修复收录率计算：按引擎槽位计算（5 个引擎 × URL 数）
+    // 原逻辑"任一引擎收录即算已收录"会虚高（一个引擎收录就 100%）
+    const engineKeys = ['baidu', 'toutiao', 'sogou', 'so360', 'bing']
+    const totalSlots = items.length * engineKeys.length
+    const indexedSlots = items.reduce((sum, i) =>
+      sum + engineKeys.filter(k => (i.index_status || {})[k] === 'indexed').length, 0)
+    // "已收录"卡片：至少一个引擎收录的 URL 数（保持原语义，但收录率用槽位算法）
     const indexed = items.filter(i => Object.values(i.index_status || {}).some(s => s === 'indexed')).length
 
-    // 修复 citation_count TODO（M4 补全）：调用 /stats/citation 获取采信数
-    // 端点不存在或失败时降级为 0，不阻塞 Dashboard 渲染
+    // 修复 AI 采信次数：用 cited 字段（真正被采信的次数，hit_type != "none"）
+    // 原逻辑用 total 字段（所有检测记录数，包括未命中），导致显示 30 = 3问题×10模型
     let citationCount = 0
     try {
       const citationResp = await api.get('/stats/citation')
-      // /stats/citation 返回结构兼容：优先 total，其次 citation_count
-      citationCount = citationResp.data?.total ?? citationResp.data?.citation_count ?? 0
+      // 优先 cited（真正被采信），其次 citation_count，最后才 total（兼容旧端点）
+      citationCount = citationResp.data?.cited ?? citationResp.data?.citation_count ?? 0
     } catch {
       // 端点不存在或失败时降级为 0
       citationCount = 0
@@ -104,7 +121,8 @@ async function fetchStats() {
       total_distributions: items.length,
       indexed_count: indexed,
       citation_count: citationCount,
-      avg_index_rate: items.length > 0 ? indexed / items.length : 0,
+      // 收录率：按引擎槽位计算（已收录槽位 / 总槽位）
+      avg_index_rate: totalSlots > 0 ? indexedSlots / totalSlots : 0,
     }
   } catch (err) {
     console.error('获取统计失败', err)
@@ -226,6 +244,18 @@ function onExportCreated(taskId) {
   grid-template-columns: repeat(4, 1fr);
   gap: 20px;
   margin-bottom: 20px;
+}
+.data-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  margin-bottom: 20px;
+  background: #fdf6ec;
+  border: 1px solid #f5dab1;
+  border-radius: 4px;
+  color: #e6a23c;
+  font-size: 13px;
 }
 .action-bar {
   display: flex;

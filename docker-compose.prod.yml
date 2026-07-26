@@ -83,6 +83,13 @@ services:
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       SECRET_KEY: ${SECRET_KEY}
+      # SSO 配置优化（2026-07-26）：
+      # - SSO_GEOFLOW_USERINFO_URL 使用容器内直连，避免公网 HTTPS 回路延迟（2-5秒 → <100ms）
+      # - SSO_JWT_SECRET 使用环境变量注入，避免使用默认值 "change-me-in-prod"
+      SSO_GEOFLOW_BASE_URL: ${SSO_GEOFLOW_BASE_URL:-https://zkeeeai.com}
+      SSO_GEOFLOW_USERINFO_URL: http://geoflow-web-prod/api/sso/userinfo
+      SSO_REDIRECT_URI: ${SSO_REDIRECT_URI:-https://monitor.zkeeeai.com/sso/callback}
+      SSO_JWT_SECRET: ${SSO_JWT_SECRET}
     ports:
       - "127.0.0.1:8090:8090"
     networks:

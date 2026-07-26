@@ -3,26 +3,32 @@
 
 设计文档第 9 节。前缀 /api/v1/admin。
 """
+import asyncio
+import logging
 import uuid
 from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update, delete
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_admin, get_current_user
-from app.core.database import get_db
+from app.core.database import get_db, async_session
 from app.core.security import hash_password, verify_password
 from app.models.admin_audit_log import AdminAuditLog
 from app.models.client import Client, ClientSite
 from app.models.citation_result import CitationResult
+from app.models.geoflow_models import GeoflowArticleDistribution
 from app.models.index_result import IndexResult
+from app.models.manual_distribution import ManualDistribution
 from app.services.audit_log import AuditLogService
 from app.services.distribution_query import DistributionQueryService
 from app.utils.validators import validate_password_strength, normalize_domain
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -359,12 +365,22 @@ async def create_manual_distribution(
         detail={"url": req.remote_url, "client_id": result.get("client_id")},
     )
 
-    # 立即抓取文章标题，填充到 index_results（如果记录存在）
+    # 立即抓取文章标题，填充到 ManualDistribution 和 index_results（如果记录存在）
     try:
         from app.services.article_fetcher import article_fetcher
         from app.models.index_result import IndexResult
         title, snapshot = await article_fetcher.fetch_title_and_snapshot(req.remote_url)
         if title:
+            # 修复：优先写入 ManualDistribution 记录本身（手动添加时 IndexResult 不存在）
+            # 原逻辑只更新已存在的 IndexResult，导致标题被静默丢弃
+            await db.execute(
+                update(ManualDistribution)
+                .where(ManualDistribution.id == result.get("id"))
+                .values(content_title=title)
+            )
+            await db.commit()
+
+            # 同时更新 IndexResult（如果记录存在）
             existing = await db.execute(
                 select(IndexResult).where(IndexResult.url == req.remote_url)
             )
@@ -387,10 +403,14 @@ async def create_manual_distribution(
 # GET /distributions：client 查询自己的分发记录（D04 修复）
 # 挂在 distribution_router（无 prefix），实际路径 /api/v1/distributions
 # admin 应使用 GET /admin/distributions（跨客户视图）
+# 修复：补齐 source/date_from/date_to 参数（原函数签名缺少这些参数，FastAPI 自动丢弃前端传的筛选条件）
 @distribution_router.get("/distributions")
 async def list_client_distributions(
     page: int = 1,
     page_size: int = 20,
+    source: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
     user_client: tuple = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -400,6 +420,7 @@ async def list_client_distributions(
     非 client 角色（admin）返回 403，引导其走 /admin/distributions。
 
     支持后端分页（page/page_size），避免大量数据导致前端卡顿。
+    支持按 source / date_from / date_to 过滤（与 admin 端点对齐）。
     """
     user, role = user_client
     if role != "client":
@@ -409,7 +430,12 @@ async def list_client_distributions(
         )
 
     service = DistributionQueryService(db)
-    all_items = await service.list_distributions(client_id=user.client_id)
+    all_items = await service.list_distributions(
+        client_id=user.client_id,
+        source=source,
+        date_from=date_from,
+        date_to=date_to,
+    )
     total = len(all_items)
     # 后端分页：按 page/page_size 切片
     start = (page - 1) * page_size
@@ -464,7 +490,12 @@ async def batch_scan(
     admin: dict = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """批量触发检测。设计文档第 9.1 节。"""
+    """批量触发检测。设计文档第 9.1 节。
+
+    修复：原为占位符（只返回入队数，不执行实际检测），导致 AI 采信监测失灵。
+    现改为：解析 distribution_ids → 查 (url, client_id) → asyncio.create_task
+    异步执行检测（不阻塞 HTTP 响应），结果异步写入 index_results / citation_results。
+    """
     if req.scan_type not in ("index", "citation", "both"):
         raise HTTPException(status_code=400, detail="scan_type 必须是 index/citation/both")
 
@@ -477,9 +508,106 @@ async def batch_scan(
         detail={"ids": req.distribution_ids, "type": req.scan_type},
     )
 
-    # 实际检测入队逻辑在 M4 定时任务/后台任务中实现
-    # 此处只返回入队确认（异步处理）
-    return {"queued": len(req.distribution_ids), "scan_type": req.scan_type}
+    # 解析 distribution_ids → [(url, client_id), ...]
+    # id 可能来自 ManualDistribution 或 GeoflowArticleDistribution，两表都查
+    targets = await _resolve_scan_targets(db, req.distribution_ids)
+    if not targets:
+        raise HTTPException(status_code=404, detail="未找到对应的分发记录")
+
+    # 异步执行检测（不阻塞响应；检测可能耗时数分钟，避免 HTTP 超时）
+    asyncio.create_task(_run_batch_scan(targets, req.scan_type))
+
+    return {
+        "queued": len(targets),
+        "scan_type": req.scan_type,
+        "message": f"已开始检测 {len(targets)} 条链接，结果将异步更新",
+    }
+
+
+async def _resolve_scan_targets(
+    db: AsyncSession, distribution_ids: list[str]
+) -> list[tuple[str, str]]:
+    """将 distribution_ids 解析为 (url, client_id) 列表。
+
+    distribution_id 可能来自 ManualDistribution（手动录入，client_id 已知）
+    或 GeoflowArticleDistribution（GEOFlow 分发，需通过 domain 匹配 client_id）。
+    """
+    try:
+        uuids = [uuid.UUID(did) for did in distribution_ids]
+    except (ValueError, AttributeError):
+        return []
+
+    targets: list[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+
+    # 1. 查 ManualDistribution（client_id 直接可用）
+    manual_result = await db.execute(
+        select(ManualDistribution).where(ManualDistribution.id.in_(uuids))
+    )
+    for record in manual_result.scalars().all():
+        if record.remote_url and record.remote_url not in seen_urls:
+            targets.append((record.remote_url, record.client_id))
+            seen_urls.add(record.remote_url)
+
+    # 2. 查 GeoflowArticleDistribution（需通过 domain 匹配 client_id）
+    geoflow_result = await db.execute(
+        select(GeoflowArticleDistribution).where(
+            GeoflowArticleDistribution.id.in_(uuids),
+            GeoflowArticleDistribution.remote_url.isnot(None),
+        )
+    )
+    geoflow_dists = geoflow_result.scalars().all()
+    if geoflow_dists:
+        sites_result = await db.execute(
+            select(ClientSite).where(ClientSite.status == "active")
+        )
+        domain_map = {
+            normalize_domain(s.domain): s.client_id
+            for s in sites_result.scalars().all()
+        }
+        for dist in geoflow_dists:
+            if dist.remote_url and dist.remote_url not in seen_urls:
+                domain = normalize_domain(dist.remote_url)
+                client_id = domain_map.get(domain)
+                if client_id:
+                    targets.append((dist.remote_url, client_id))
+                    seen_urls.add(dist.remote_url)
+
+    return targets
+
+
+async def _run_batch_scan(targets: list[tuple[str, str]], scan_type: str) -> None:
+    """异步执行批量检测（后台任务，不阻塞 HTTP 响应）。
+
+    独立 session：避免与请求级 session 生命周期耦合。
+    单条失败不影响其他 URL（记录日志，继续下一条）。
+    """
+    from app.services.index_checker import IndexChecker
+    from app.services.citation_checker import CitationChecker
+
+    async with async_session() as task_db:
+        if scan_type in ("index", "both"):
+            checker = IndexChecker(task_db)
+            for url, client_id in targets:
+                try:
+                    await checker.check_url(url, client_id, "official")
+                    logger.info("批量收录检测完成: %s", url)
+                except Exception as exc:
+                    logger.error("批量收录检测失败 %s: %s", url, exc)
+
+        if scan_type in ("citation", "both"):
+            checker = CitationChecker(task_db)
+            for url, client_id in targets:
+                try:
+                    # 删除旧的采信记录，允许重新检测（强制刷新）
+                    await task_db.execute(
+                        delete(CitationResult).where(CitationResult.url == url)
+                    )
+                    await task_db.commit()
+                    await checker.check_url(url, client_id)
+                    logger.info("批量采信检测完成: %s", url)
+                except Exception as exc:
+                    logger.error("批量采信检测失败 %s: %s", url, exc)
 
 
 @router.get("/audit_logs")

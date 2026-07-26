@@ -21,7 +21,12 @@ api.interceptors.response.use(
       const isLoginRequest = error.config?.url?.includes('/auth/login') || error.config?.url?.includes('/sso/')
       const isLoginPage = window.location.pathname === '/login'
       if (!isLoginRequest && !isLoginPage) {
-        localStorage.clear()
+        // 修复：只清除鉴权相关的键，不要 localStorage.clear()
+        // localStorage.clear() 会无差别清掉所有键，可能误清 SSO callback 刚写入的 token（竞态）
+        localStorage.removeItem('token')
+        localStorage.removeItem('role')
+        localStorage.removeItem('user_name')
+        // 注意：不清 client_id，避免客户登录后 401 丢失 client_id
         window.location.href = '/login'
       }
     }

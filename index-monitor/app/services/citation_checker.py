@@ -26,6 +26,10 @@ from app.services.llm_client import (
     load_ai_configs,
     make_call_generator,
 )
+# 修复：DEFAULT_QUESTION_MODEL 从 llm_client 导入，保持单一数据源。
+# 原本地定义 "deepseek-chat" 已被 DeepSeek API 废弃（2026年），
+# 会调用失败导致采信检测整体失灵。
+from app.services.llm_client import DEFAULT_QUESTION_MODEL
 from app.services.citation_check import (
     generate_candidates,
     run_citation_check,
@@ -63,7 +67,8 @@ _PROVIDER_ENV_MAP = {
     "ai_anthropic_api_key": "ANTHROPIC_API_KEY",
 }
 
-DEFAULT_QUESTION_MODEL = "deepseek-chat"
+# DEFAULT_QUESTION_MODEL 从 llm_client 导入（deepseek-v4-flash），
+# 不再本地定义 "deepseek-chat"（已废弃）。
 
 
 class CitationChecker:

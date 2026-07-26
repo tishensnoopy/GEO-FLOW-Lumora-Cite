@@ -118,6 +118,24 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
     );
     CREATE INDEX IF NOT EXISTS idx_client_sites_client_id ON client_sites(client_id);
 
+    -- manual_distributions：运营手动录入的 URL 分发记录
+    -- content_title 列存储抓取到的文章标题（修复：原缺失导致标题丢失）
+    CREATE TABLE IF NOT EXISTS manual_distributions (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        client_id VARCHAR(64) NOT NULL,
+        remote_url VARCHAR(512) NOT NULL,
+        status VARCHAR(32) NOT NULL DEFAULT 'synced',
+        note TEXT,
+        content_title VARCHAR(512),
+        created_by_admin_id INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(client_id, remote_url)
+    );
+    CREATE INDEX IF NOT EXISTS idx_manual_distributions_client_id ON manual_distributions(client_id);
+    CREATE INDEX IF NOT EXISTS idx_manual_distributions_status ON manual_distributions(status);
+    CREATE INDEX IF NOT EXISTS idx_manual_distributions_url ON manual_distributions(remote_url);
+
     CREATE TABLE IF NOT EXISTS system_config (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
         config_key VARCHAR(128) UNIQUE NOT NULL,
@@ -144,7 +162,7 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
     ('ai_openai_api_key', '', 'string', 'OpenAI API Key（ChatGPT 引用检测用）'),
     ('ai_gemini_api_key', '', 'string', 'Google Gemini API Key（引用检测用）'),
     ('ai_anthropic_api_key', '', 'string', 'Anthropic API Key（Claude 引用检测用）'),
-    ('ai_question_model', 'deepseek-chat', 'string', '问题生成模型名称（DeepSeek）'),
+    ('ai_question_model', 'deepseek-v4-flash', 'string', '问题生成模型名称（DeepSeek）；deepseek-chat 已废弃，使用 deepseek-v4-flash'),
     ('ai_citation_models', '', 'string', '引用检测模型（逗号分隔：doubao,qwen,deepseek,ernie,openai,gemini,claude；留空=自动选择已配置的）')
     ON CONFLICT (config_key) DO NOTHING;
 EOSQL

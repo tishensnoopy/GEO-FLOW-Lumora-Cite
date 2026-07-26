@@ -207,6 +207,7 @@ class DistributionQueryService:
         字段对齐 ``_serialize_geoflow``：无对应内容数据的字段填 None
         （content_keywords 填空列表 []，与 geoflow 默认值一致）。
         ``note`` 是 manual 特有字段，放在 distributed_at 之后、index_status 之前。
+        修复：返回 record.content_title（原硬编码 None，导致手动录入的标题丢失）。
         """
         url = record.remote_url
         idx = index_map.get(url)
@@ -220,7 +221,7 @@ class DistributionQueryService:
             "status": record.status,
             "channel_name": None,
             "channel_type": None,
-            "content_title": None,
+            "content_title": record.content_title,  # 修复：返回抓取到的标题
             "content_slug": None,
             "content_excerpt": None,
             "content_body": None,

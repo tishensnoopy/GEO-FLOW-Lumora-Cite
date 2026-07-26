@@ -2,6 +2,7 @@
 """定时任务调度。
 
 收录检测：每日 02:00（M1 Task 4 已有）
+AI 采信检测：每日 03:00（修复：原缺失，导致采信数据不更新）
 导出处理：每 30 秒扫 pending 导出任务（M4 补全，闭合 M3 审查缺口 1）
 
 设计文档第 21.1 节 + M3 里程碑审查结论。
@@ -27,6 +28,24 @@ async def scheduled_index_check():
     async with async_session() as db:
         checker = IndexChecker(db)
         await checker.check_all_pending()
+
+
+async def scheduled_citation_check():
+    """每日 03:00 AI 采信检测。
+
+    修复：原 scheduler 未注册采信检测定时任务，导致：
+    1. citation_results 表长期无新数据，Dashboard 采信统计始终为 0
+    2. batch_scan 是占位符（已在 admin_routes.py 修复），即便手动触发也不执行
+    现补全定时任务，每日 03:00（在收录检测 02:00 之后）扫描所有待检测 URL。
+    """
+    from app.services.citation_checker import CitationChecker
+    async with async_session() as db:
+        checker = CitationChecker(db)
+        result = await checker.check_all_pending()
+        logger.info(
+            "采信检测完成：共 %d 条，成功 %d，失败 %d",
+            result["total"], result["success"], result["failed"],
+        )
 
 
 async def scheduled_export_processor():
@@ -68,6 +87,13 @@ def start_scheduler():
         id="index_check",
         replace_existing=True,
     )
+    # AI 采信检测：每日 03:00（修复：原缺失）
+    scheduler.add_job(
+        scheduled_citation_check,
+        CronTrigger(hour=3, minute=0),
+        id="citation_check",
+        replace_existing=True,
+    )
     # 导出处理：每 30 秒扫 pending（M4 补全）
     scheduler.add_job(
         scheduled_export_processor,
@@ -87,7 +113,8 @@ def start_scheduler():
     if not scheduler.running:
         scheduler.start()
         logger.info(
-            "APScheduler 已启动：收录检测(每日 02:00) + 导出处理(每 30 秒) + 归档扫描(每日 02:00)"
+            "APScheduler 已启动：收录检测(每日 02:00) + 采信检测(每日 03:00) "
+            "+ 导出处理(每 30 秒) + 归档扫描(每日 02:00)"
         )
 
 

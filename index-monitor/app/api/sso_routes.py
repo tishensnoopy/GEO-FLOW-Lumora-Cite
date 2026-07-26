@@ -120,6 +120,15 @@ def _json_js(value: str) -> str:
     return json.dumps(value, ensure_ascii=False).replace("</", "<\\/")
 
 
+# SSO 响应一律不缓存：callback URL 每次携带不同的 code/state，
+# 浏览器若缓存旧响应会导致跳转异常（如"网址无法显示/重定向"）。
+SSO_NO_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
 def _render_sso_success_html(
     token: str, frontend_role: str, userinfo: SsoUserinfo
 ) -> HTMLResponse:
@@ -134,6 +143,9 @@ def _render_sso_success_html(
 
     安全考虑：所有动态值通过 ``_json_js`` 转义后嵌入 JS 字符串字面量，
     避免 XSS 注入（``</script>`` 替换 + 引号转义）。
+
+    缓存控制：附加 ``Cache-Control: no-store`` 等头，防止浏览器缓存
+    含 token 的成功页或旧的错误响应，避免 SSO 跳转异常。
     """
     html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -143,12 +155,16 @@ def _render_sso_success_html(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
-           text-align: center; padding: 80px 20px; background: #f0f2f5; color: #333; }}
+           text-align: center; padding: 80px 20px; background: #f0f2f5; color: #333; margin: 0; }}
     .card {{ max-width: 400px; margin: 0 auto; background: #fff; padding: 40px;
             border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); }}
     .icon {{ font-size: 48px; color: #67c23a; margin-bottom: 16px; }}
     .title {{ font-size: 20px; margin-bottom: 8px; }}
-    .desc {{ color: #666; font-size: 14px; }}
+    .desc {{ color: #666; font-size: 14px; margin-bottom: 20px; }}
+    .spinner {{ display: inline-block; width: 24px; height: 24px;
+               border: 3px solid #e0e0e0; border-top-color: #409eff;
+               border-radius: 50%; animation: spin 0.8s linear infinite; }}
+    @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
   </style>
 </head>
 <body>
@@ -156,6 +172,7 @@ def _render_sso_success_html(
     <div class="icon">&#10003;</div>
     <div class="title">登录成功</div>
     <div class="desc">正在跳转到控制台...</div>
+    <div class="spinner"></div>
   </div>
   <script>
     localStorage.setItem('token', {_json_js(token)});
@@ -165,7 +182,47 @@ def _render_sso_success_html(
   </script>
 </body>
 </html>"""
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=html, headers=SSO_NO_CACHE_HEADERS)
+
+
+def _render_sso_error_html(error_code: str, message: str) -> HTMLResponse:
+    """渲染 SSO 错误页面（HTML 而非 JSON，避免浏览器显示原始 JSON）。
+
+    设计原因：SSO callback 由浏览器直接访问，HTTPException 默认返回 JSON，
+    浏览器会显示原始 JSON 字符串而非友好错误页。改为返回 HTML 错误页，
+    提供"重新登录"按钮让用户可以重试。
+    """
+    html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>登录失败</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+           text-align: center; padding: 80px 20px; background: #f0f2f5; color: #333; margin: 0; }}
+    .card {{ max-width: 400px; margin: 0 auto; background: #fff; padding: 40px;
+            border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); }}
+    .icon {{ font-size: 48px; color: #f56c6c; margin-bottom: 16px; }}
+    .title {{ font-size: 20px; margin-bottom: 8px; color: #f56c6c; }}
+    .desc {{ color: #666; font-size: 14px; margin-bottom: 24px; line-height: 1.6; }}
+    .btn {{ display: inline-block; padding: 10px 28px; background: #409eff;
+           color: #fff; text-decoration: none; border-radius: 4px; font-size: 14px; }}
+    .btn:hover {{ background: #66b1ff; }}
+    .error-code {{ color: #999; font-size: 12px; margin-top: 16px; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">&#10007;</div>
+    <div class="title">登录失败</div>
+    <div class="desc">{message}</div>
+    <a href="/login" class="btn">重新登录</a>
+    <div class="error-code">错误码: {error_code}</div>
+  </div>
+</body>
+</html>"""
+    return HTMLResponse(content=html, status_code=200, headers=SSO_NO_CACHE_HEADERS)
 
 
 @router.get("/login")
@@ -198,7 +255,11 @@ async def sso_login(request: Request) -> RedirectResponse:
 
     # 用 urlencode 正规化 query string，避免特殊字符破坏 URL
     target = f"{authorize_url}?{urlencode({'redirect_uri': redirect_uri, 'state': state})}"
-    return RedirectResponse(url=target, status_code=307)
+    # 307 重定向也不缓存：浏览器若缓存旧 307 会导致跳转到过期的 state（已 GETDEL 消费）
+    # 形成"无效 state"循环。
+    return RedirectResponse(
+        url=target, status_code=307, headers=SSO_NO_CACHE_HEADERS
+    )
 
 
 @router.get("/callback")
@@ -234,34 +295,42 @@ async def sso_callback(request: Request) -> HTMLResponse:
     state 通过 ``GETDEL`` 一次性消费——即使后续 code 交换失败 / code 缺失，
     state 也不会回滚（避免被重复使用，符合"一次性消费"语义）。
 
-    设计变更（2026-07-26）：callback 原返回 JSON，但 SSO callback 由浏览器
-    直接访问（GEOFlow 302 回跳），浏览器会显示原始 JSON 而非跳转。改为返回
-    HTML 页面，内嵌 JS 把 token 存 localStorage 并跳转首页。错误情况保持
-    JSON（HTTPException），便于前端识别错误码。
+    设计变更（2026-07-26）：
+    - callback 原返回 JSON，但 SSO callback 由浏览器直接访问（GEOFlow 302 回跳），
+      浏览器会显示原始 JSON 而非跳转。改为返回 HTML 页面，内嵌 JS 把 token 存
+      localStorage 并跳转首页。
+    - 错误情况也改为返回 HTML 错误页（而非 JSON HTTPException），提供"重新登录"
+      按钮让用户可以重试，避免浏览器显示原始 JSON 错误信息。
     """
     # 1. 验证 state（防 CSRF）——先于 code 验证
     state = request.query_params.get("state")
     if not state:
-        raise HTTPException(status_code=400, detail="missing_state")
+        return _render_sso_error_html("missing_state", "缺少 state 参数，可能是链接已失效。")
 
     redis_client = get_redis()
     # GETDEL 一次性消费：state 用过即删，防重放
     stored = await redis_client.getdel(f"{SSO_STATE_KEY_PREFIX}{state}")
     if stored is None:
-        raise HTTPException(status_code=401, detail="invalid_state")
+        return _render_sso_error_html(
+            "invalid_state",
+            "登录状态已过期或已被使用，请重新登录。",
+        )
 
     # 2. 验证 code
     code = request.query_params.get("code")
     if not code:
-        raise HTTPException(status_code=400, detail="missing_code")
+        return _render_sso_error_html("missing_code", "缺少授权码，可能是 GEOFlow 回跳异常。")
 
     sso_service = _get_sso_service()
     try:
         userinfo: SsoUserinfo = await sso_service.exchange_code(code)
     except Exception:
         # 不暴露底层异常细节给前端（可能含 GEOFlow 内部错误信息）
-        # 所有 exchange_code 失败都视作 "code 无效"，统一 401 让前端重新走登录流程
-        raise HTTPException(status_code=401, detail="invalid_code")
+        # 所有 exchange_code 失败都视作 "code 无效"，返回 HTML 错误页让前端重新登录
+        return _render_sso_error_html(
+            "invalid_code",
+            "授权码无效、已过期或已被使用，请重新登录。",
+        )
 
     token = _sign_jwt(userinfo.user_id, userinfo.name, userinfo.role)
 
