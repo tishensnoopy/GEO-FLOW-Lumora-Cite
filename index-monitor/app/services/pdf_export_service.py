@@ -52,8 +52,8 @@ class PdfExportService:
 
         # 渲染 HTML
         template = self.env.get_template("report.html")
-        # Logo base64（1x1 透明 PNG 占位，生产替换为真实 Logo）
-        logo_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+        # Logo base64（SVG 文字 Logo：知氪AI）
+        logo_base64 = "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMDAiIGhlaWdodD0iMzYiIHZpZXdCb3g9IjAgMCAxMDAgMzYiPgo8cmVjdCB3aWR0aD0iMTAwIiBoZWlnaHQ9IjM2IiByeD0iNiIgZmlsbD0iIzJjM2U1MCIvPgo8dGV4dCB4PSI1MCIgeT0iMjQiIGZvbnQtZmFtaWx5PSJzYW5zLXNlcmlmIiBmb250LXNpemU9IjE2IiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0id2hpdGUiIHRleHQtYW5jaG9yPSJtaWRkbGUiPuifpeawqkFJPC90ZXh0Pgo8L3N2Zz4="
         html_content = template.render(
             client_name=report_data.get("client_name", ""),
             date_from=report_data.get("date_from", ""),
@@ -62,6 +62,7 @@ class PdfExportService:
             stats=report_data.get("stats", {}),
             distributions=report_data.get("distributions", []),
             charts=report_data.get("charts", {}),
+            citation_details=report_data.get("citation_details", []),
             logo_base64=logo_base64,
         )
 

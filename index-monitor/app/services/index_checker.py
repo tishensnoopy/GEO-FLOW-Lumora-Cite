@@ -9,6 +9,7 @@ from app.models.index_result import IndexResult, IndexHistory
 from app.models.client import ClientSite
 from app.utils.validators import normalize_domain
 from app.services.spider import spider
+from app.services.article_fetcher import article_fetcher
 
 class IndexChecker:
     def __init__(self, db: AsyncSession):
@@ -69,6 +70,9 @@ class IndexChecker:
         results = await self.spider.check_all_engines(url)
         now = datetime.now()
 
+        # 抓取文章标题和内容快照
+        title, snapshot = await article_fetcher.fetch_title_and_snapshot(url)
+
         update_data = {
             "url": url,
             "client_id": client_id,
@@ -84,6 +88,11 @@ class IndexChecker:
             "so360_checked_at": now if results["so360"] else None,
             "bing_checked_at": now if results["bing"] else None,
         }
+        # 填充标题和快照（抓取成功时）
+        if title:
+            update_data["content_title"] = title
+        if snapshot:
+            update_data["content_snapshot"] = snapshot
 
         existing = await self.db.execute(select(IndexResult).where(IndexResult.url == url))
         if existing.scalar_one_or_none():

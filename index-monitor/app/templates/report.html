@@ -95,11 +95,175 @@
             max-width: 100%;
             height: auto;
         }
+        /* 封面页样式 */
+        .cover-page {
+            min-height: 250mm;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: space-between;
+            padding: 40mm 20mm;
+            page-break-after: always;
+            text-align: center;
+        }
+        .cover-logo-area {
+            margin-bottom: 20mm;
+        }
+        .cover-logo-text {
+            font-size: 42px;
+            font-weight: bold;
+            color: #2c3e50;
+            letter-spacing: 4px;
+        }
+        .cover-logo-sub {
+            font-size: 16px;
+            color: #3498db;
+            letter-spacing: 6px;
+            margin-top: 5px;
+        }
+        .cover-title-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+        .cover-title {
+            font-size: 36px;
+            color: #2c3e50;
+            border-bottom: 3px solid #3498db;
+            padding-bottom: 15px;
+            margin: 0 0 15px 0;
+        }
+        .cover-subtitle {
+            font-size: 16px;
+            color: #7f8c8d;
+            line-height: 1.8;
+        }
+        .cover-info {
+            width: 100%;
+            text-align: left;
+            border-top: 2px solid #ecf0f1;
+            padding-top: 15mm;
+        }
+        .cover-info p {
+            font-size: 14px;
+            line-height: 2;
+            margin: 5px 0;
+            color: #2c3e50;
+        }
+        /* AI 采信卡片样式 */
+        .citation-card {
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 10px 12px;
+            margin: 8px 0;
+            background: #fafbfc;
+        }
+        .citation-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 6px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid #eee;
+        }
+        .citation-model {
+            background: #3498db;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: bold;
+        }
+        .citation-hit {
+            font-size: 11px;
+            font-weight: bold;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+        .citation-hit.exact { color: #27ae60; background: #e8f5e9; }
+        .citation-hit.domain { color: #f39c12; background: #fef9e7; }
+        .citation-hit.none { color: #e74c3c; background: #fdedec; }
+        .citation-hit.unverifiable { color: #95a5a6; background: #f4f6f6; }
+        .citation-date { color: #999; font-size: 10px; }
+        .citation-question {
+            font-size: 11px;
+            margin: 4px 0;
+            color: #333;
+        }
+        .citation-answer {
+            font-size: 11px;
+            margin: 4px 0;
+            color: #555;
+        }
+        .answer-text {
+            background: #fff;
+            border-left: 3px solid #3498db;
+            padding: 6px 8px;
+            margin-top: 4px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            line-height: 1.5;
+        }
+        .citation-url {
+            font-size: 10px;
+            color: #999;
+            margin-top: 4px;
+            word-break: break-all;
+        }
+        /* 文章快照卡片样式 */
+        .snapshot-card {
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 10px 12px;
+            margin: 8px 0;
+            background: #fff;
+        }
+        .snapshot-title {
+            font-size: 12px;
+            color: #2c3e50;
+            margin-bottom: 4px;
+        }
+        .snapshot-url {
+            font-size: 10px;
+            margin-bottom: 6px;
+            word-break: break-all;
+        }
+        .snapshot-content {
+            font-size: 11px;
+            color: #555;
+            line-height: 1.6;
+            background: #f9f9f9;
+            padding: 8px;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
     </style>
 </head>
 <body>
     <div class="watermark">知氪AI监测</div>
-    <img class="header-logo" src="data:image/png;base64,{{ logo_base64 }}" alt="Logo">
+    <img class="header-logo" src="data:image/svg+xml;base64,{{ logo_base64 }}" alt="Logo">
+
+    <!-- 封面页 -->
+    <div class="cover-page">
+        <div class="cover-logo-area">
+            <div class="cover-logo-text">知氪AI</div>
+            <div class="cover-logo-sub">ZKEEE AI</div>
+        </div>
+        <div class="cover-title-area">
+            <h1 class="cover-title">全链路监测报告</h1>
+            <div class="cover-subtitle">
+                AI 采信检测 · 搜索引擎收录 · 多维度数据分析<br>
+                专业级监测报告
+            </div>
+        </div>
+        <div class="cover-info">
+            <p><strong>客户名称：</strong>{{ client_name }}</p>
+            <p><strong>报告周期：</strong>{{ date_from }} 至 {{ date_to }}</p>
+            <p><strong>生成时间：</strong>{{ generated_at }}</p>
+        </div>
+    </div>
 
     <h1>监测报告</h1>
     <p>
@@ -138,7 +302,84 @@
         <img class="chart-img" src="{{ charts.pie }}" alt="AI 采信分布">
     </div>
 
-    <h2>四、分发明细</h2>
+    <h2>四、搜索引擎收录详情</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>序号</th>
+                <th>文章标题</th>
+                <th>百度</th>
+                <th>头条</th>
+                <th>搜狗</th>
+                <th>360</th>
+                <th>必应</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for dist in distributions %}
+            <tr class="distribution-row">
+                <td>{{ loop.index }}</td>
+                <td style="max-width: 250px;">{{ dist.content_title or dist.remote_url[:40] or '-' }}</td>
+                <td style="text-align: center;">{{ '✓' if dist.baidu_status == 'indexed' else '✗' }}</td>
+                <td style="text-align: center;">{{ '✓' if dist.toutiao_status == 'indexed' else '✗' }}</td>
+                <td style="text-align: center;">{{ '✓' if dist.sogou_status == 'indexed' else '✗' }}</td>
+                <td style="text-align: center;">{{ '✓' if dist.so360_status == 'indexed' else '✗' }}</td>
+                <td style="text-align: center;">{{ '✓' if dist.bing_status == 'indexed' else '✗' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <h2>五、AI 采信详情</h2>
+    {% if citation_details and citation_details|length > 0 %}
+    {% for cit in citation_details %}
+    <div class="citation-card distribution-row">
+        <div class="citation-header">
+            <span class="citation-model">{{ {'qwen': '通义千问', 'deepseek': 'DeepSeek', 'chatgpt': 'ChatGPT', 'ernie': '文心一言', 'wenxin': '文心一言', 'glm': '智谱GLM', 'doubao': '豆包', 'spark': '讯飞星火', 'baichuan': '百川', 'minimax': 'MiniMax', 'moonshot': '月之暗面', 'kimi': 'Kimi'}.get(cit.model, cit.model) }}</span>
+            <span class="citation-hit {{ cit.hit_type }}">{{ {'exact': '✓ 精确命中', 'domain': '◐ 域名命中', 'none': '✗ 未命中', 'unverifiable': '? 无法验证'}.get(cit.hit_type, cit.hit_type) }}</span>
+            <span class="citation-date">{{ cit.checked_at[:10] if cit.checked_at else '-' }}</span>
+        </div>
+        <div class="citation-question">
+            <strong>检测问题：</strong>{{ cit.question or '（无）' }}
+        </div>
+        {% if cit.answer %}
+        <div class="citation-answer">
+            <strong>AI 回答：</strong>
+            <div class="answer-text">{{ cit.answer[:500] }}{% if cit.answer|length > 500 %}...{% endif %}</div>
+        </div>
+        {% endif %}
+        <div class="citation-url">
+            <strong>文章 URL：</strong><a href="{{ cit.url }}" style="color: #3498db;">{{ cit.url[:60] }}{% if cit.url|length > 60 %}...{% endif %}</a>
+        </div>
+    </div>
+    {% endfor %}
+    {% else %}
+    <p style="color: #999; text-align: center; padding: 20px;">暂无 AI 采信检测记录</p>
+    {% endif %}
+
+    <h2>六、文章原文快照</h2>
+    {% if distributions %}
+    {% for dist in distributions %}
+    {% if dist.content_snapshot %}
+    <div class="snapshot-card distribution-row">
+        <div class="snapshot-title">
+            <strong>{{ loop.index }}. {{ dist.content_title or '（无标题）' }}</strong>
+        </div>
+        <div class="snapshot-url">
+            <a href="{{ dist.remote_url }}" style="color: #3498db;">{{ dist.remote_url }}</a>
+        </div>
+        <div class="snapshot-content">{{ dist.content_snapshot[:300] }}{% if dist.content_snapshot|length > 300 %}...{% endif %}</div>
+    </div>
+    {% endif %}
+    {% endfor %}
+    {% if not distributions|selectattr('content_snapshot')|list %}
+    <p style="color: #999; text-align: center; padding: 20px;">暂无文章快照（文章标题抓取后自动生成）</p>
+    {% endif %}
+    {% else %}
+    <p style="color: #999; text-align: center; padding: 20px;">暂无分发记录</p>
+    {% endif %}
+
+    <h2>七、分发明细</h2>
     <table>
         <thead>
             <tr>
@@ -155,11 +396,11 @@
             {% for dist in distributions %}
             <tr class="distribution-row">
                 <td>{{ loop.index }}</td>
-                <td>{{ dist.content_title or '-' }}</td>
+                <td style="max-width: 200px;">{{ dist.content_title or '-' }}</td>
                 <td style="word-break: break-all; max-width: 200px;">{{ dist.remote_url }}</td>
                 <td>{{ dist.source }}</td>
-                <td>{{ dist.index_status.baidu }}</td>
-                <td>{{ dist.index_status.bing }}</td>
+                <td style="text-align: center;">{{ '✓' if dist.baidu_status == 'indexed' else '✗' }}</td>
+                <td style="text-align: center;">{{ '✓' if dist.bing_status == 'indexed' else '✗' }}</td>
                 <td>{{ dist.status }}</td>
             </tr>
             {% endfor %}

@@ -1,5 +1,5 @@
 # index-monitor/app/models/client.py
-from sqlalchemy import Column, String, DateTime, Boolean, UniqueConstraint
+from sqlalchemy import Column, String, DateTime, Boolean, Date, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from app.models.base import Base, monitor_table_args
@@ -22,6 +22,9 @@ class Client(Base):
     contact_name = Column(String(128), nullable=True)
     contact_email = Column(String(255), nullable=True, unique=True)
     contact_phone = Column(String(32), nullable=True)
+    # 服务期管理：合同起止日期
+    service_start_date = Column(Date, nullable=True)
+    service_end_date = Column(Date, nullable=True)
     # 设计文档第 21.6 节：合规留痕（首次同意用户协议 / 隐私政策时间）
     agreed_terms_at = Column(DateTime(timezone=True), nullable=True)
     agreed_privacy_at = Column(DateTime(timezone=True), nullable=True)

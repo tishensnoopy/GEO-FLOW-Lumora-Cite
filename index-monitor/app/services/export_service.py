@@ -98,24 +98,56 @@ class ExportService:
         # 查收录检测结果
         urls = [d["remote_url"] for d in distributions if d.get("remote_url")]
         index_results = []
+        # 构建 url → 收录状态 的映射，用于合并到 distributions
+        index_map = {}
         if urls:
             ir_result = await self.db.execute(
                 select(IndexResult).where(IndexResult.url.in_(urls))
             )
-            index_results = [
-                {
+            for ir in ir_result.scalars().all():
+                status = {
                     "url": ir.url,
                     "baidu": ir.baidu_status,
                     "toutiao": ir.toutiao_status,
                     "sogou": ir.sogou_status,
                     "so360": ir.so360_status,
                     "bing": ir.bing_status,
+                    "baidu_status": ir.baidu_status,
+                    "toutiao_status": ir.toutiao_status,
+                    "sogou_status": ir.sogou_status,
+                    "so360_status": ir.so360_status,
+                    "bing_status": ir.bing_status,
+                    "content_title": ir.content_title,
+                    "content_snapshot": ir.content_snapshot,
                     "checked_at": ir.updated_at.isoformat() if ir.updated_at else None,
                 }
-                for ir in ir_result.scalars().all()
-            ]
+                index_results.append(status)
+                index_map[ir.url] = status
 
-        # 查采信检测结果
+        # 将收录状态、标题和快照合并到 distributions（供 PDF 模板直接访问 dist.baidu_status 等）
+        for dist in distributions:
+            url = dist.get("remote_url")
+            if url and url in index_map:
+                ir = index_map[url]
+                dist["baidu_status"] = ir["baidu_status"]
+                dist["toutiao_status"] = ir["toutiao_status"]
+                dist["sogou_status"] = ir["sogou_status"]
+                dist["so360_status"] = ir["so360_status"]
+                dist["bing_status"] = ir["bing_status"]
+                dist["content_title"] = ir["content_title"] or dist.get("content_title")
+                # 合并文章快照（PDF 报告展示用）
+                dist["content_snapshot"] = ir["content_snapshot"] or dist.get("content_snapshot", "")
+            else:
+                # 默认值
+                dist.setdefault("baidu_status", "pending")
+                dist.setdefault("toutiao_status", "pending")
+                dist.setdefault("sogou_status", "pending")
+                dist.setdefault("so360_status", "pending")
+                dist.setdefault("bing_status", "pending")
+                dist.setdefault("content_title", dist.get("content_title", ""))
+                dist.setdefault("content_snapshot", dist.get("content_snapshot", ""))
+
+        # 查采信检测结果（含 AI 回答原文，供 PDF 报告翔实展示）
         citation_results = []
         if urls:
             cr_result = await self.db.execute(
@@ -126,7 +158,9 @@ class ExportService:
                     "url": cr.url,
                     "model": cr.model,
                     "question": cr.question,
+                    "answer": cr.answer,
                     "hit_type": cr.hit_type,
+                    "sources": cr.sources,
                     "checked_at": cr.checked_at.isoformat() if cr.checked_at else None,
                 }
                 for cr in cr_result.scalars().all()
@@ -151,6 +185,7 @@ class ExportService:
             "distributions": distributions,
             "index_results": index_results,
             "citation_results": citation_results,
+            "citation_details": citation_results,  # PDF 模板用 citation_details 字段
             "summary": summary,
             "stats": summary,  # PDF 模板用 stats 字段
             "charts": task.charts or {},  # 从 task.charts 读取（M4 补全，替换写死的 {}）

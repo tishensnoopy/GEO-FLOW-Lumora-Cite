@@ -1,6 +1,5 @@
 <!-- dashboard/src/views/Exports.vue -->
-<!-- 缺口任务 5：导出报告页（列表 + 新建对话框 + 下载）。
-     M4 主计划任务 4 的基础功能 + 缺口任务 5 的 ExportDialog 适配（不传 charts）。 -->
+<!-- 导出报告页（列表 + 新建对话框 + 下载 + 分页）。 -->
 <template>
   <div class="exports-container">
     <div class="page-header">
@@ -41,6 +40,17 @@
       </el-table-column>
     </el-table>
 
+    <!-- 分页 -->
+    <div class="pagination-bar">
+      <el-pagination
+        v-model:current-page="currentPage"
+        :page-size="pageSize"
+        :total="total"
+        layout="total, prev, pager, next"
+        @current-change="fetchTasks"
+      />
+    </div>
+
     <!-- 缺口任务 5：Exports 页面不传 charts（历史数据导出，无图表截图） -->
     <ExportDialog v-model="showDialog" :charts="{}" @created="fetchTasks" />
   </div>
@@ -56,16 +66,23 @@ import { api } from '@/api'
 const loading = ref(false)
 const tasks = ref([])
 const showDialog = ref(false)
+const currentPage = ref(1)
+const pageSize = ref(20)
+const total = ref(0)
 
 onMounted(fetchTasks)
 
 async function fetchTasks() {
   loading.value = true
   try {
-    const resp = await api.get('/exports', { params: { page: 1, page_size: 20 } })
+    const resp = await api.get('/exports', {
+      params: { page: currentPage.value, page_size: pageSize.value },
+    })
     tasks.value = resp.data.items || []
+    total.value = resp.data.total || 0
   } catch {
     tasks.value = []
+    total.value = 0
   } finally {
     loading.value = false
   }
@@ -108,4 +125,5 @@ async function handleDownload(task) {
   align-items: center;
   margin-bottom: 20px;
 }
+.pagination-bar { margin-top: 20px; display: flex; justify-content: flex-end; }
 </style>

@@ -22,7 +22,7 @@
           <el-tab-pane label="客户登录" name="client">
             <el-form :model="clientForm" @submit.prevent="handleClientLogin">
               <el-form-item>
-                <el-input v-model="clientForm.client_id" placeholder="客户 ID" prefix-icon="User" />
+                <el-input v-model="clientForm.username" placeholder="用户名" prefix-icon="User" />
               </el-form-item>
               <el-form-item>
                 <el-input v-model="clientForm.password" type="password" placeholder="密码" prefix-icon="Lock" show-password />
@@ -67,26 +67,26 @@ const activeTab = ref('client')
 const loading = ref(false)
 
 const clientForm = reactive({
-  client_id: '',
+  username: '',
   password: '',
 })
 
-// D12 修复：通过 store.dispatch('login', ...) 调用 Vuex login action
-// store action 内部用 api.post('/auth/login', credentials) 透传 { client_id, password }
-// 并 commit SET_TOKEN + SET_ROLE，保持 store 作为认证状态单一来源
+// 客户登录：用 username（或 client_id）登录，后端返回 client_id 供后续 API 筛选使用
 async function handleClientLogin() {
-  if (!clientForm.client_id || !clientForm.password) {
-    ElMessage.warning('请输入客户 ID 和密码')
+  if (!clientForm.username || !clientForm.password) {
+    ElMessage.warning('请输入用户名和密码')
     return
   }
   loading.value = true
   try {
-    await store.dispatch('login', {
-      client_id: clientForm.client_id,
+    const data = await store.dispatch('login', {
+      username: clientForm.username,
       password: clientForm.password,
     })
-    // client_id 供后续页面筛选数据使用；token/role 已由 store mutation 写入 localStorage
-    localStorage.setItem('client_id', clientForm.client_id)
+    // 后端返回 client_id，存到 localStorage 供后续 API 筛选使用
+    if (data.client_id) {
+      localStorage.setItem('client_id', data.client_id)
+    }
     router.push('/')
   } catch (err) {
     ElMessage.error(err.response?.data?.detail || '登录失败')

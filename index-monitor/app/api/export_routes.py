@@ -131,7 +131,15 @@ async def list_export_tasks(
     db: AsyncSession = Depends(get_db),
 ):
     """列出导出任务（分页）。admin 看所有，client 只看自己的。"""
+    from sqlalchemy import func
+
     user, role = user_client
+    # 先查 total（与分页查询同样过滤条件）
+    count_query = select(func.count()).select_from(ExportTask)
+    if role == "client":
+        count_query = count_query.where(ExportTask.client_id == user.client_id)
+    total = (await db.execute(count_query)).scalar()
+
     query = select(ExportTask)
     if role == "client":
         query = query.where(ExportTask.client_id == user.client_id)
@@ -154,6 +162,7 @@ async def list_export_tasks(
         ],
         "page": page,
         "page_size": page_size,
+        "total": total,
     }
 
 

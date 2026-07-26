@@ -78,7 +78,13 @@ def fake_redis(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_sso_callback_valid_code_signs_jwt(client, db_session, fake_redis):
-    """验证 SSO callback 用有效 code + 有效 state 签发 JWT，并一次性消费 state。"""
+    """验证 SSO callback 用有效 code + 有效 state 签发 JWT，并一次性消费 state。
+
+    设计变更（2026-07-26）：callback 现返回 HTML 页面（浏览器执行 JS 存 token
+    并跳转首页），不再返回 JSON。测试改为从 HTML 中提取 token 并验证。
+    """
+    import re
+
     fake_redis.data["sso:state:valid-state"] = "1"
     mock_userinfo = SsoUserinfo(
         user_id=1, name="测试管理员", email="admin@test.com", role="super_admin"
@@ -91,13 +97,34 @@ async def test_sso_callback_valid_code_signs_jwt(client, db_session, fake_redis)
         response = await client.get("/sso/callback?code=valid-code&state=valid-state")
 
     assert response.status_code == 200, f"期望 200，实际 {response.status_code}: {response.text}"
-    data = response.json()
-    assert "access_token" in data
-    assert data["token_type"] == "bearer"
-    assert data["user"]["name"] == "测试管理员"
-    assert data["user"]["role"] == "super_admin"
-    assert data["user"]["user_id"] == 1
-    assert data["user"]["email"] == "admin@test.com"
+
+    # callback 现返回 HTML（浏览器执行 JS 把 token 存 localStorage 并跳转首页）
+    text = response.text
+    assert "localStorage.setItem" in text, f"HTML 应包含 JS 赋值，实际: {text[:200]}"
+    assert "window.location.href" in text, f"HTML 应包含跳转，实际: {text[:200]}"
+
+    # 从 HTML 中提取 token（json.dumps 生成双引号字符串）
+    token_match = re.search(
+        r"localStorage\.setItem\('token',\s*\"([^\"]+)\"\)", text
+    )
+    assert token_match, f"HTML 应包含 token 赋值，实际: {text[:300]}"
+    access_token = token_match.group(1)
+
+    # 验证 role 映射：后端 super_admin → 前端 admin
+    role_match = re.search(
+        r"localStorage\.setItem\('role',\s*\"([^\"]+)\"\)", text
+    )
+    assert role_match, f"HTML 应包含 role 赋值，实际: {text[:300]}"
+    assert role_match.group(1) == "admin", (
+        f"role 应映射为 admin（前端 App.vue 检查 role === 'admin'），实际: {role_match.group(1)}"
+    )
+
+    # 验证 user_name
+    name_match = re.search(
+        r"localStorage\.setItem\('user_name',\s*\"([^\"]+)\"\)", text
+    )
+    assert name_match, f"HTML 应包含 user_name 赋值，实际: {text[:300]}"
+    assert name_match.group(1) == "测试管理员"
 
     # state 应被一次性消费（GETDEL 后从 Redis 删除）
     assert "sso:state:valid-state" not in fake_redis.data, "state 应被一次性消费"
@@ -107,13 +134,14 @@ async def test_sso_callback_valid_code_signs_jwt(client, db_session, fake_redis)
     from app.core.config import settings
     from app.core.auth import verify_admin_jwt
 
-    decoded = verify_admin_jwt(data["access_token"])
+    decoded = verify_admin_jwt(access_token)
     assert decoded["user_id"] == 1
     assert decoded["name"] == "测试管理员"
+    # JWT 内的 role 保持后端原值（super_admin），前端 role 映射只影响 localStorage
     assert decoded["role"] == "super_admin"
 
     # 同时直接 jwt.decode 校验 type 字段（避免 verify_admin_jwt 隐藏字段缺失）
-    raw = jwt.decode(data["access_token"], settings.SSO_JWT_SECRET, algorithms=["HS256"])
+    raw = jwt.decode(access_token, settings.SSO_JWT_SECRET, algorithms=["HS256"])
     assert raw["type"] == "admin"
 
 

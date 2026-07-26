@@ -56,7 +56,28 @@ _security = HTTPBearer(auto_error=False)
 
 
 async def get_current_client_id(token: str = Depends(oauth2_scheme)) -> str:
-    """从 client JWT 提取 client_id（向后兼容，旧路由仍可用）。"""
+    """从 JWT 提取 client_id（兼容 admin JWT，向后兼容旧路由）。
+
+    双轨制兼容：
+    - admin JWT（SSO 登录）：用 ``SSO_JWT_SECRET`` 解码，``type='admin'``，
+      返回 ``"admin"`` 标记（admin 可查看所有客户数据）；
+    - client JWT（客户登录）：用 ``SECRET_KEY`` 解码，返回 ``sub``（client_id）。
+
+    设计原因：Dashboard 通过 SSO 登录后调用 ``/articles``、``/stats/index``
+    等端点，这些端点用 ``get_current_client_id`` 鉴权。原实现只认 client JWT，
+    导致 admin JWT 被 401 拒绝 → axios 拦截器清除 token → 跳转登录页。
+    """
+    # 先尝试 admin JWT（SSO 登录的 admin）
+    try:
+        payload = jwt.decode(token, settings.SSO_JWT_SECRET, algorithms=["HS256"])
+        if payload.get("type") == "admin":
+            # admin token：复用 verify_admin_jwt 完整校验（含 type/role/过期检查）
+            verify_admin_jwt(token)
+            return "admin"
+    except jwt.InvalidTokenError:
+        pass  # 不是 admin token，尝试 client token
+
+    # client JWT：用 SECRET_KEY 解码
     payload = decode_token(token)
     client_id = payload.get("sub")
     if not client_id:

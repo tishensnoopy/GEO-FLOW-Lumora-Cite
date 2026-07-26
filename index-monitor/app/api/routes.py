@@ -35,9 +35,21 @@ def _mask_api_key(value: str) -> str:
 router = APIRouter()
 
 
+def _is_admin(client_id: str) -> bool:
+    """判断是否为 admin（SSO 登录的管理员，可查看所有客户数据）。
+
+    ``get_current_client_id`` 对 admin JWT 返回 ``"admin"`` 标记。
+    admin 调用各端点时不按 client_id 过滤，可查看全部数据。
+    """
+    return client_id == "admin"
+
+
 @router.get("/stats/index")
 async def get_index_stats(client_id: str = Depends(get_current_client_id), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(IndexResult).where(IndexResult.client_id == client_id))
+    query = select(IndexResult)
+    if not _is_admin(client_id):
+        query = query.where(IndexResult.client_id == client_id)
+    result = await db.execute(query)
     articles = result.scalars().all()
     total = len(articles)
     indexed = sum(1 for a in articles if any([
@@ -50,11 +62,14 @@ async def get_index_stats(client_id: str = Depends(get_current_client_id), db: A
 
 @router.get("/stats/citation")
 async def get_citation_stats(client_id: str = Depends(get_current_client_id), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(CitationResult).where(CitationResult.url.in_(
-            select(IndexResult.url).where(IndexResult.client_id == client_id)
-        ))
-    )
+    if _is_admin(client_id):
+        result = await db.execute(select(CitationResult))
+    else:
+        result = await db.execute(
+            select(CitationResult).where(CitationResult.url.in_(
+                select(IndexResult.url).where(IndexResult.client_id == client_id)
+            ))
+        )
     citations = result.scalars().all()
     return {"total": len(citations), "cited": sum(1 for c in citations if c.hit_type != "none")}
 
@@ -144,7 +159,10 @@ async def trigger_scan(scan_type: str, db: AsyncSession = Depends(get_db)):
 # lumora-cite 集成：附加 citation_status / citation_total / citation_exact 等字段
 @router.get("/articles")
 async def list_articles(client_id: str = Depends(get_current_client_id), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(IndexResult).where(IndexResult.client_id == client_id))
+    query = select(IndexResult)
+    if not _is_admin(client_id):
+        query = query.where(IndexResult.client_id == client_id)
+    result = await db.execute(query)
     articles = result.scalars().all()
 
     # 按 URL 聚合采信检测统计
@@ -223,8 +241,11 @@ class CitationCheckRequest(BaseModel):
 @router.get("/citations")
 async def list_citations(client_id: str = Depends(get_current_client_id), db: AsyncSession = Depends(get_db)):
     """按 URL 聚合返回当前客户的 AI 采信检测结果。"""
-    # 先获取属于当前客户的 URL 集合
-    url_subquery = select(IndexResult.url).where(IndexResult.client_id == client_id)
+    # 先获取属于当前客户的 URL 集合（admin 查看所有）
+    if _is_admin(client_id):
+        url_subquery = select(IndexResult.url)
+    else:
+        url_subquery = select(IndexResult.url).where(IndexResult.client_id == client_id)
     result = await db.execute(
         select(
             CitationResult.url,
@@ -287,10 +308,15 @@ async def get_citation_detail(
     db: AsyncSession = Depends(get_db),
 ):
     """返回指定 URL 的所有采信检测明细记录。"""
-    # 验证 URL 属于当前客户
-    ownership = await db.execute(
-        select(IndexResult.url).where(IndexResult.client_id == client_id, IndexResult.url == url)
-    )
+    # 验证 URL 属于当前客户（admin 可查看任意 URL）
+    if _is_admin(client_id):
+        ownership = await db.execute(
+            select(IndexResult.url).where(IndexResult.url == url)
+        )
+    else:
+        ownership = await db.execute(
+            select(IndexResult.url).where(IndexResult.client_id == client_id, IndexResult.url == url)
+        )
     if not ownership.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="URL 不属于当前客户或不存在")
 

@@ -18,7 +18,7 @@
           value-format="YYYY-MM-DD"
         />
       </el-form-item>
-      <!-- 缺口任务 5：图表提示信息 -->
+      <!-- 图表提示信息 -->
       <el-form-item v-if="hasCharts && form.export_type === 'pdf'">
         <el-alert
           title="本次导出将包含当前图表截图（趋势图 + AI 采信分布）"
@@ -29,8 +29,8 @@
       </el-form-item>
       <el-form-item v-if="!hasCharts && form.export_type === 'pdf'">
         <el-alert
-          title="本次导出不含图表截图（从导出报告页触发）。如需含图表，请从数据总览页导出。"
-          type="warning"
+          title="本次导出不含图表截图。如需含图表，请前往「数据总览」页面点击「导出报告（含图表）」按钮。"
+          type="info"
           :closable="false"
           show-icon
         />

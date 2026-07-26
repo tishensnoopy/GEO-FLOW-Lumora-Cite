@@ -7,9 +7,14 @@
         <el-menu-item index="/articles"><el-icon><Document /></el-icon>文章列表</el-menu-item>
         <el-menu-item index="/distributions"><el-icon><Share /></el-icon>分发记录</el-menu-item>
         <el-menu-item index="/exports"><el-icon><Download /></el-icon>导出报告</el-menu-item>
+        <el-menu-item index="/clients" v-if="isAdmin"><el-icon><User /></el-icon>客户管理</el-menu-item>
         <el-menu-item index="/audit-logs" v-if="isAdmin"><el-icon><List /></el-icon>审计日志</el-menu-item>
-        <el-menu-item index="/settings"><el-icon><Setting /></el-icon>系统设置</el-menu-item>
+        <el-menu-item index="/settings" v-if="isAdmin"><el-icon><Setting /></el-icon>系统设置</el-menu-item>
       </el-menu>
+      <!-- GEOFlow 后台：外链（仅 admin 可见），用 a 标签 target=_blank 新窗口打开 -->
+      <a v-if="isAdmin" href="https://zkeeeai.com/geo_admin" target="_blank" rel="noopener" class="external-link">
+        <el-icon><Link /></el-icon>GEOFlow 后台
+      </a>
       <el-button text type="primary" @click="logout">退出登录</el-button>
     </div>
     <router-view />
@@ -19,7 +24,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { DataLine, Document, Share, Download, List, Setting } from '@element-plus/icons-vue'
+import { DataLine, Document, Share, Download, List, Setting, Link, User } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -59,5 +64,25 @@ const logout = () => {
 .nav-menu {
   flex: 1;
   border-bottom: none !important;
+}
+/* 外链按钮样式：与 el-menu-item 视觉一致，避免被 vue-router 当作路由导航 */
+.external-link {
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  text-decoration: none;
+  color: #606266;
+  font-size: 14px;
+  height: 60px;
+  border-bottom: 2px solid transparent;
+  transition: border-color 0.2s, color 0.2s;
+  white-space: nowrap;
+}
+.external-link:hover {
+  color: #409eff;
+  border-bottom-color: #409eff;
+}
+.external-link .el-icon {
+  margin-right: 6px;
 }
 </style>

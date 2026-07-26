@@ -9,8 +9,8 @@
       <StatCard :value="indexRate + '%'" label="平均收录率" icon="TrendCharts" color="purple" />
     </div>
 
-    <!-- 操作栏（admin 可见导出按钮，含图表截图） -->
-    <div class="action-bar" v-if="isAdmin">
+    <!-- 操作栏（所有用户可见导出按钮，含图表截图） -->
+    <div class="action-bar">
       <el-button type="primary" @click="openExportDialog" :disabled="!chartsReady">
         <el-icon><Download /></el-icon> 导出报告（含图表）
       </el-button>
@@ -82,7 +82,9 @@ onMounted(async () => {
 
 async function fetchStats() {
   try {
-    const resp = await api.get('/admin/distributions')
+    // 根据角色调用不同 API：admin 用 /admin/distributions（跨客户），client 用 /distributions（仅自己）
+    const endpoint = isAdmin.value ? '/admin/distributions' : '/distributions'
+    const resp = await api.get(endpoint)
     const items = resp.data.items || []
     const indexed = items.filter(i => Object.values(i.index_status || {}).some(s => s === 'indexed')).length
 

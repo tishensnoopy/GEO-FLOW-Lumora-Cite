@@ -7,7 +7,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
@@ -20,7 +20,7 @@ router = APIRouter(tags=["auth"])
 
 
 class LoginRequest(BaseModel):
-    client_id: str
+    username: str  # 支持用户名或客户 ID 登录
     password: str
 
 
@@ -36,9 +36,12 @@ class UpdateProfileRequest(BaseModel):
 
 @router.post("/auth/login")
 async def client_login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
-    """客户独立登录。"""
+    """客户独立登录。支持用 username 或 client_id 登录。"""
     result = await db.execute(
-        select(Client).where(Client.client_id == req.client_id, Client.status == "active")
+        select(Client).where(
+            or_(Client.username == req.username, Client.client_id == req.username),
+            Client.status == "active",
+        )
     )
     client = result.scalar_one_or_none()
     if not client or not verify_password(req.password, client.password_hash):
@@ -49,7 +52,7 @@ async def client_login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     await db.commit()
 
     token = create_access_token({"sub": client.client_id, "role": "client", "type": "client"})
-    return {"access_token": token, "token_type": "bearer", "role": "client"}
+    return {"access_token": token, "token_type": "bearer", "role": "client", "client_id": client.client_id}
 
 
 @router.put("/auth/password")

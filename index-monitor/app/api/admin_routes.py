@@ -43,6 +43,8 @@ class CreateClientRequest(BaseModel):
     contact_name: Optional[str] = None
     contact_email: Optional[EmailStr] = None
     contact_phone: Optional[str] = None
+    service_start_date: Optional[date] = None
+    service_end_date: Optional[date] = None
 
 
 class UpdateClientRequest(BaseModel):
@@ -52,6 +54,8 @@ class UpdateClientRequest(BaseModel):
     contact_email: Optional[EmailStr] = None
     contact_phone: Optional[str] = None
     password: Optional[str] = None  # 重置密码
+    service_start_date: Optional[date] = None
+    service_end_date: Optional[date] = None
 
 
 class CreateClientSiteRequest(BaseModel):
@@ -111,6 +115,8 @@ async def create_client(
         contact_name=req.contact_name,
         contact_email=req.contact_email,
         contact_phone=req.contact_phone,
+        service_start_date=req.service_start_date,
+        service_end_date=req.service_end_date,
         status="active",
     )
     db.add(client)
@@ -158,6 +164,8 @@ async def list_clients(
                 "contact_name": c.contact_name,
                 "contact_email": c.contact_email,
                 "status": c.status,
+                "service_start_date": c.service_start_date.isoformat() if c.service_start_date else None,
+                "service_end_date": c.service_end_date.isoformat() if c.service_end_date else None,
                 "last_login_at": c.last_login_at.isoformat() if c.last_login_at else None,
             }
             for c in clients
@@ -203,6 +211,10 @@ async def update_client(
         client.contact_email = req.contact_email
     if req.contact_phone is not None:
         client.contact_phone = req.contact_phone
+    if req.service_start_date is not None:
+        client.service_start_date = req.service_start_date
+    if req.service_end_date is not None:
+        client.service_end_date = req.service_end_date
     if req.password:
         validate_password_strength(req.password)
         client.password_hash = hash_password(req.password)
@@ -332,7 +344,7 @@ async def create_manual_distribution(
     admin: dict = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """运营手动录入 URL。"""
+    """运营手动录入 URL。添加后立即抓取文章标题。"""
     service = DistributionQueryService(db)
     result = await service.create_manual_distribution(
         remote_url=req.remote_url,
@@ -346,6 +358,29 @@ async def create_manual_distribution(
         action="manual_create_distribution", target_type="distribution",
         detail={"url": req.remote_url, "client_id": result.get("client_id")},
     )
+
+    # 立即抓取文章标题，填充到 index_results（如果记录存在）
+    try:
+        from app.services.article_fetcher import article_fetcher
+        from app.models.index_result import IndexResult
+        title, snapshot = await article_fetcher.fetch_title_and_snapshot(req.remote_url)
+        if title:
+            existing = await db.execute(
+                select(IndexResult).where(IndexResult.url == req.remote_url)
+            )
+            if existing.scalar_one_or_none():
+                update_data = {"content_title": title}
+                if snapshot:
+                    update_data["content_snapshot"] = snapshot
+                await db.execute(
+                    update(IndexResult).where(IndexResult.url == req.remote_url).values(**update_data)
+                )
+                await db.commit()
+    except Exception as exc:
+        # 标题抓取失败不影响添加链接
+        import logging
+        logging.getLogger(__name__).warning("抓取文章标题失败: %s", exc)
+
     return result
 
 
@@ -354,6 +389,8 @@ async def create_manual_distribution(
 # admin 应使用 GET /admin/distributions（跨客户视图）
 @distribution_router.get("/distributions")
 async def list_client_distributions(
+    page: int = 1,
+    page_size: int = 20,
     user_client: tuple = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -361,6 +398,8 @@ async def list_client_distributions(
 
     用 get_current_user 统一鉴权，client 角色按 user.client_id 过滤；
     非 client 角色（admin）返回 403，引导其走 /admin/distributions。
+
+    支持后端分页（page/page_size），避免大量数据导致前端卡顿。
     """
     user, role = user_client
     if role != "client":
@@ -370,18 +409,26 @@ async def list_client_distributions(
         )
 
     service = DistributionQueryService(db)
-    items = await service.list_distributions(client_id=user.client_id)
-    return {"items": items, "total": len(items)}
+    all_items = await service.list_distributions(client_id=user.client_id)
+    total = len(all_items)
+    # 后端分页：按 page/page_size 切片
+    start = (page - 1) * page_size
+    end = start + page_size
+    items = all_items[start:end]
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 # GET /admin/distributions：admin 查询所有分发记录（跨客户），挂在原 router 上
 # C10 修复：新增 date_from / date_to 查询参数，透传给 list_distributions
+# 分页修复：新增 page/page_size 参数，后端切片返回，避免前端加载全量数据卡顿
 @router.get("/distributions")
 async def list_distributions(
     client_id: Optional[str] = None,
     source: Optional[str] = None,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
+    page: int = 1,
+    page_size: int = 20,
     admin: dict = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -389,15 +436,21 @@ async def list_distributions(
 
     支持按 client_id / source / date_from / date_to 过滤。
     日期范围与导出报告一致（C10 修复）。
+    支持后端分页（page/page_size），避免大量数据导致前端卡顿。
     """
     service = DistributionQueryService(db)
-    items = await service.list_distributions(
+    all_items = await service.list_distributions(
         client_id=client_id,
         source=source,
         date_from=date_from,
         date_to=date_to,
     )
-    return {"items": items, "total": len(items)}
+    total = len(all_items)
+    # 后端分页：按 page/page_size 切片
+    start = (page - 1) * page_size
+    end = start + page_size
+    items = all_items[start:end]
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 class BatchScanRequest(BaseModel):

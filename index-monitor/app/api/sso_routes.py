@@ -45,13 +45,14 @@ JWT 契约（与 ``app/core/auth.py`` 共享）
 4. **异常统一转 HTTPException**：``exchange_code`` 抛任何异常都视作
    "code 无效 / 已用 / 过期 / 网络异常"，统一返回 401（让前端跳重新登录）。
 """
+import json
 import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 import jwt
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.core.config import settings
 from app.core.redis import get_redis
@@ -97,6 +98,76 @@ def _sign_jwt(user_id: int, name: str, role: str) -> str:
     return jwt.encode(payload, settings.SSO_JWT_SECRET, algorithm="HS256")
 
 
+def _map_frontend_role(backend_role: str) -> str:
+    """后端 role → 前端 role 映射。
+
+    前端 ``App.vue`` 用 ``localStorage.getItem('role') === 'admin'`` 判断管理员，
+    而后端 ``SsoUserinfo.role`` 可能是 ``super_admin`` / ``admin``。
+    统一映射为 ``admin`` 以匹配前端逻辑；其他角色透传。
+    """
+    if backend_role in ("super_admin", "admin"):
+        return "admin"
+    return backend_role
+
+
+def _json_js(value: str) -> str:
+    """将 Python 字符串转为 JS 安全的字符串字面量。
+
+    - ``ensure_ascii=False``：保留中文可读性（浏览器原生支持 UTF-8）；
+    - 替换 ``</`` → ``<\\/``：防止 ``</script>`` XSS 注入
+      （``json.dumps`` 不转义 ``/``，需手动处理）。
+    """
+    return json.dumps(value, ensure_ascii=False).replace("</", "<\\/")
+
+
+def _render_sso_success_html(
+    token: str, frontend_role: str, userinfo: SsoUserinfo
+) -> HTMLResponse:
+    """渲染 SSO 登录成功的 HTML 页面。
+
+    浏览器执行内嵌 JS 把 token / role 存入 localStorage 并跳转首页。
+
+    设计原因：SSO callback 由浏览器直接访问（GEOFlow 302 回跳到
+    ``/sso/callback?code=...&state=...``），后端无法用前端路由处理，
+    因此返回 HTML 让浏览器自动存储 token 并跳转，而不是返回 JSON
+    让浏览器显示原始 JSON。
+
+    安全考虑：所有动态值通过 ``_json_js`` 转义后嵌入 JS 字符串字面量，
+    避免 XSS 注入（``</script>`` 替换 + 引号转义）。
+    """
+    html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>登录成功</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+           text-align: center; padding: 80px 20px; background: #f0f2f5; color: #333; }}
+    .card {{ max-width: 400px; margin: 0 auto; background: #fff; padding: 40px;
+            border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); }}
+    .icon {{ font-size: 48px; color: #67c23a; margin-bottom: 16px; }}
+    .title {{ font-size: 20px; margin-bottom: 8px; }}
+    .desc {{ color: #666; font-size: 14px; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">&#10003;</div>
+    <div class="title">登录成功</div>
+    <div class="desc">正在跳转到控制台...</div>
+  </div>
+  <script>
+    localStorage.setItem('token', {_json_js(token)});
+    localStorage.setItem('role', {_json_js(frontend_role)});
+    localStorage.setItem('user_name', {_json_js(userinfo.name)});
+    window.location.href = '/';
+  </script>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
+
+
 @router.get("/login")
 async def sso_login(request: Request) -> RedirectResponse:
     """跳转到 GEOFlow SSO 授权页，并附带 state 防 CSRF。
@@ -131,7 +202,7 @@ async def sso_login(request: Request) -> RedirectResponse:
 
 
 @router.get("/callback")
-async def sso_callback(request: Request) -> dict:
+async def sso_callback(request: Request) -> HTMLResponse:
     """SSO callback：先验证 state（防 CSRF），再用一次性 code 换取 userinfo，签发 admin JWT。
 
     Parameters
@@ -144,8 +215,9 @@ async def sso_callback(request: Request) -> dict:
 
     Returns
     -------
-    dict
-        ``{"access_token": str, "token_type": "bearer", "user": {...}}``。
+    HTMLResponse
+        成功时返回 HTML 页面（浏览器执行 JS 把 token 存 localStorage 并跳转首页）。
+        错误时抛 ``HTTPException``（JSON 响应，前端可识别错误码）。
 
     Raises
     ------
@@ -161,6 +233,11 @@ async def sso_callback(request: Request) -> dict:
     state 验证在 code 验证之前（先确认会话合法性再消费 code）。
     state 通过 ``GETDEL`` 一次性消费——即使后续 code 交换失败 / code 缺失，
     state 也不会回滚（避免被重复使用，符合"一次性消费"语义）。
+
+    设计变更（2026-07-26）：callback 原返回 JSON，但 SSO callback 由浏览器
+    直接访问（GEOFlow 302 回跳），浏览器会显示原始 JSON 而非跳转。改为返回
+    HTML 页面，内嵌 JS 把 token 存 localStorage 并跳转首页。错误情况保持
+    JSON（HTTPException），便于前端识别错误码。
     """
     # 1. 验证 state（防 CSRF）——先于 code 验证
     state = request.query_params.get("state")
@@ -188,13 +265,9 @@ async def sso_callback(request: Request) -> dict:
 
     token = _sign_jwt(userinfo.user_id, userinfo.name, userinfo.role)
 
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "user": {
-            "user_id": userinfo.user_id,
-            "name": userinfo.name,
-            "email": userinfo.email,
-            "role": userinfo.role,
-        },
-    }
+    # 前端 role 映射：super_admin / admin → admin（前端 App.vue 检查 role === 'admin'）
+    frontend_role = _map_frontend_role(userinfo.role)
+
+    # 返回 HTML 页面：浏览器执行 JS 把 token 存 localStorage 并跳转首页
+    # （SSO callback 由浏览器直接访问，无法用前端路由处理）
+    return _render_sso_success_html(token, frontend_role, userinfo)

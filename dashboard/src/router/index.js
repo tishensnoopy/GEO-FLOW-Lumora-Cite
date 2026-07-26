@@ -9,6 +9,7 @@ const routes = [
   { path: '/distributions', name: 'Distributions', component: () => import('../views/Distributions.vue'), meta: { requiresAuth: true } },
   { path: '/exports', name: 'Exports', component: () => import('../views/Exports.vue'), meta: { requiresAuth: true } },
   { path: '/audit-logs', name: 'AuditLogs', component: () => import('../views/AuditLogs.vue'), meta: { requiresAuth: true, requiresAdmin: true } },
+  { path: '/clients', name: 'Clients', component: () => import('../views/Clients.vue'), meta: { requiresAuth: true, requiresAdmin: true } },
   { path: '/settings', name: 'Settings', component: () => import('../views/Settings.vue'), meta: { requiresAuth: true } }
 ]
 
