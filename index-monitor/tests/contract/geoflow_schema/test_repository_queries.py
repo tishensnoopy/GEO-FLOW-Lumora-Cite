@@ -70,7 +70,7 @@ async def test_get_distribution_count_by_date(repo_with_seed):
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
     counts = await repo_with_seed.get_distribution_count_by_date(start)
     assert isinstance(counts, dict)
-    # seed 数据的 created_at 由 DB 默认值生成，应有至少一条
+    # seed 数据显式插入 created_at=NOW()，应有至少一条
     assert len(counts) >= 1
 
 
