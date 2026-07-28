@@ -1,0 +1,375 @@
+<template>
+  <teleport to="body">
+    <!-- 背景遮罩 -->
+    <div class="scan-overlay" v-if="visible" @click="close"></div>
+    <!-- 右侧滑出面板 -->
+    <transition name="slide">
+      <div class="scan-panel" v-if="visible">
+        <!-- 头部 -->
+        <div class="panel-header">
+          <h3>扫描运行状态</h3>
+          <button class="close-btn" @click="close" aria-label="关闭">×</button>
+        </div>
+
+        <!-- 进度区 -->
+        <div class="panel-progress">
+          <div class="progress-ring">
+            <svg width="64" height="64" viewBox="0 0 64 64">
+              <circle cx="32" cy="32" r="28" fill="none" stroke="rgba(26,26,26,0.1)" stroke-width="6" />
+              <circle
+                cx="32" cy="32" r="28" fill="none"
+                :stroke="progressColor"
+                stroke-width="6"
+                stroke-linecap="round"
+                :stroke-dasharray="175.9"
+                :stroke-dashoffset="175.9 - (175.9 * progressPercent / 100)"
+                transform="rotate(-90 32 32)"
+              />
+            </svg>
+            <div class="ring-text">{{ progressPercent }}%</div>
+          </div>
+          <div class="progress-info">
+            <div class="info-row">
+              <span class="info-text">{{ task.processed }} / {{ task.total }} 已处理</span>
+              <span class="success-count">✓ {{ task.success }}</span>
+              <span class="failed-count" v-if="task.failed > 0">✗ {{ task.failed }}</span>
+            </div>
+            <div class="info-meta">
+              <span class="meta-tag" v-if="task.scan_type">类型: {{ scanTypeText }}</span>
+              <span class="meta-tag" v-if="elapsed">耗时: {{ elapsed }}s</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 引擎状态卡片（仅收录扫描显示） -->
+        <div class="engine-status" v-if="task.scan_type === 'index' || task.scan_type === 'both'">
+          <div class="engine-grid">
+            <div v-for="engine in engines" :key="engine.name" class="engine-item">
+              <span class="engine-dot" :class="engine.status"></span>
+              <span class="engine-name">{{ engine.name }}</span>
+              <span class="engine-result">{{ engine.result }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 终端日志区 -->
+        <div class="terminal-window" ref="terminalRef">
+          <div v-for="(log, idx) in task.logs" :key="idx" class="log-line" :class="`log-${log.level}`">
+            <span class="log-time">{{ formatTime(log.timestamp) }}</span>
+            <span class="log-message">{{ log.message }}</span>
+          </div>
+          <div v-if="task.status === 'running'" class="log-line log-running">
+            <span class="log-cursor">▌</span>
+            <span class="log-message">扫描进行中...</span>
+          </div>
+        </div>
+      </div>
+    </transition>
+  </teleport>
+</template>
+
+<script setup>
+import { ref, reactive, computed, watch, nextTick, onUnmounted } from 'vue'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+import api from '@/api'
+
+const props = defineProps({
+  modelValue: Boolean,
+  taskId: String,
+})
+const emit = defineEmits(['update:modelValue'])
+
+const { isMobile } = useBreakpoint()
+const visible = computed({
+  get: () => props.modelValue,
+  set: (val) => emit('update:modelValue', val),
+})
+const terminalRef = ref(null)
+let pollTimer = null
+
+const task = reactive({
+  task_id: '', scan_type: '', status: 'running',
+  total: 0, processed: 0, success: 0, failed: 0,
+  logs: [], created_at: null, updated_at: null,
+})
+
+const scanTypeText = computed(() => ({
+  index: '收录检测', citation: 'AI采信检测', both: '收录+采信',
+}[task.scan_type] || task.scan_type))
+
+const progressPercent = computed(() => {
+  if (task.total === 0) return 0
+  return Math.round((task.processed / task.total) * 100)
+})
+
+const progressColor = computed(() => {
+  if (task.status === 'completed') return 'var(--signal)'
+  if (task.status === 'failed') return 'var(--alert)'
+  return 'var(--signal)'
+})
+
+const elapsed = computed(() => {
+  if (!task.created_at || !task.updated_at) return null
+  const c = new Date(task.created_at)
+  const u = new Date(task.updated_at)
+  return ((u - c) / 1000).toFixed(1)
+})
+
+// 引擎状态（从日志解析，简化版）
+const engines = computed(() => {
+  const engineNames = ['百度', '头条', '搜狗', '360', '必应']
+  return engineNames.map(name => {
+    const log = task.logs.find(l => l.message.includes(name))
+    let status = 'pending'
+    let result = '◌'
+    if (log) {
+      if (log.message.includes('收录确认') || log.message.includes('SUCCESS')) {
+        status = 'success'; result = '✓'
+      } else if (log.message.includes('未收录')) {
+        status = 'failed'; result = '✗'
+      } else if (log.message.includes('检测中') || log.message.includes('INFO')) {
+        status = 'running'; result = '⏳'
+      }
+    }
+    return { name, status, result }
+  })
+})
+
+function formatTime(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`
+}
+
+async function fetchStatus() {
+  if (!props.taskId) return
+  try {
+    const res = await api.get(`/admin/scan/status/${props.taskId}`)
+    Object.assign(task, res.data)
+    await nextTick()
+    if (terminalRef.value) {
+      terminalRef.value.scrollTop = terminalRef.value.scrollHeight
+    }
+    if (task.status === 'completed' || task.status === 'failed') {
+      stopPolling()
+    }
+  } catch (err) {
+    console.error('获取扫描状态失败:', err)
+    stopPolling()
+  }
+}
+
+function startPolling() {
+  stopPolling()
+  fetchStatus()
+  pollTimer = setInterval(fetchStatus, 2000)
+}
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+}
+function close() {
+  visible.value = false
+  stopPolling()
+}
+
+watch(() => props.taskId, (newId) => {
+  if (newId) {
+    Object.assign(task, {
+      task_id: '', scan_type: '', status: 'running',
+      total: 0, processed: 0, success: 0, failed: 0,
+      logs: [], created_at: null, updated_at: null,
+    })
+    startPolling()
+  }
+})
+watch(() => props.modelValue, (v) => { if (!v) stopPolling() })
+onUnmounted(() => stopPolling())
+</script>
+
+<style scoped>
+.scan-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.3);
+  z-index: 200;
+}
+.scan-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: var(--scan-panel-width-desktop);
+  background: var(--paper);
+  z-index: 201;
+  display: flex;
+  flex-direction: column;
+  box-shadow: -4px 0 24px rgba(0, 0, 0, 0.08);
+}
+@media (max-width: 1279px) {
+  .scan-panel { width: var(--scan-panel-width-tablet); }
+}
+@media (max-width: 768px) {
+  .scan-panel { width: 100%; }
+}
+
+/* 滑出动画 */
+.slide-enter-active, .slide-leave-active {
+  transition: transform var(--transition-slow);
+}
+.slide-enter-from, .slide-leave-to {
+  transform: translateX(100%);
+}
+
+/* 头部 */
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--ink-line);
+  height: 48px;
+  flex-shrink: 0;
+}
+.panel-header h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-h2);
+}
+.close-btn {
+  background: none;
+  border: none;
+  font-size: 24px;
+  color: var(--mute);
+  cursor: pointer;
+  padding: 4px 8px;
+  min-width: var(--touch-target);
+  min-height: var(--touch-target);
+  border-radius: var(--radius-sm);
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+.close-btn:hover {
+  color: var(--alert);
+  background: var(--alert-soft);
+}
+
+/* 进度区 */
+.panel-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  border-bottom: 1px solid var(--ink-line);
+  flex-shrink: 0;
+}
+.progress-ring {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  flex-shrink: 0;
+}
+.ring-text {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.progress-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.info-row {
+  display: flex;
+  gap: var(--space-sm);
+  align-items: center;
+  font-size: var(--fs-body);
+}
+.info-text { color: var(--ink); }
+.success-count { color: var(--signal); font-weight: 600; }
+.failed-count { color: var(--alert); font-weight: 600; }
+.info-meta { display: flex; gap: var(--space-sm); }
+.meta-tag {
+  font-size: var(--fs-small);
+  color: var(--mute);
+  background: var(--paper);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+}
+
+/* 引擎状态 */
+.engine-status {
+  padding: var(--space-md);
+  border-bottom: 1px solid var(--ink-line);
+  flex-shrink: 0;
+}
+.engine-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: var(--space-xs);
+}
+.engine-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: var(--space-xs);
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--ink-line);
+}
+.engine-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.engine-dot.pending { background: transparent; border: 1px solid var(--mute); }
+.engine-dot.running { background: var(--status-partial); animation: pulse 1.5s infinite; }
+.engine-dot.success { background: var(--status-indexed); }
+.engine-dot.failed { background: var(--alert); }
+.engine-name { font-size: 11px; color: var(--ink); }
+.engine-result { font-size: 14px; font-weight: 600; }
+
+/* 终端日志区 */
+.terminal-window {
+  flex: 1;
+  background: var(--terminal-bg);
+  padding: var(--space-md);
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  line-height: 1.6;
+  color: var(--terminal-text);
+}
+.terminal-window::-webkit-scrollbar { width: 8px; }
+.terminal-window::-webkit-scrollbar-track { background: #1a2a28; }
+.terminal-window::-webkit-scrollbar-thumb { background: #3a4a48; border-radius: 4px; }
+
+.log-line {
+  display: flex;
+  gap: var(--space-xs);
+  margin-bottom: 2px;
+}
+.log-time { color: #888; flex-shrink: 0; }
+.log-message { word-break: break-all; }
+.log-info .log-message { color: #d4d4d4; }
+.log-success .log-message { color: #4ec9b0; }
+.log-warning .log-message { color: #dcdcaa; }
+.log-error .log-message { color: #f44747; }
+.log-running .log-cursor {
+  color: #4ec9b0;
+  animation: blink 1s infinite;
+}
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+</style>
