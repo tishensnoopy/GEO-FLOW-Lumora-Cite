@@ -9,8 +9,7 @@ from app.integration.geoflow.dto import (
     DistributionDTO,
     DistributionWithArticleDTO,
 )
-# 任务 4 将创建 repository.py 并放开此导入。
-# from app.integration.geoflow.repository import GeoflowRepository
+from app.integration.geoflow.repository import GeoflowRepository
 
 __all__ = [
     "GeoflowRepository",
