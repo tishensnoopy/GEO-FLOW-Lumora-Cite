@@ -136,7 +136,7 @@
       </template>
     </el-dialog>
 
-    <!-- 扫描面板已由 AppLayout 的 ScanPanel 全局承载，此处不再内嵌 ScanTerminal -->
+    <!-- 扫描面板已由 AppLayout 的 ScanPanel 全局承载，本页不再内嵌扫描终端 -->
   </div>
 </template>
 
