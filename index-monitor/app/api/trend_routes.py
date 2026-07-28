@@ -10,9 +10,9 @@
 2. 任何子查询失败时降级为空数组（返回 [0]*days），保证接口始终 200 不 500。
 3. 数据源（已根据实际模型适配，与简报假设不一致处以实际模型为准）：
    - 分发趋势：ManualDistribution（monitor.manual_distributions）
-     + GeoflowArticleDistribution（public.article_distributions，跨 schema 只读）
-     —— 简报假设的 ``geoflow_article_distribution`` 模块不存在，实际在
-     ``app.models.geoflow_models`` 中。
+     + GEOFlow 分发（public.article_distributions，跨 schema 只读）——
+     通过 ``GeoflowRepository`` 防腐层访问，不直接依赖 GEOFlow ORM 模型，
+     schema 变化由 ``app.integration.geoflow`` 内部吸收。
    - 收录趋势：IndexHistory.total_indexed 按 check_date 日聚合
      —— 简报上下文称 IndexHistory 不存在，实际它在 ``app.models.index_result``
      模块中（与 IndexResult 同文件），有 check_date(Date) + total_indexed(Integer)。
@@ -30,8 +30,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_admin
 from app.core.database import get_db
+from app.integration.geoflow import GeoflowRepository
 from app.models.citation_result import CitationResult
-from app.models.geoflow_models import GeoflowArticleDistribution
 from app.models.index_result import IndexHistory
 from app.models.manual_distribution import ManualDistribution
 
@@ -105,16 +105,12 @@ async def get_dashboard_trend(
         pass
 
     try:
-        day_expr = func.date_trunc("day", GeoflowArticleDistribution.created_at).label("day")
-        geoflow_rows = await db.execute(
-            select(day_expr, func.count(GeoflowArticleDistribution.id).label("count"))
-            .where(GeoflowArticleDistribution.created_at >= start_date)
-            .group_by(day_expr)
-        )
-        for row in geoflow_rows:
-            d = _to_date(row.day)
+        repo = GeoflowRepository(db)
+        geoflow_counts = await repo.get_distribution_count_by_date(start_date)
+        for day, count in geoflow_counts.items():
+            d = _to_date(day)
             if d in date_set:
-                dist_daily_map[d] += int(row.count)
+                dist_daily_map[d] += count
     except Exception:
         pass
 
