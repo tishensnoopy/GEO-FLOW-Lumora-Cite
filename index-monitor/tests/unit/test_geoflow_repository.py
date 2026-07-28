@@ -53,6 +53,20 @@ async def test_get_synced_distribution_urls():
 
 
 @pytest.mark.asyncio
+async def test_get_synced_url_exists():
+    mock_db = AsyncMock()
+    repo = GeoflowRepository(mock_db)
+    with patch(
+        "app.integration.geoflow.repository.fetch_synced_url_exists",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as mock_fetch:
+        result = await repo.get_synced_url_exists("https://a.com/1")
+        assert result is True
+        mock_fetch.assert_called_once_with(mock_db, "https://a.com/1")
+
+
+@pytest.mark.asyncio
 async def test_get_distribution_by_ids_returns_dtos():
     mock_db = AsyncMock()
     repo = GeoflowRepository(mock_db)

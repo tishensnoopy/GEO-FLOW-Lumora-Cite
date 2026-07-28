@@ -19,6 +19,7 @@ from app.integration.geoflow.reader import (
     fetch_distribution_count_by_date,
     fetch_distributions_with_article,
     fetch_synced_distribution_urls,
+    fetch_synced_url_exists,
 )
 
 
@@ -31,6 +32,13 @@ class GeoflowRepository:
     async def get_synced_distribution_urls(self) -> list[str]:
         """取所有 synced 且非 delete 的 remote_url 列表。"""
         return await fetch_synced_distribution_urls(self.db)
+
+    async def get_synced_url_exists(self, url: str) -> bool:
+        """检查指定 url 是否已存在于 synced 且非 delete 的分发记录中。
+
+        用精确查询替代全量列表拉取，适合单 URL 存在性判定。
+        """
+        return await fetch_synced_url_exists(self.db, url)
 
     async def get_distribution_by_ids(self, ids: list[int]) -> list[DistributionDTO]:
         """按 id 批量查分发记录，返回 DistributionDTO 列表。"""
