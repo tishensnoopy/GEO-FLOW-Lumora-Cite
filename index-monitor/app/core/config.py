@@ -78,9 +78,12 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ #
     # 爬虫调度                                                            #
     # ------------------------------------------------------------------ #
-    SPIDER_CONCURRENT: int = 3
-    SPIDER_INTERVAL_MIN: int = 2
-    SPIDER_INTERVAL_MAX: int = 5
+    # P0 性能优化：原 SPIDER_INTERVAL_MIN/MAX=2/5 会在每次 GET 前随机延迟，
+    # 现已移除请求前延迟（http_client.py），改为重试时延迟。
+    # SPIDER_CONCURRENT 从 3 提高到 5，配合 5 引擎并发检测。
+    SPIDER_CONCURRENT: int = 5
+    SPIDER_INTERVAL_MIN: int = 1
+    SPIDER_INTERVAL_MAX: int = 2
 
     API_5118_KEY: Optional[str] = None
 
@@ -100,11 +103,14 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ #
     # 检测频率控制（设计文档第 21.1 节）                                  #
     # ------------------------------------------------------------------ #
+    # P0 性能优化：
+    # - SCAN_TIMEOUT_SECONDS 从 30s 降到 15s（搜索引擎通常 3-5s 返回）
+    # - SCAN_REQUEST_DELAY_MIN/MAX 从 2/5 降到 1/2（配合 http_client 优化）
     SCAN_MIN_INTERVAL_HOURS: int = 6
     SCAN_MAX_CONCURRENCY: int = 5
-    SCAN_REQUEST_DELAY_MIN: int = 2
-    SCAN_REQUEST_DELAY_MAX: int = 5
-    SCAN_TIMEOUT_SECONDS: int = 30
+    SCAN_REQUEST_DELAY_MIN: int = 1
+    SCAN_REQUEST_DELAY_MAX: int = 2
+    SCAN_TIMEOUT_SECONDS: int = 15
     SCAN_DAILY_QUOTA_PER_CLIENT: int = 100
 
     @model_validator(mode="after")

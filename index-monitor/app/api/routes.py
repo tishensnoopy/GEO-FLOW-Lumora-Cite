@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, case
 from app.core.database import get_db
 from app.api.deps import get_current_client_id
 from app.models.client import Client
@@ -22,6 +22,10 @@ _API_KEY_CONFIG_KEYS = {
     "ai_gemini_api_key",
     "ai_anthropic_api_key",
 }
+
+# P1 性能优化：stats 接口内存缓存（30 秒 TTL）
+# key: f"stats_{type}_{client_id}", value: {"data": ..., "ts": timestamp}
+_stats_cache: dict[str, dict] = {}
 
 
 def _mask_api_key(value: str) -> str:
@@ -46,32 +50,87 @@ def _is_admin(client_id: str) -> bool:
 
 @router.get("/stats/index")
 async def get_index_stats(client_id: str = Depends(get_current_client_id), db: AsyncSession = Depends(get_db)):
-    query = select(IndexResult)
-    if not _is_admin(client_id):
-        query = query.where(IndexResult.client_id == client_id)
-    result = await db.execute(query)
-    articles = result.scalars().all()
-    total = len(articles)
-    indexed = sum(1 for a in articles if any([
-        a.baidu_status == "indexed", a.toutiao_status == "indexed",
-        a.sogou_status == "indexed", a.so360_status == "indexed",
-        a.bing_status == "indexed"
-    ]))
-    return {"total": total, "indexed": indexed, "rate": indexed / total if total > 0 else 0}
+    """收录统计。
+
+    P1 性能优化：
+    1. 原实现 select(IndexResult) 全表加载到内存再 Python 聚合，数据量大时内存和耗时都高。
+       改为 SQL COUNT + CASE WHEN 聚合，DB 侧完成计算。
+    2. 加 30 秒内存缓存，避免短时间内重复查询（Dashboard 频繁刷新）。
+    """
+    import time
+    cache_key = f"stats_index_{client_id}"
+    cached = _stats_cache.get(cache_key)
+    if cached and time.time() - cached["ts"] < 30:
+        return cached["data"]
+
+    # SQL 聚合：COUNT + CASE WHEN，避免全表加载到内存
+    from sqlalchemy import func, case
+    base_filter = [] if _is_admin(client_id) else [IndexResult.client_id == client_id]
+    result = await db.execute(
+        select(
+            func.count(IndexResult.id).label("total"),
+            func.sum(
+                case(
+                    (
+                        (IndexResult.baidu_status == "indexed")
+                        | (IndexResult.toutiao_status == "indexed")
+                        | (IndexResult.sogou_status == "indexed")
+                        | (IndexResult.so360_status == "indexed")
+                        | (IndexResult.bing_status == "indexed"),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("indexed"),
+        ).where(*base_filter)
+    )
+    row = result.one()
+    total = row.total or 0
+    indexed = int(row.indexed or 0)
+    data = {"total": total, "indexed": indexed, "rate": indexed / total if total > 0 else 0}
+
+    _stats_cache[cache_key] = {"data": data, "ts": time.time()}
+    return data
 
 
 @router.get("/stats/citation")
 async def get_citation_stats(client_id: str = Depends(get_current_client_id), db: AsyncSession = Depends(get_db)):
+    """采信统计。
+
+    P1 性能优化：SQL COUNT 聚合 + 30 秒内存缓存。
+    """
+    import time
+    cache_key = f"stats_citation_{client_id}"
+    cached = _stats_cache.get(cache_key)
+    if cached and time.time() - cached["ts"] < 30:
+        return cached["data"]
+
+    from sqlalchemy import func
     if _is_admin(client_id):
-        result = await db.execute(select(CitationResult))
+        result = await db.execute(
+            select(
+                func.count(CitationResult.id).label("total"),
+                func.sum(case((CitationResult.hit_type != "none", 1), else_=0)).label("cited"),
+            )
+        )
     else:
         result = await db.execute(
-            select(CitationResult).where(CitationResult.url.in_(
-                select(IndexResult.url).where(IndexResult.client_id == client_id)
-            ))
+            select(
+                func.count(CitationResult.id).label("total"),
+                func.sum(case((CitationResult.hit_type != "none", 1), else_=0)).label("cited"),
+            ).where(
+                CitationResult.url.in_(
+                    select(IndexResult.url).where(IndexResult.client_id == client_id)
+                )
+            )
         )
-    citations = result.scalars().all()
-    return {"total": len(citations), "cited": sum(1 for c in citations if c.hit_type != "none")}
+    row = result.one()
+    total = row.total or 0
+    cited = int(row.cited or 0)
+    data = {"total": total, "cited": cited}
+
+    _stats_cache[cache_key] = {"data": data, "ts": time.time()}
+    return data
 
 
 @router.post("/index/check")

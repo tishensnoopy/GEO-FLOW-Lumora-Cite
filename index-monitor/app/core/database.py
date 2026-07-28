@@ -17,7 +17,19 @@ from app.core.config import settings
 # 单一事实来源——直接消费 settings.DATABASE_URL（默认指向 GEOFlow PG）
 DATABASE_URL = settings.DATABASE_URL
 
-engine = create_async_engine(DATABASE_URL, echo=settings.DEBUG)
+# 连接池配置（P0 性能优化）：
+# - pool_size=10：常驻连接数，满足常规并发（原默认 5 在扫描场景不够）
+# - max_overflow=20：突发并发可额外创建的连接数
+# - pool_pre_ping=True：连接前 ping 检查，避免使用已被 PG 断开的连接
+# - pool_recycle=1800：30 分钟回收连接，避免长连接被 PG idle_timeout 断开
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=settings.DEBUG,
+    pool_size=10,
+    max_overflow=20,
+    pool_pre_ping=True,
+    pool_recycle=1800,
+)
 
 # SQLAlchemy 2.0 推荐使用 async_sessionmaker（替代 sessionmaker）
 async_session = async_sessionmaker(

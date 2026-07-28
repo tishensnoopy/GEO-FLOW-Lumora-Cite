@@ -58,7 +58,13 @@ class IndexSpider:
         async with self.semaphore:
             for attempt in range(2):  # 最多重试1次
                 try:
-                    response = await http_client.get(search_url)
+                    # P0 优化：首次请求用 get()（无延迟），重试用 get_with_delay()
+                    if attempt == 0:
+                        response = await http_client.get(search_url)
+                    else:
+                        response = await http_client.get_with_delay(
+                            search_url, delay_min=1, delay_max=2
+                        )
                     text = response.text or ""
 
                     # 检测响应过短（可能被反爬虫拦截）
