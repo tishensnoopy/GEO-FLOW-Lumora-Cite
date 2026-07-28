@@ -18,10 +18,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_admin, get_current_user
 from app.core.database import get_db, async_session
 from app.core.security import hash_password, verify_password
+from app.integration.geoflow import GeoflowRepository
 from app.models.admin_audit_log import AdminAuditLog
 from app.models.client import Client, ClientSite
 from app.models.citation_result import CitationResult
-from app.models.geoflow_models import GeoflowArticleDistribution
 from app.models.index_result import IndexResult
 from app.models.manual_distribution import ManualDistribution
 from app.services.audit_log import AuditLogService
@@ -601,13 +601,8 @@ async def _resolve_scan_targets(
             pass  # 非数字格式，可能是 ManualDistribution 的 UUID
 
     if geoflow_int_ids:
-        geoflow_result = await db.execute(
-            select(GeoflowArticleDistribution).where(
-                GeoflowArticleDistribution.id.in_(geoflow_int_ids),
-                GeoflowArticleDistribution.remote_url.isnot(None),
-            )
-        )
-        geoflow_dists = geoflow_result.scalars().all()
+        repo = GeoflowRepository(db)
+        geoflow_dists = await repo.get_distribution_by_ids(geoflow_int_ids)
         if geoflow_dists:
             sites_result = await db.execute(
                 select(ClientSite).where(ClientSite.status == "active")
