@@ -318,10 +318,9 @@ class DistributionQueryService:
         if existing_manual.scalar_one_or_none():
             raise DistributionConflictError(f"URL 已存在（手动录入）：{remote_url}")
 
-        # 检查 GEOFlow 表重复（通过防腐层取 synced url 列表，Python 层匹配）
+        # 检查 GEOFlow 表重复（精确查询，避免拉全量 url 列表）
         repo = GeoflowRepository(self.db)
-        synced_urls = await repo.get_synced_distribution_urls()
-        if remote_url in synced_urls:
+        if await repo.get_synced_url_exists(remote_url):
             raise DistributionConflictError(f"URL 已存在（GEOFlow 推送）：{remote_url}")
 
         record = ManualDistribution(
