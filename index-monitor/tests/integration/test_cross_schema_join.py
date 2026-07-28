@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.core.config import settings
 from app.models.client import ClientSite
-from app.models.geoflow_models import (
+from tests._geoflow_test_models import (
     GeoflowArticle,
     GeoflowArticleDistribution,
 )

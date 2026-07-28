@@ -32,7 +32,7 @@ def ensure_geoflow_tables():
     """
     from sqlalchemy import create_engine
     from app.core.config import settings
-    from app.models.geoflow_models import GeoflowBase
+    from tests._geoflow_test_models import GeoflowBase
 
     url = (
         f"postgresql+psycopg2://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
@@ -73,7 +73,7 @@ async def _seed_geoflow_article_and_distribution(
     db_session, remote_url: str, action: str = "publish", status: str = "synced",
 ):
     """插入 GEOFlow article + distribution，返回 (article, dist)。"""
-    from app.models.geoflow_models import GeoflowArticle, GeoflowArticleDistribution
+    from tests._geoflow_test_models import GeoflowArticle, GeoflowArticleDistribution
 
     article = GeoflowArticle(
         title="测试文章", slug=f"slug-{remote_url}", content="x",
@@ -104,7 +104,7 @@ async def test_get_pending_urls_reads_geoflow_distribution(db_session):
     通过 client_sites 匹配到 client_id。
     """
     from app.models.client import Client, ClientSite
-    from app.models.geoflow_models import GeoflowArticle, GeoflowArticleDistribution
+    from tests._geoflow_test_models import GeoflowArticle, GeoflowArticleDistribution
 
     client, site = await _seed_client_and_site(
         db_session, "idx_geoflow_test", "idx_geoflow", "geoflow-pending.example.com",
@@ -174,7 +174,7 @@ async def test_get_pending_urls_reads_manual_distribution(db_session):
 async def test_get_pending_urls_excludes_already_checked(db_session):
     """已检测的 URL 不在 pending 列表中，但未检测的 GEOFlow URL 应在。"""
     from app.models.client import Client, ClientSite
-    from app.models.geoflow_models import GeoflowArticle, GeoflowArticleDistribution
+    from tests._geoflow_test_models import GeoflowArticle, GeoflowArticleDistribution
     from app.models.index_result import IndexResult
 
     client, site = await _seed_client_and_site(
@@ -222,7 +222,7 @@ async def test_get_pending_urls_excludes_already_checked(db_session):
 async def test_get_pending_urls_excludes_action_delete(db_session):
     """action='delete' 的 GEOFlow 分发不进入 pending。"""
     from app.models.client import Client, ClientSite
-    from app.models.geoflow_models import GeoflowArticle, GeoflowArticleDistribution
+    from tests._geoflow_test_models import GeoflowArticle, GeoflowArticleDistribution
 
     client, site = await _seed_client_and_site(
         db_session, "idx_delete_test", "idx_delete", "delete-example.com",
@@ -251,7 +251,7 @@ async def test_get_pending_urls_excludes_action_delete(db_session):
 @pytest.mark.asyncio
 async def test_get_pending_urls_skips_unregistered_domain(db_session):
     """GEOFlow 分发的 domain 未在 client_sites 登记时，跳过该 URL。"""
-    from app.models.geoflow_models import GeoflowArticle, GeoflowArticleDistribution
+    from tests._geoflow_test_models import GeoflowArticle, GeoflowArticleDistribution
 
     article, dist = await _seed_geoflow_article_and_distribution(
         db_session, "https://unregistered-domain-xyz.com/article",
@@ -280,7 +280,7 @@ async def test_get_pending_urls_skips_unregistered_domain(db_session):
 async def test_citation_checker_reads_geoflow_distribution(db_session):
     """CitationChecker.get_pending_urls 读 GEOFlow 分发。"""
     from app.models.client import Client, ClientSite
-    from app.models.geoflow_models import GeoflowArticle, GeoflowArticleDistribution
+    from tests._geoflow_test_models import GeoflowArticle, GeoflowArticleDistribution
 
     client, site = await _seed_client_and_site(
         db_session, "cite_geoflow_test", "cite_geoflow", "cite-pending.example.com",
@@ -310,7 +310,7 @@ async def test_citation_checker_reads_geoflow_distribution(db_session):
 async def test_citation_checker_excludes_already_checked(db_session):
     """CitationChecker 排除已有 citation_results 记录的 URL。"""
     from app.models.client import Client, ClientSite
-    from app.models.geoflow_models import GeoflowArticle, GeoflowArticleDistribution
+    from tests._geoflow_test_models import GeoflowArticle, GeoflowArticleDistribution
     from app.models.citation_result import CitationResult
 
     client, site = await _seed_client_and_site(

@@ -22,7 +22,7 @@ def ensure_geoflow_tables():
     """
     from sqlalchemy import create_engine
     from app.core.config import settings
-    from app.models.geoflow_models import GeoflowBase
+    from tests._geoflow_test_models import GeoflowBase
 
     url = (
         f"postgresql+psycopg2://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"

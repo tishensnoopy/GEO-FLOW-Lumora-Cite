@@ -1,12 +1,9 @@
 """GEOFlow schema 查询实现（防腐层内部）。
 
-ORM 模型定义在此文件内部——防腐层与 ``geoflow_models.py`` 完全解耦，
-任务 11 删除 ``geoflow_models.py`` 时 reader 不受影响。因此本文件**不**从
-``app.models.geoflow_models`` 导入 ``GeoflowBase``，而是在本地定义一个独立的
-``GeoflowBase``，仅用于防腐层内部的 ORM 映射。
-
-所有函数都是 async，接收 ``db: AsyncSession``，返回 raw row（未映射为 DTO）。
-映射职责在 ``mappers.py``，编排职责在 ``repository.py``。
+ORM 模型定义在此文件内部——防腐层自持独立的 ``GeoflowBase`` 与最小化列映射，
+不依赖监测系统外的任何 GEOFlow ORM 模块。所有函数都是 async，接收
+``db: AsyncSession``，返回 raw row（未映射为 DTO）。映射职责在 ``mappers.py``，
+编排职责在 ``repository.py``。
 """
 from datetime import datetime
 
@@ -24,13 +21,12 @@ from sqlalchemy.orm import DeclarativeBase
 
 
 # ---- 防腐层内部 Base（不对外导出）----
-# 与 ``geoflow_models.py`` 中的 ``GeoflowBase`` 物理隔离：各自拥有独立的
-# ``DeclarativeBase.metadata``，互不影响。防腐层删 ``geoflow_models.py`` 时
-# 只需保留这里的本地 Base 即可。
+# 独立的 ``DeclarativeBase.metadata``，与监测系统 Base 物理隔离，互不影响。
+# GEOFlow schema 升级时只改这里的列定义 + mappers.py 的字段访问。
 
 
 class GeoflowBase(DeclarativeBase):
-    """防腐层内部 ORM 基类，与 ``geoflow_models.GeoflowBase`` 物理隔离。"""
+    """防腐层内部 ORM 基类，与监测系统 Base 物理隔离。"""
 
     pass
 

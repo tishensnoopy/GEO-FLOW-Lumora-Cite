@@ -26,7 +26,7 @@ def ensure_geoflow_tables():
     """
     from sqlalchemy import create_engine
     from app.core.config import settings
-    from app.models.geoflow_models import GeoflowBase
+    from tests._geoflow_test_models import GeoflowBase
 
     url = (
         f"postgresql+psycopg2://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
@@ -53,7 +53,7 @@ async def test_query_geoflow_distributions_filters_by_client(db_session):
     # 前置：插入 client_sites + geoflow article_distributions
     # 这里用真实 DB（db_session fixture），需先插入测试数据
     from app.models.client import Client, ClientSite
-    from app.models.geoflow_models import (
+    from tests._geoflow_test_models import (
         GeoflowArticle, GeoflowArticleDistribution, GeoflowDistributionChannel
     )
 
@@ -387,7 +387,7 @@ async def test_create_manual_duplicate_url_in_geoflow_raises_409(db_session):
     覆盖 create_manual_distribution 中 GEOFlow 表重复检测分支。
     """
     from app.models.client import Client, ClientSite
-    from app.models.geoflow_models import (
+    from tests._geoflow_test_models import (
         GeoflowArticle, GeoflowArticleDistribution,
     )
     from fastapi import HTTPException

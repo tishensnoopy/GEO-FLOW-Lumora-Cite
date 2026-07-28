@@ -33,7 +33,7 @@ def ensure_geoflow_tables():
     """
     from sqlalchemy import create_engine
     from app.core.config import settings
-    from app.models.geoflow_models import GeoflowBase
+    from tests._geoflow_test_models import GeoflowBase
 
     url = (
         f"postgresql+psycopg2://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
@@ -53,7 +53,7 @@ async def test_archive_deleted_distributions_matches_client_by_domain(db_session
     D02：content_keywords 走 json.loads 路径（keywords 为 JSON 字符串）。
     """
     from app.models.client import Client, ClientSite
-    from app.models.geoflow_models import GeoflowArticle, GeoflowArticleDistribution
+    from tests._geoflow_test_models import GeoflowArticle, GeoflowArticleDistribution
     from app.models.archived_distribution import ArchivedDistribution
 
     # 准备：client + site（domain 匹配）+ GEOFlow 删除记录
@@ -117,7 +117,7 @@ async def test_archive_parse_keywords_fallback_comma(db_session):
     构造一个无法被 json.loads 解析的字符串（无方括号），验证回退到逗号分割。
     """
     from app.models.client import Client, ClientSite
-    from app.models.geoflow_models import GeoflowArticle, GeoflowArticleDistribution
+    from tests._geoflow_test_models import GeoflowArticle, GeoflowArticleDistribution
     from app.models.archived_distribution import ArchivedDistribution
 
     client = Client(client_id="test_archive_d02_comma", username="arch_d02_comma",
@@ -175,7 +175,7 @@ async def test_archive_skips_unmatched_domain(db_session):
     - ArchivedDistribution 表中不存在该 remote_url 的记录
     """
     from app.models.client import Client, ClientSite
-    from app.models.geoflow_models import GeoflowArticle, GeoflowArticleDistribution
+    from tests._geoflow_test_models import GeoflowArticle, GeoflowArticleDistribution
     from app.models.archived_distribution import ArchivedDistribution
 
     # 准备：client + site（domain="matched.example.com"），但 dist 的 URL

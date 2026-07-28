@@ -1,25 +1,27 @@
-"""GEOFlow 表的只读 SQLAlchemy 模型，用于监测系统跨 schema 查询。
+# index-monitor/tests/_geoflow_test_models.py
+"""GEOFlow 表的测试替身 ORM 模型（仅测试用）。
 
-设计说明
-========
+用途
+====
 
-1. 这些模型映射到 GEOFlow 的 ``public`` schema 表，监测系统只读不写。
-2. 使用独立的 :class:`GeoflowBase`，不继承监测系统的 :class:`app.models.base.Base`，
-   避免 ``DeclarativeBase.metadata`` 共享导致 alembic autogenerate 把 GEOFlow
-   表误当作监测系统迁移目标。
-3. 字段定义以 ``GEOFlow-main/database/migrations/`` 下的迁移文件为唯一事实来源，
-   而非简报中的假设。变更字段前必须先核对对应 migration。
-4. 与简报假设不一致的几处关键差异：
-   - ``articles.keywords`` 在 migration 中是 ``TEXT``，**不是 JSON**。
-   - ``article_distributions`` 的外键字段叫 ``distribution_channel_id``，
-     **不是简报假设的 ``channel_id``**；``status`` 默认 ``'queued'``，
-     ``action`` 默认 ``'publish'``。
-   - GEOFlow 用户表实际叫 ``admins``（不是 ``users``），SSO 认证读 ``admins``。
-     模型类名相应取 ``GeoflowAdmin``。
-   - ``articles`` 表后追加 ``is_hot`` / ``is_featured`` 布尔字段
-     （见 ``2026_04_26_121000_add_promotion_flags_to_articles_table.php``）。
-   - ``distribution_channels`` 后追加 ``front_mode`` 字段
-     （见 ``2026_05_20_000000_add_front_mode_and_publish_scope_to_distribution.php``）。
+任务 11 删除 ``app/models/geoflow_models.py`` 后，生产代码通过防腐层
+（``app/integration/geoflow/``）访问 GEOFlow schema，不再直接持有 ORM 模型。
+但测试需要向 ``public`` schema 的 GEOFlow 表播种数据以验证业务逻辑，因此
+本模块提供与 GEOFlow 真实 migration 等价的 ORM 模型，**仅供测试使用**：
+
+- 建表：``GeoflowBase.metadata.create_all(engine)`` 创建 public schema 表
+- 播种：``db_session.add(GeoflowArticle(...))`` 写入测试数据
+- 查询：``select(GeoflowArticleDistribution, ...)`` 跨 schema JOIN 断言
+
+与防腐层的关系
+==============
+
+- 防腐层 ``reader.py`` 内部有自己的私有 ORM 模型（``_Distribution`` /
+  ``_Article`` / ``_Channel``），列定义最小化（只含查询用到的列），
+  且拥有独立的 ``DeclarativeBase.metadata``，与这里的测试替身物理隔离。
+- 本模块的模型是 **完整 schema**（对齐 GEOFlow Laravel migration），
+  用于建表和播种——测试需要真实表结构才能验证业务逻辑。
+- 两套模型映射到同样的物理表但归属不同 metadata，互不冲突。
 
 字段事实来源
 ============
@@ -29,13 +31,13 @@
 - ``article_distributions``: ``2026_05_17_000000_create_distribution_management_tables.php`` +
   ``2026_05_23_000000_add_wordpress_distribution_columns.php`` +
   ``2026_05_18_180000_align_distribution_management_tables.php``
-- ``distribution_channels``: ``2026_05_17_000000_create_distribution_management_tables.php`` +
-  ``2026_05_19_000000_add_site_settings_to_distribution_channels.php`` +
-  ``2026_05_20_000000_add_front_mode_and_publish_scope_to_distribution.php`` +
-  ``2026_05_23_000000_add_wordpress_distribution_columns.php``
-- ``admins``: ``2026_04_18_100000_create_geoflow_admins_and_site_settings_tables.php`` +
-  ``2026_04_18_130000_add_remember_token_to_admins_table.php`` +
-  ``2026_04_23_000000_add_welcome_fields_to_admins_table.php``
+- ``distribution_channels``: ``2026_05_17_000000`` + ``2026_05_19_000000`` +
+  ``2026_05_20_000000`` + ``2026_05_23_000000``
+- ``admins``: ``2026_04_18_100000`` + ``2026_04_18_130000`` + ``2026_04_23_000000``
+
+注意：``articles.keywords`` 在 migration 中是 ``TEXT``（不是 JSON）；
+``article_distributions`` 外键字段名是 ``distribution_channel_id``（不是 ``channel_id``）；
+GEOFlow 用户表叫 ``admins``（不是 ``users``）。
 """
 from sqlalchemy import (
     BigInteger,
@@ -51,18 +53,13 @@ from sqlalchemy.orm import DeclarativeBase
 
 
 class GeoflowBase(DeclarativeBase):
-    """GEOFlow 只读模型的独立基类。
-
-    与监测系统的 :class:`app.models.base.Base` 隔离 ``metadata``，避免监测系统
-    alembic 把 GEOFlow 的 ``public`` schema 表纳入迁移管理。所有 GEOFlow 模型
-    通过 ``__table_args__ = {"schema": "public"}`` 显式归属 ``public`` schema。
-    """
+    """测试替身 ORM 基类——独立 metadata，与监测系统 Base 物理隔离。"""
 
     pass
 
 
 class GeoflowArticle(GeoflowBase):
-    """GEOFlow 文章表（``public.articles``），监测系统只读。"""
+    """GEOFlow 文章表（``public.articles``）测试替身。"""
 
     __tablename__ = "articles"
     __table_args__ = {"schema": "public"}
@@ -76,7 +73,7 @@ class GeoflowArticle(GeoflowBase):
     author_id = Column(BigInteger, nullable=False)
     task_id = Column(BigInteger, nullable=True)
     original_keyword = Column(String(200), default="")
-    keywords = Column(Text, default="")  # 注意：TEXT，不是 JSON
+    keywords = Column(Text, default="")  # TEXT，不是 JSON
     meta_description = Column(Text, default="")
     status = Column(String(20), default="draft")
     review_status = Column(String(20), default="pending")
@@ -91,9 +88,9 @@ class GeoflowArticle(GeoflowBase):
 
 
 class GeoflowArticleDistribution(GeoflowBase):
-    """GEOFlow 文章分发表（``public.article_distributions``），监测系统只读。
+    """GEOFlow 文章分发表（``public.article_distributions``）测试替身。
 
-    注意外键字段名为 ``distribution_channel_id``，不是 ``channel_id``。
+    外键字段名为 ``distribution_channel_id``，不是 ``channel_id``。
     """
 
     __tablename__ = "article_distributions"
@@ -118,7 +115,7 @@ class GeoflowArticleDistribution(GeoflowBase):
 
 
 class GeoflowDistributionChannel(GeoflowBase):
-    """GEOFlow 分发渠道表（``public.distribution_channels``），监测系统只读。"""
+    """GEOFlow 分发渠道表（``public.distribution_channels``）测试替身。"""
 
     __tablename__ = "distribution_channels"
     __table_args__ = {"schema": "public"}
@@ -143,9 +140,9 @@ class GeoflowDistributionChannel(GeoflowBase):
 
 
 class GeoflowAdmin(GeoflowBase):
-    """GEOFlow 管理员表（``public.admins``），SSO 认证读取。
+    """GEOFlow 管理员表（``public.admins``）测试替身。
 
-    GEOFlow 用 ``admins`` 表（不是 ``users``）。
+    GEOFlow 用 ``admins`` 表（不是 ``users``），SSO 认证读取。
     """
 
     __tablename__ = "admins"
