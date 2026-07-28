@@ -222,7 +222,6 @@ def adapter_catalog() -> list[dict]:
     return [
         {"id": "doubao", "name": "豆包", "model_id": os.getenv("CITATION_DOUBAO_MODEL", "doubao-seed-2-0-pro-260215"), "configured": bool(os.getenv("ARK_API_KEY", ""))},
         {"id": "qwen", "name": "千问", "model_id": os.getenv("CITATION_QWEN_MODEL", "qwen3.6-plus"), "configured": bool(os.getenv("DASHSCOPE_API_KEY", ""))},
-        {"id": "deepseek", "name": "DeepSeek", "model_id": os.getenv("CITATION_DEEPSEEK_MODEL", "deepseek-v4-pro"), "configured": bool(os.getenv("DASHSCOPE_API_KEY", ""))},
         {"id": "ernie", "name": "文心", "model_id": os.getenv("CITATION_ERNIE_MODEL", "ernie-5.0"), "configured": bool(os.getenv("BAIDU_API_KEY", ""))},
         {"id": "openai", "name": "ChatGPT / OpenAI", "model_id": os.getenv("CITATION_OPENAI_MODEL", "gpt-5"), "configured": bool(os.getenv("OPENAI_API_KEY", ""))},
         {"id": "gemini", "name": "Gemini", "model_id": os.getenv("CITATION_GEMINI_MODEL", "gemini-2.5-flash"), "configured": bool(os.getenv("GEMINI_API_KEY", ""))},
@@ -263,26 +262,6 @@ def default_adapters(selected_ids: list[str] | None = None) -> list:
                 "instructions": "正常回答问题。请优先联网搜索最新公开信息，并保留来源。",
                 "tools": [{"type": "web_search"}],
                 "enable_thinking": False,
-            },
-        ),
-        "deepseek": RawHttpAdapter(
-            "deepseek",
-            "DeepSeek",
-            os.getenv("CITATION_DEEPSEEK_MODEL", "deepseek-v4-pro"),
-            dashscope_key,
-            "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation",
-            lambda question: {
-                "model": os.getenv("CITATION_DEEPSEEK_MODEL", "deepseek-v4-pro"),
-                "input": {"messages": [
-                    {"role": "system", "content": "正常回答问题。请优先联网搜索最新公开信息，并保留来源。"},
-                    {"role": "user", "content": question},
-                ]},
-                "parameters": {
-                    "result_format": "message",
-                    "enable_search": True,
-                    "enable_thinking": False,
-                    "search_options": {"forced_search": True, "enable_source": True, "enable_citation": True},
-                },
             },
         ),
         "ernie": RawHttpAdapter(
