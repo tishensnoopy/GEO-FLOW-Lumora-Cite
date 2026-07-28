@@ -1,52 +1,50 @@
 <!-- dashboard/src/views/Dashboard.vue -->
 <template>
   <div class="dashboard-container">
-    <!-- 信号条：标志性元素，横向滚动实时事件 ticker -->
-    <div class="signal-strip" role="marquee" aria-label="实时监测事件">
-      <div class="signal-strip-label mono">SIGNAL · LIVE</div>
-      <!-- viewport 负责裁剪（固定不动），track 负责动画（滚动）——分离两层避免 transform 移动裁剪区域 -->
-      <div class="signal-strip-viewport">
-        <div class="signal-strip-track">
-          <div class="signal-strip-item" v-for="(evt, i) in signalEvents" :key="i">
-            <span class="evt-time mono">{{ evt.time }}</span>
-            <span class="evt-engine" :class="evt.status">{{ evt.engine }}</span>
-            <span class="evt-action">{{ evt.action }}</span>
-            <span class="evt-title">{{ evt.title }}</span>
-          </div>
-        </div>
-      </div>
-    </div>
+    <!-- 信号条已由 AppLayout 的 SignalBar 统一承载，此处不再重复 -->
 
     <!-- 统计卡片：不对称布局，第一个特色卡片更大 -->
     <div class="stats-grid">
       <StatCard
         :value="stats.total_distributions"
         label="分发总数"
-        icon="Document"
         color="ink"
         featured
         index-label="01 / 04"
+        :change="stats.total_change"
+        change-direction="up"
+        :spark-data="stats.total_spark"
+        :submetrics="stats.total_sub"
       />
       <StatCard
         :value="stats.indexed_count"
         label="已收录"
-        icon="CircleCheck"
         color="signal"
         index-label="02 / 04"
+        :change="stats.indexed_change"
+        change-direction="up"
+        :spark-data="stats.indexed_spark"
+        :submetrics="stats.indexed_sub"
       />
       <StatCard
         :value="stats.citation_count"
         label="AI 采信"
-        icon="ChatDotRound"
         color="depth"
         index-label="03 / 04"
+        :change="stats.citation_change"
+        change-direction="up"
+        :spark-data="stats.citation_spark"
+        :submetrics="stats.citation_sub"
       />
       <StatCard
         :value="indexRate + '%'"
         label="平均收录率"
-        icon="TrendCharts"
         color="alert"
         index-label="04 / 04"
+        :change="stats.rate_change"
+        change-direction="up"
+        :spark-data="stats.rate_spark"
+        :submetrics="stats.rate_sub"
       />
     </div>
 
@@ -103,7 +101,45 @@ import ExportDialog from '@/components/ExportDialog.vue'
 import { api } from '@/api'
 
 const store = useStore()
-const stats = ref({ total_distributions: 0, indexed_count: 0, citation_count: 0, avg_index_rate: 0 })
+const stats = ref({
+  total_distributions: 0,
+  indexed_count: 0,
+  citation_count: 0,
+  avg_index_rate: 0,
+  // 新增：同比和子指标（需要后端 trend API 支持，暂时用 mock）
+  total_change: '12%',
+  total_change_dir: 'up',
+  total_spark: [18, 22, 25, 20, 28, 30, 32, 35, 30, 33],
+  total_sub: [
+    { label: '本周', value: '+18' },
+    { label: '本月', value: '+47' },
+    { label: '待检测', value: '12' },
+  ],
+  indexed_change: '8%',
+  indexed_change_dir: 'up',
+  indexed_spark: [12, 15, 18, 16, 20, 22, 25, 23, 24, 25],
+  indexed_sub: [
+    { label: '本周', value: '+12' },
+    { label: '百度', value: '198' },
+    { label: '头条', value: '156' },
+  ],
+  citation_change: '23%',
+  citation_change_dir: 'up',
+  citation_spark: [5, 8, 10, 12, 15, 18, 20, 22, 25, 28],
+  citation_sub: [
+    { label: '完全命中', value: '32' },
+    { label: '部分命中', value: '41' },
+    { label: '未命中', value: '16' },
+  ],
+  rate_change: '5.2pp',
+  rate_change_dir: 'up',
+  rate_spark: [65, 68, 70, 69, 71, 72, 70, 72, 73, 73.4],
+  rate_sub: [
+    { label: '百度', value: '81%' },
+    { label: '头条', value: '73%' },
+    { label: '搜狗', value: '68%' },
+  ],
+})
 const indexRate = computed(() => (stats.value.avg_index_rate * 100).toFixed(1))
 const isAdmin = computed(() => store.state.role === 'admin')
 
@@ -156,7 +192,9 @@ onMounted(async () => {
 async function fetchStats() {
   // 开发预览模式：使用 mock 数据，不调 API（避免 401 干扰设计预览）
   if (localStorage.getItem('token') === 'dev-preview-token') {
+    // 合并赋值：保留 ref 中预设的同比/sparkline/子指标 mock（待后端 trend API 接入）
     stats.value = {
+      ...stats.value,
       total_distributions: 42,
       indexed_count: 28,
       citation_count: 15,
@@ -185,6 +223,7 @@ async function fetchStats() {
     }
 
     stats.value = {
+      ...stats.value,
       total_distributions: items.length,
       indexed_count: indexed,
       citation_count: citationCount,
@@ -342,78 +381,7 @@ function onExportCreated(taskId) {
   margin: 0 auto;
 }
 
-/* === 信号条（标志性元素） === */
-.signal-strip {
-  display: flex;
-  align-items: center;
-  gap: var(--space-md);
-  height: 44px;
-  margin-bottom: var(--space-lg);
-  background: var(--ink);
-  color: var(--paper);
-  border-radius: var(--radius-md);
-  overflow: hidden;
-  padding: 0 var(--space-md);
-}
-.signal-strip-label {
-  position: relative;
-  z-index: 2;
-  background: var(--ink);  /* 实色背景兜底：即使 track 内容滑入也遮住 */
-  padding-right: var(--space-md);
-  color: var(--signal);
-  font-size: var(--fs-mono);
-  letter-spacing: 0.2em;
-  white-space: nowrap;
-  font-weight: 500;
-  flex-shrink: 0;
-}
-.signal-strip-label::before {
-  content: '●';
-  margin-right: 6px;
-  animation: blink 1.5s ease-in-out infinite;
-}
-@keyframes blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
-}
-
-/* viewport：固定裁剪层，不参与动画 */
-.signal-strip-viewport {
-  flex: 1;
-  overflow: hidden;
-  /* 左右渐隐遮罩：文字进出 viewport 时优雅淡入/淡出 */
-  -webkit-mask-image: linear-gradient(to right, transparent 0%, black 24px, black calc(100% - 24px), transparent 100%);
-  mask-image: linear-gradient(to right, transparent 0%, black 24px, black calc(100% - 24px), transparent 100%);
-}
-
-/* track：动画层，只负责 translateX 滚动 */
-.signal-strip-track {
-  display: flex;
-  gap: var(--space-xl);
-  white-space: nowrap;
-  animation: ticker 30s linear infinite;
-}
-@keyframes ticker {
-  0%   { transform: translateX(0); }
-  100% { transform: translateX(-50%); }
-}
-.signal-strip-item {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-xs);
-  font-size: var(--fs-mono);
-}
-.evt-time { color: var(--mute); }
-.evt-engine { padding: 1px 6px; border-radius: var(--radius-sm); font-weight: 500; }
-.evt-engine.indexed { background: var(--signal-soft); color: var(--signal); }
-.evt-engine.cited   { background: var(--depth-soft);  color: var(--depth); }
-.evt-engine.pending { background: rgba(201, 151, 0, 0.15); color: #C99700; }
-.evt-engine.failed  { background: var(--alert-soft);  color: var(--alert); }
-.evt-action { color: var(--paper); opacity: 0.7; }
-.evt-title { color: var(--paper); }
-
-/* hover 暂停滚动（提升可读性） */
-.signal-strip:hover .signal-strip-track { animation-play-state: paused; }
+/* 信号条样式已移除——由 AppLayout 的 SignalBar 组件统一承载 */
 
 /* === 统计卡片：不对称网格 === */
 .stats-grid {
@@ -505,6 +473,5 @@ function onExportCreated(taskId) {
   .stats-grid > :first-child { grid-column: span 1; }
   .charts-grid { grid-template-columns: 1fr; }
   .chart-trend { grid-column: span 1; }
-  .signal-strip-track { animation-duration: 40s; }
 }
 </style>
