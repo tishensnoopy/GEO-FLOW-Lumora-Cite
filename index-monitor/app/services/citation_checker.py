@@ -5,10 +5,19 @@
       配置引用检测模型 → 探测模型联网能力 → 执行引用检测 → 存储结果。
 
 所有 lumora-cite 同步调用通过 asyncio.to_thread() 包装，不阻塞事件循环。
+
+P1 稳定性增强（子项目 A）：
+- 步骤 2/3 改用 call_deepseek_with_parse_retry / make_parse_retry_generator
+  对 LLM 返回的脏 JSON 自动重调
+- 步骤 4 加 catalog 过滤：selected_ids 含已下线 id 时过滤并告警
+- 每步骤失败时异常带阶段标签 [N/5 阶段名]，便于批量失败诊断
+- check_all_pending 的 failures 项含 {url, stage, error} 结构
+- on_config_changed() 清探测缓存，供配置变更后调用
 """
 import asyncio
 import logging
 import os
+import re
 from typing import Optional
 
 from sqlalchemy import select
@@ -25,6 +34,9 @@ from app.services.llm_client import (
     call_deepseek,
     load_ai_configs,
     make_call_generator,
+    # P1 新增：带解析重试的调用入口
+    call_deepseek_with_parse_retry,
+    make_parse_retry_generator,
 )
 # 修复：DEFAULT_QUESTION_MODEL 从 llm_client 导入，保持单一数据源。
 # 原本地定义 "deepseek-chat" 已被 DeepSeek API 废弃（2026年），
@@ -35,11 +47,13 @@ from app.services.citation_check import (
     run_citation_check,
 )
 from app.services.citation_check.engine import probe_adapter_capabilities
+from app.services.citation_check.engine import invalidate_probe_cache
 from app.services.citation_check.fetcher import fetch_public_content
-from app.services.citation_check.providers import default_adapters
+from app.services.citation_check.providers import default_adapters, adapter_catalog
 from app.services.citation_check.question_generation import (
     build_purpose_prompt,
     parse_purpose_response,
+    parse_candidate_response,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,8 +81,33 @@ _PROVIDER_ENV_MAP = {
     "ai_anthropic_api_key": "ANTHROPIC_API_KEY",
 }
 
-# DEFAULT_QUESTION_MODEL 从 llm_client 导入（deepseek-v4-flash），
-# 不再本地定义 "deepseek-chat"（已废弃）。
+# 阶段标签正则：[1/5 抓取] [2/5 目的推断] 等
+_STAGE_LABEL_RE = re.compile(r"^\[(\d+/\d+\s+[^\]]+)\]")
+
+# 5 个阶段名（与 check_url 步骤对应）
+_STAGES = {
+    1: "1/5 抓取",
+    2: "2/5 目的推断",
+    3: "3/5 问题生成",
+    4: "4/5 模型探测",
+    5: "5/5 引用检测",
+}
+
+
+def _extract_stage(message: str) -> str:
+    """从异常消息中提取 [N/5 阶段名] 前缀，无标签返回 'unknown'。"""
+    match = _STAGE_LABEL_RE.match(str(message or ""))
+    return match.group(1) if match else "unknown"
+
+
+def _wrap_with_stage(stage_num: int, exc: Exception) -> ValueError:
+    """把异常包装成带阶段标签的 ValueError。"""
+    stage = _STAGES.get(stage_num, f"{stage_num}/5 未知阶段")
+    original = str(exc)
+    # 避免重复包装（异常本身已含阶段标签时不再叠加）
+    if _STAGE_LABEL_RE.match(original):
+        return ValueError(original)
+    return ValueError(f"[{stage}] {original}")
 
 
 class CitationChecker:
@@ -156,6 +195,9 @@ class CitationChecker:
 
         返回 lumora-cite run_citation_check 的完整结果 dict，
         并附带 purpose/questions 元信息供 API 响应使用。
+
+        每步骤失败时抛带阶段标签 [N/5 阶段名] 的 ValueError，便于
+        check_all_pending 汇总失败诊断。
         """
         config = await self._load_ai_config()
         deepseek_key = config.get("ai_deepseek_api_key", "")
@@ -169,12 +211,15 @@ class CitationChecker:
 
         # Step 1: 抓取公开内容
         logger.info("采信检测 [1/5] 抓取内容: %s", url)
-        content = await asyncio.to_thread(fetch_public_content, url)
-        if not content.suitability.suitable:
-            raise ValueError(
-                f"内容不适合检测：{content.suitability.rejection_reason}"
-                f"（code={content.suitability.rejection_code}）"
-            )
+        try:
+            content = await asyncio.to_thread(fetch_public_content, url)
+            if not content.suitability.suitable:
+                raise ValueError(
+                    f"内容不适合检测：{content.suitability.rejection_reason}"
+                    f"（code={content.suitability.rejection_code}）"
+                )
+        except Exception as exc:
+            raise _wrap_with_stage(1, exc) from exc
 
         title = content.title
         text = content.text
@@ -183,27 +228,45 @@ class CitationChecker:
             if u
         ]
 
-        # Step 2: DeepSeek 推断发布目的
+        # Step 2: DeepSeek 推断发布目的（带解析重试）
         logger.info("采信检测 [2/5] 推断发布目的（DeepSeek %s）: %s", question_model, title)
-        purpose_prompt = build_purpose_prompt(title, text)
-        purpose_raw = await call_deepseek(deepseek_key, question_model, purpose_prompt)
-        purpose = parse_purpose_response(purpose_raw)
-
-        # Step 3: DeepSeek 生成检测问题
-        logger.info("采信检测 [3/5] 生成检测问题（DeepSeek %s）: %s", question_model, title)
-        call_generator = make_call_generator(deepseek_key, question_model)
-        candidates = await asyncio.to_thread(
-            generate_candidates,
-            title=title,
-            text=text,
-            purpose=purpose,
-            call_generator=call_generator,
-        )
-        if len(candidates) < 3:
-            raise ValueError(
-                f"生成的问题不足：需要至少 3 个，实际 {len(candidates)} 个。"
-                "请检查 DeepSeek API Key 是否有效，或重试。"
+        try:
+            purpose_prompt = build_purpose_prompt(title, text)
+            # P1 改用 call_deepseek_with_parse_retry：调用成功但 JSON 解析失败时
+            # 自动追加"请严格只返回 JSON"提示重调，最多 2 次解析重试
+            purpose = await asyncio.to_thread(
+                call_deepseek_with_parse_retry,
+                deepseek_key,
+                question_model,
+                purpose_prompt,
+                parser=parse_purpose_response,
             )
+        except Exception as exc:
+            raise _wrap_with_stage(2, exc) from exc
+
+        # Step 3: DeepSeek 生成检测问题（带解析重试）
+        logger.info("采信检测 [3/5] 生成检测问题（DeepSeek %s）: %s", question_model, title)
+        try:
+            # P1 改用 make_parse_retry_generator：包装 make_call_generator + 解析重试
+            call_generator = make_parse_retry_generator(
+                deepseek_key,
+                question_model,
+                parser=parse_candidate_response,
+            )
+            candidates = await asyncio.to_thread(
+                generate_candidates,
+                title=title,
+                text=text,
+                purpose=purpose,
+                call_generator=call_generator,
+            )
+            if len(candidates) < 3:
+                raise ValueError(
+                    f"生成的问题不足：需要至少 3 个，实际 {len(candidates)} 个。"
+                    "请检查 DeepSeek API Key 是否有效，或重试。"
+                )
+        except Exception as exc:
+            raise _wrap_with_stage(3, exc) from exc
 
         # Step 4: 配置引用检测模型 + 探测联网能力
         self._set_provider_env(config)
@@ -213,29 +276,45 @@ class CitationChecker:
             if citation_models_str
             else None
         )
-        adapters = await asyncio.to_thread(default_adapters, selected_ids)
-        if not adapters:
-            raise ValueError(
-                "未配置任何引用检测模型。请在系统设置中配置 DashScope/ARK/OpenAI 等 API Key，"
-                "使引用检测模型（千问/豆包/ChatGPT 等）可用。"
-            )
+        # P1 catalog 过滤：selected_ids 含已下线 id（如 deepseek）时过滤并告警
+        # 避免因配置残留导致"未配置任何引用检测模型"报错
+        if selected_ids:
+            catalog_ids = {item["id"] for item in adapter_catalog()}
+            valid_selected_ids = [mid for mid in selected_ids if mid in catalog_ids]
+            dropped = set(selected_ids) - catalog_ids
+            if dropped:
+                logger.warning(
+                    "引用检测模型列表含已下线项，已过滤: %s",
+                    ", ".join(sorted(dropped)),
+                )
+            selected_ids = valid_selected_ids if valid_selected_ids else None
 
-        logger.info("采信检测 [4/5] 探测模型联网能力: %s", url)
-        capabilities = await asyncio.to_thread(probe_adapter_capabilities, adapters)
-        verified_ids = {
-            item["provider_id"] for item in capabilities if item["status"] == "verified"
-        }
-        verified_adapters = [a for a in adapters if a.provider_id in verified_ids]
-        if not verified_adapters:
-            failed_models = [
-                f"{item['model']}({item['status']})"
-                for item in capabilities
-            ]
-            raise ValueError(
-                "所选引用检测模型均未通过联网搜索与来源 URL 返回检测。"
-                f"模型状态：{', '.join(failed_models)}。"
-                "请检查 API Key 是否有效，或更换支持联网搜索的模型。"
-            )
+        try:
+            adapters = await asyncio.to_thread(default_adapters, selected_ids)
+            if not adapters:
+                raise ValueError(
+                    "未配置任何引用检测模型。请在系统设置中配置 DashScope/ARK/OpenAI 等 API Key，"
+                    "使引用检测模型（千问/豆包/ChatGPT 等）可用。"
+                )
+
+            logger.info("采信检测 [4/5] 探测模型联网能力: %s", url)
+            capabilities = await asyncio.to_thread(probe_adapter_capabilities, adapters)
+            verified_ids = {
+                item["provider_id"] for item in capabilities if item["status"] == "verified"
+            }
+            verified_adapters = [a for a in adapters if a.provider_id in verified_ids]
+            if not verified_adapters:
+                failed_models = [
+                    f"{item['model']}({item['status']})"
+                    for item in capabilities
+                ]
+                raise ValueError(
+                    "所选引用检测模型均未通过联网搜索与来源 URL 返回检测。"
+                    f"模型状态：{', '.join(failed_models)}。"
+                    "请检查 API Key 是否有效，或更换支持联网搜索的模型。"
+                )
+        except Exception as exc:
+            raise _wrap_with_stage(4, exc) from exc
 
         # Step 5: 执行引用检测
         question_count = min(len(candidates), 10)
@@ -243,14 +322,17 @@ class CitationChecker:
             "采信检测 [5/5] 执行引用检测: %s（%d 问题 × %d 模型）",
             url, question_count, len(verified_adapters),
         )
-        result = await asyncio.to_thread(
-            run_citation_check,
-            target_urls=target_urls,
-            candidates=candidates,
-            adapters=verified_adapters,
-            question_count=question_count,
-            forbidden_terms=[*target_urls, title],
-        )
+        try:
+            result = await asyncio.to_thread(
+                run_citation_check,
+                target_urls=target_urls,
+                candidates=candidates,
+                adapters=verified_adapters,
+                question_count=question_count,
+                forbidden_terms=[*target_urls, title],
+            )
+        except Exception as exc:
+            raise _wrap_with_stage(5, exc) from exc
 
         # 附加元信息
         result["purpose"] = purpose.to_dict()
@@ -266,6 +348,16 @@ class CitationChecker:
         await self._store_results(url, result)
 
         return result
+
+    def on_config_changed(self, provider_id: Optional[str] = None) -> None:
+        """AI 配置变更后调用，清空探测缓存。
+
+        - provider_id=None：清空全部（批量配置变更时调用）
+        - provider_id="qwen"：只清该模型（单模型 Key 更新时调用）
+
+        本子项目只暴露入口，API 路由的接入属子项目 C/D 范围。
+        """
+        invalidate_probe_cache(provider_id)
 
     # ------------------------------------------------------------------
     # 结果存储
@@ -311,7 +403,12 @@ class CitationChecker:
     # ------------------------------------------------------------------
 
     async def check_all_pending(self) -> dict:
-        """检测所有待检测的 URL，返回汇总信息。"""
+        """检测所有待检测的 URL，返回汇总信息。
+
+        failures 项结构：{"url", "stage", "error"}
+        - stage：从异常消息的 [N/5 阶段名] 前缀提取，无标签为 "unknown"
+        - 便于运维按阶段聚合失败原因，定位瓶颈步骤
+        """
         pending = await self.get_pending_urls()
         total = len(pending)
         success = 0
@@ -322,8 +419,14 @@ class CitationChecker:
                 await self.check_url(url, client_id)
                 success += 1
             except Exception as exc:
-                logger.error("采信检测失败 %s: %s", url, exc)
-                failures.append({"url": url, "error": str(exc)})
+                error_msg = str(exc)
+                stage = _extract_stage(error_msg)
+                logger.error("采信检测失败 %s [%s]: %s", url, stage, exc)
+                failures.append({
+                    "url": url,
+                    "stage": stage,
+                    "error": error_msg,
+                })
 
         return {
             "total": total,
