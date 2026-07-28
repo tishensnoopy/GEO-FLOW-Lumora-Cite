@@ -1,111 +1,160 @@
-<!-- dashboard/src/components/StatCard.vue -->
 <template>
-  <div class="stat-card" :class="[color, { featured }]">
-    <div class="stat-meta">
-      <div class="stat-label">{{ label }}</div>
-      <div class="stat-index mono" v-if="indexLabel">{{ indexLabel }}</div>
-    </div>
-    <div class="stat-value num-serif">{{ value }}</div>
-    <div v-if="icon" class="stat-icon">
-      <el-icon :size="20"><component :is="icon" /></el-icon>
+  <div class="stat-card" :class="[`color-${color}`, { featured }]" @mouseenter="hovered = true" @mouseleave="hovered = false">
+    <!-- 左侧色条 -->
+    <div class="color-bar"></div>
+    <div class="card-body">
+      <!-- 层 1：序号标签 + 名称 -->
+      <div class="card-header">
+        <span class="index-label mono">{{ indexLabel }}</span>
+        <span class="card-label">{{ label }}</span>
+      </div>
+      <!-- 层 2：主数字 + 同比 -->
+      <div class="card-main">
+        <span class="card-value">{{ displayValue }}</span>
+        <span v-if="change" class="card-change" :class="changeClass">
+          {{ changeArrow }}{{ change }}
+        </span>
+      </div>
+      <!-- 层 3：sparkline -->
+      <div class="card-sparkline" v-if="sparkData && sparkData.length >= 2">
+        <SparkLine :data="sparkData" :color="sparkColor" :width="sparkWidth" :height="32" />
+      </div>
+      <!-- 层 4：子指标 -->
+      <div class="card-submetrics" v-if="submetrics && submetrics.length">
+        <span v-for="(m, i) in submetrics" :key="i" class="submetric">
+          {{ m.label }} <strong>{{ m.value }}</strong>
+        </span>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
-defineProps({
+import { ref, computed } from 'vue'
+import SparkLine from './SparkLine.vue'
+
+const props = defineProps({
   value: [Number, String],
   label: String,
-  icon: String,
-  // 语义色：ink（中性主指标）/ signal（已收录/采信）/ alert（警示率）/ depth（AI 相关）
-  color: { type: String, default: 'ink' },
-  // 是否为特色卡片（更大数字 + 衬线 900）
-  featured: { type: Boolean, default: false },
-  // 可选序号标签（如 "01 / 04"），呼应"报告"感
-  indexLabel: { type: String, default: '' },
+  color: { type: String, default: 'ink' }, // ink/signal/depth/alert
+  featured: Boolean,
+  indexLabel: String,
+  // 新增：4 层信息 props
+  change: String,              // 同比，如 '12%' 或 '5.2pp'
+  changeDirection: { type: String, default: 'up' }, // up/down
+  sparkData: { type: Array, default: () => [] },
+  submetrics: { type: Array, default: () => [] }, // [{label, value}, ...]
 })
+
+const hovered = ref(false)
+
+const displayValue = computed(() => {
+  if (typeof props.value === 'number') return props.value.toLocaleString()
+  return props.value
+})
+
+const changeClass = computed(() => ({
+  'change-up': props.changeDirection === 'up',
+  'change-down': props.changeDirection === 'down',
+}))
+
+const changeArrow = computed(() => props.changeDirection === 'up' ? '↑' : '↓')
+
+const sparkColor = computed(() => ({
+  ink: '#1A1A1A',
+  signal: '#0D9488',
+  depth: '#4C1D95',
+  alert: '#E76F51',
+}[props.color] || '#0D9488'))
+
+const sparkWidth = computed(() => props.featured ? 180 : 120)
 </script>
 
 <style scoped>
 .stat-card {
   position: relative;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  min-height: 120px;
-  padding: var(--space-md);
   background: var(--surface);
   border: 1px solid var(--ink-line);
   border-radius: var(--radius-md);
-  box-shadow: var(--paper-shadow);
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  box-shadow: var(--shadow-card);
+  display: flex;
   overflow: hidden;
+  transition: transform var(--transition-base), box-shadow var(--transition-base), border-color var(--transition-base);
+  cursor: default;
 }
 .stat-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 4px 16px rgba(26, 26, 26, 0.08);
+  box-shadow: var(--shadow-hover);
+  border-color: rgba(13, 148, 136, 0.2);
 }
-/* 特色卡片：数字放大 + 衬线 900，用于第一个"分发总数"卡片 */
-.stat-card.featured {
-  min-height: 160px;
+.color-bar {
+  width: 3px;
+  flex-shrink: 0;
 }
-.stat-card.featured .stat-value {
-  font-size: 64px;
-  font-weight: 900;
-}
+.color-ink .color-bar { background: var(--ink); }
+.color-signal .color-bar { background: var(--signal); }
+.color-depth .color-bar { background: var(--depth); }
+.color-alert .color-bar { background: var(--alert); }
 
-.stat-meta {
+.card-body {
+  padding: var(--space-sm) var(--space-md);
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.card-header {
   display: flex;
   justify-content: space-between;
+  align-items: center;
+}
+.index-label {
+  font-size: 10px;
+  color: var(--mute);
+  letter-spacing: 0.1em;
+}
+.card-label {
+  font-size: var(--fs-small);
+  color: var(--mute);
+}
+.card-main {
+  display: flex;
   align-items: baseline;
-  margin-bottom: var(--space-sm);
+  gap: var(--space-xs);
 }
-.stat-label {
-  font-size: var(--fs-body);
-  color: var(--mute);
-  font-weight: 500;
-  letter-spacing: 0.02em;
-}
-.stat-index {
-  font-size: var(--fs-mono);
-  color: var(--mute);
-  opacity: 0.7;
-}
-
-.stat-value {
-  font-size: var(--fs-stat);
+.card-value {
+  font-family: var(--font-display);
+  font-size: 28px;
   font-weight: 700;
   line-height: 1.1;
-  color: var(--ink);  /* 默认中性 */
-  font-variant-numeric: lining-nums;
+  color: var(--ink);
+}
+.featured .card-value { font-size: 32px; }
+.card-change {
+  font-size: var(--fs-small);
+  font-weight: 600;
+}
+.change-up { color: var(--signal); }
+.change-down { color: var(--alert); }
+
+.card-sparkline {
+  margin: 2px 0;
+}
+.card-submetrics {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  font-size: 11px;
+  color: var(--mute);
+}
+.submetric strong {
+  color: var(--ink);
+  font-weight: 600;
 }
 
-.stat-icon {
-  position: absolute;
-  bottom: var(--space-sm);
-  right: var(--space-sm);
-  opacity: 0.3;
+/* 移动端：卡片单列时增大内边距 */
+@media (max-width: 768px) {
+  .card-body { padding: var(--space-sm) var(--space-md); }
+  .card-value { font-size: 26px; }
 }
-
-/* === 语义色映射：仅染色数字与图标，不染卡片背景（克制） === */
-.ink .stat-value { color: var(--ink); }
-.ink .stat-icon { color: var(--ink); }
-
-.signal .stat-value { color: var(--signal); }
-.signal .stat-icon { color: var(--signal); }
-.signal.stat-card { border-left: 3px solid var(--signal); }
-
-.alert .stat-value { color: var(--alert); }
-.alert .stat-icon { color: var(--alert); }
-.alert.stat-card { border-left: 3px solid var(--alert); }
-
-.depth .stat-value { color: var(--depth); }
-.depth .stat-icon { color: var(--depth); }
-.depth.stat-card { border-left: 3px solid var(--depth); }
-
-/* === 向后兼容旧 color 值（避免遗漏调用点报错） === */
-.blue .stat-value { color: var(--signal); }
-.green .stat-value { color: var(--signal); }
-.orange .stat-value { color: var(--alert); }
-.purple .stat-value { color: var(--depth); }
 </style>
