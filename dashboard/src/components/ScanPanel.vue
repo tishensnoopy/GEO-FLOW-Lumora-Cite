@@ -18,7 +18,8 @@
               <circle cx="32" cy="32" r="28" fill="none" stroke="rgba(26,26,26,0.1)" stroke-width="6" />
               <circle
                 cx="32" cy="32" r="28" fill="none"
-                :stroke="progressColor"
+                class="progress-circle"
+                :class="progressColorClass"
                 stroke-width="6"
                 stroke-linecap="round"
                 :stroke-dasharray="175.9"
@@ -70,7 +71,6 @@
 
 <script setup>
 import { ref, reactive, computed, watch, nextTick, onUnmounted } from 'vue'
-import { useBreakpoint } from '@/composables/useBreakpoint'
 import api from '@/api'
 
 const props = defineProps({
@@ -79,7 +79,6 @@ const props = defineProps({
 })
 const emit = defineEmits(['update:modelValue'])
 
-const { isMobile } = useBreakpoint()
 const visible = computed({
   get: () => props.modelValue,
   set: (val) => emit('update:modelValue', val),
@@ -102,10 +101,9 @@ const progressPercent = computed(() => {
   return Math.round((task.processed / task.total) * 100)
 })
 
-const progressColor = computed(() => {
-  if (task.status === 'completed') return 'var(--signal)'
-  if (task.status === 'failed') return 'var(--alert)'
-  return 'var(--signal)'
+const progressColorClass = computed(() => {
+  if (task.status === 'failed') return 'progress-failed'
+  return 'progress-normal'
 })
 
 const elapsed = computed(() => {
@@ -182,7 +180,10 @@ watch(() => props.taskId, (newId) => {
     startPolling()
   }
 })
-watch(() => props.modelValue, (v) => { if (!v) stopPolling() })
+watch(() => props.modelValue, (v) => {
+  if (v && props.taskId) startPolling()
+  else if (!v) stopPolling()
+})
 onUnmounted(() => stopPolling())
 </script>
 
@@ -277,6 +278,8 @@ onUnmounted(() => stopPolling())
   font-weight: 700;
   color: var(--ink);
 }
+.progress-circle { stroke: var(--signal); }
+.progress-circle.progress-failed { stroke: var(--alert); }
 .progress-info {
   flex: 1;
   display: flex;

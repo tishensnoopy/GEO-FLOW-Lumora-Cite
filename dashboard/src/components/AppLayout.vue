@@ -32,7 +32,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed } from 'vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import SidebarNav from './SidebarNav.vue'
 import SignalBar from './SignalBar.vue'
