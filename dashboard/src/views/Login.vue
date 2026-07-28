@@ -1,54 +1,97 @@
 <template>
   <div class="login-container">
-    <!-- 左侧品牌区 -->
-    <div class="brand-section">
-      <div class="brand-content">
-        <h1 class="brand-title">知氪AI</h1>
-        <h2 class="brand-subtitle">全链路监测平台</h2>
-        <p class="brand-desc">
-          实时追踪文章收录状态<br>
-          AI 采信检测 · 多维度数据分析<br>
-          专业级监测报告导出
-        </p>
+    <!-- 左侧：CSS-only 雷达脉冲动画（标志性元素） -->
+    <div class="radar-section">
+      <!-- 背景网格 -->
+      <div class="radar-bg-grid"></div>
+
+      <!-- 雷达主体 -->
+      <div class="radar">
+        <!-- 十字准线 -->
+        <div class="radar-crosshair-h"></div>
+        <div class="radar-crosshair-v"></div>
+
+        <!-- 同心圆环（脉冲扩散） -->
+        <div class="radar-ring r1"></div>
+        <div class="radar-ring r2"></div>
+        <div class="radar-ring r3"></div>
+        <div class="radar-ring r4"></div>
+
+        <!-- 扫描扇形（旋转） -->
+        <div class="radar-sweep"></div>
+
+        <!-- 信号光点（检测到的信号） -->
+        <div class="radar-blip blip1"></div>
+        <div class="radar-blip blip2"></div>
+        <div class="radar-blip blip3"></div>
+
+        <!-- 中心核 -->
+        <div class="radar-core"></div>
+      </div>
+
+      <!-- 品牌叠加文字 -->
+      <div class="radar-overlay">
+        <div class="radar-brand mono">ZKEEE · AI</div>
+        <div class="radar-tagline mono">CONTENT · INDEX · CITATION</div>
+      </div>
+
+      <!-- 底部状态标签 -->
+      <div class="radar-caption">
+        <span class="mono">SIGNAL · MONITORING</span>
       </div>
     </div>
 
-    <!-- 右侧表单区 -->
+    <!-- 右侧：登录表单（paper 背景，细线分隔，无白卡片） -->
     <div class="form-section">
-      <div class="form-card">
-        <h3 class="form-title">{{ activeTab === 'client' ? '客户登录' : '管理员登录' }}</h3>
+      <div class="brand-header">
+        <h1 class="brand-title">知<span class="accent">氪</span>AI</h1>
+        <p class="brand-sub">全链路监测平台 · 内容收录与 AI 采信验证</p>
+      </div>
 
-        <el-tabs v-model="activeTab" class="login-tabs">
-          <el-tab-pane label="客户登录" name="client">
-            <el-form :model="clientForm" @submit.prevent="handleClientLogin">
-              <el-form-item>
-                <el-input v-model="clientForm.username" placeholder="用户名" prefix-icon="User" />
-              </el-form-item>
-              <el-form-item>
-                <el-input v-model="clientForm.password" type="password" placeholder="密码" prefix-icon="Lock" show-password />
-              </el-form-item>
-              <el-button type="primary" :loading="loading" @click="handleClientLogin" class="login-btn">
-                登录
-              </el-button>
-            </el-form>
-          </el-tab-pane>
+      <div class="form-divider"></div>
 
-          <el-tab-pane label="管理员登录" name="admin">
-            <div class="sso-login-section">
-              <p class="sso-desc">管理员通过 GEOFlow 单点登录（SSO）</p>
-              <el-button type="primary" @click="handleSsoLogin" class="login-btn">
-                <el-icon><Link /></el-icon>
-                GEOFlow SSO 登录
-              </el-button>
-            </div>
-          </el-tab-pane>
-        </el-tabs>
+      <h3 class="form-title">{{ activeTab === 'client' ? '客户登录' : '管理员登录' }}</h3>
 
-        <div class="form-footer">
-          <a href="/legal/terms" target="_blank">用户协议</a>
-          <span class="divider">|</span>
-          <a href="/legal/privacy" target="_blank">隐私政策</a>
+      <el-tabs v-model="activeTab" class="login-tabs">
+        <el-tab-pane label="客户登录" name="client">
+          <el-form :model="clientForm" @submit.prevent="handleClientLogin">
+            <el-form-item>
+              <el-input v-model="clientForm.username" placeholder="用户名" prefix-icon="User" />
+            </el-form-item>
+            <el-form-item>
+              <el-input v-model="clientForm.password" type="password" placeholder="密码" prefix-icon="Lock" show-password />
+            </el-form-item>
+            <el-button type="primary" :loading="loading" @click="handleClientLogin" class="login-btn">
+              登录
+            </el-button>
+          </el-form>
+        </el-tab-pane>
+
+        <el-tab-pane label="管理员登录" name="admin">
+          <div class="sso-login-section">
+            <p class="sso-desc">管理员通过 GEOFlow 单点登录（SSO）</p>
+            <el-button type="primary" @click="handleSsoLogin" class="login-btn">
+              <el-icon><Link /></el-icon>
+              GEOFlow SSO 登录
+            </el-button>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
+
+      <div class="form-footer">
+        <a href="/legal/terms" target="_blank">用户协议</a>
+        <span class="divider">|</span>
+        <a href="/legal/privacy" target="_blank">隐私政策</a>
+      </div>
+
+      <!-- 开发预览模式：无需后端即可预览 Dashboard 设计（仅 dev 环境显示） -->
+      <div v-if="isDev" class="dev-preview">
+        <div class="dev-preview-row">
+          <button class="dev-preview-btn" @click="enterPreview('client')">客户预览 →</button>
+          <button class="dev-preview-btn admin" @click="enterPreview('admin')">管理员预览 →</button>
         </div>
+        <p class="dev-hint">跳过登录，直接预览（客户: testuser / 管理员: admin）</p>
+        <p class="dev-hint">或直接登录：客户 testuser / Test@1234</p>
       </div>
     </div>
   </div>
@@ -65,11 +108,34 @@ const router = useRouter()
 const store = useStore()
 const activeTab = ref('client')
 const loading = ref(false)
+// 开发预览模式标记（仅 dev 环境显示预览按钮）
+const isDev = import.meta.env.DEV
 
 const clientForm = reactive({
   username: '',
   password: '',
 })
+
+// 开发预览：设置 token + role，跳转 Dashboard
+// mode='client' 用假 token（Dashboard 显示 mock 数据）
+// mode='admin' 用真实 admin JWT（可调 admin API，看真实数据）
+const ADMIN_DEV_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIiwicm9sZSI6ImFkbWluIiwidHlwZSI6ImFkbWluIiwibmFtZSI6ImFkbWluIiwiZXhwIjoxNzg1MjU3MjQ0fQ.SGb5RwFWOjEb1oucTeMieKF-MN7RDw709Ylv162rSbQ'
+
+function enterPreview(mode = 'client') {
+  if (mode === 'admin') {
+    localStorage.setItem('token', ADMIN_DEV_TOKEN)
+    localStorage.setItem('role', 'admin')
+    localStorage.setItem('user_name', 'admin')
+    store.commit('SET_TOKEN', ADMIN_DEV_TOKEN)
+    store.commit('SET_ROLE', 'admin')
+  } else {
+    localStorage.setItem('token', 'dev-preview-token')
+    localStorage.setItem('role', 'client')
+    store.commit('SET_TOKEN', 'dev-preview-token')
+    store.commit('SET_ROLE', 'client')
+  }
+  router.push('/')
+}
 
 // 客户登录：用 username（或 client_id）登录，后端返回 client_id 供后续 API 筛选使用
 async function handleClientLogin() {
@@ -103,109 +169,281 @@ function handleSsoLogin() {
 
 <style scoped>
 .login-container {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   min-height: 100vh;
-  background: #f0f2f5;
+  background: var(--paper);
 }
 
-.brand-section {
-  flex: 1;
-  background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
+/* === 左侧雷达区 === */
+.radar-section {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: white;
+  background: #0D1F1D;  /* 深青绿——比纯墨黑轻，呼应 signal 色 */
+  overflow: hidden;
+}
+/* 背景网格：极淡 signal 色网格暗示"监测" */
+.radar-bg-grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(13, 148, 136, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(13, 148, 136, 0.07) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+/* 径向渐变：中心微亮，边缘渐暗，增加深度 */
+.radar-bg-grid::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at center, rgba(13, 148, 136, 0.08) 0%, transparent 60%);
 }
 
-.brand-content {
+.radar {
+  position: relative;
+  width: 320px;
+  height: 320px;
+}
+
+/* 十字准线：极淡 signal 色，辅助定位"监测" */
+.radar-crosshair-h, .radar-crosshair-v {
+  position: absolute;
+  background: rgba(13, 148, 136, 0.12);
+}
+.radar-crosshair-h {
+  top: 50%; left: 0; right: 0; height: 1px;
+}
+.radar-crosshair-v {
+  left: 50%; top: 0; bottom: 0; width: 1px;
+}
+
+/* 同心圆环：从内到外逐层脉冲扩散 */
+.radar-ring {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  border: 1px solid var(--signal);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  opacity: 0;
+  animation: radar-pulse 4s ease-out infinite;
+}
+.radar-ring.r1 { width: 60px;  height: 60px;  animation-delay: 0s; }
+.radar-ring.r2 { width: 130px; height: 130px; animation-delay: 0.8s; }
+.radar-ring.r3 { width: 210px; height: 210px; animation-delay: 1.6s; }
+.radar-ring.r4 { width: 300px; height: 300px; animation-delay: 2.4s; }
+
+@keyframes radar-pulse {
+  0%   { opacity: 0.7; transform: translate(-50%, -50%) scale(0.5); }
+  70%  { opacity: 0.1; }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(1); }
+}
+
+/* 扫描扇形：亮前缘 + 渐隐尾迹，绕圆心旋转 */
+.radar-sweep {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 300px;
+  height: 300px;
+  background: conic-gradient(
+    from 0deg,
+    rgba(13, 148, 136, 0.55) 0deg,
+    rgba(13, 148, 136, 0.25) 12deg,
+    rgba(13, 148, 136, 0.08) 50deg,
+    transparent 90deg,
+    transparent 360deg
+  );
+  border-radius: 50%;
+  animation: radar-sweep-rotate 4s linear infinite;
+}
+@keyframes radar-sweep-rotate {
+  from { transform: translate(-50%, -50%) rotate(0deg); }
+  to   { transform: translate(-50%, -50%) rotate(360deg); }
+}
+
+/* 信号光点：模拟检测到的信号，周期性闪烁 */
+.radar-blip {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  background: var(--signal);
+  border-radius: 50%;
+  box-shadow: 0 0 10px var(--signal), 0 0 4px var(--signal);
+  animation: blip-pulse 3s ease-in-out infinite;
+}
+.blip1 { top: 32%; left: 65%; animation-delay: 0.5s; }
+.blip2 { top: 68%; left: 38%; animation-delay: 1.5s; }
+.blip3 { top: 45%; left: 72%; animation-delay: 2.5s; }
+
+@keyframes blip-pulse {
+  0%, 100% { opacity: 0; transform: scale(0.5); }
+  20%      { opacity: 1; transform: scale(1.3); }
+  60%      { opacity: 0.6; transform: scale(1); }
+}
+
+/* 中心核：signal 实心点 + 发光 */
+.radar-core {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  background: var(--signal);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 12px var(--signal), 0 0 4px var(--signal);
+}
+
+/* 品牌叠加文字（左上角） */
+.radar-overlay {
+  position: absolute;
+  top: var(--space-lg);
+  left: var(--space-lg);
+  z-index: 2;
+}
+.radar-brand {
+  color: var(--signal);
+  font-size: 14px;
+  letter-spacing: 0.25em;
+  font-weight: 500;
+}
+.radar-tagline {
+  color: var(--mute);
+  font-size: 11px;
+  letter-spacing: 0.15em;
+  margin-top: 4px;
+  opacity: 0.7;
+}
+
+/* 底部状态标签 */
+.radar-caption {
+  position: absolute;
+  bottom: var(--space-lg);
+  left: 0;
+  right: 0;
   text-align: center;
-  padding: 40px;
+  color: var(--mute);
+  letter-spacing: 0.3em;
+  font-size: var(--fs-mono);
+  z-index: 2;
 }
 
-.brand-title {
-  font-size: 48px;
-  font-weight: bold;
-  margin-bottom: 10px;
-}
-
-.brand-subtitle {
-  font-size: 24px;
-  font-weight: 300;
-  margin-bottom: 30px;
-  opacity: 0.9;
-}
-
-.brand-desc {
-  font-size: 16px;
-  line-height: 2;
-  opacity: 0.8;
-}
-
+/* === 右侧表单区 === */
 .form-section {
-  width: 450px;
   display: flex;
-  align-items: center;
+  flex-direction: column;
   justify-content: center;
+  padding: var(--space-xl) var(--space-xl);
+  max-width: 520px;
+  margin: 0 auto;
+  width: 100%;
 }
 
-.form-card {
-  width: 100%;
-  max-width: 350px;
-  padding: 40px;
-  background: white;
-  border-radius: 8px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+.brand-header { margin-bottom: var(--space-lg); }
+.brand-title {
+  font-family: var(--font-display);
+  font-size: var(--fs-display);
+  font-weight: 900;
+  color: var(--ink);
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+.brand-title .accent { color: var(--signal); }
+.brand-sub {
+  margin-top: var(--space-sm);
+  color: var(--mute);
+  font-size: var(--fs-body);
+}
+
+.form-divider {
+  height: 1px;
+  background: var(--ink-line);
+  margin: var(--space-lg) 0;
 }
 
 .form-title {
-  text-align: center;
-  margin-bottom: 30px;
-  color: #2c3e50;
+  font-size: var(--fs-h2);
+  margin-bottom: var(--space-md);
+  color: var(--ink);
 }
 
 .login-btn {
   width: 100%;
-  margin-top: 10px;
+  margin-top: var(--space-sm);
 }
 
 .sso-login-section {
   text-align: center;
-  padding: 20px 0;
+  padding: var(--space-md) 0;
 }
-
 .sso-desc {
-  color: #666;
-  margin-bottom: 20px;
-  font-size: 14px;
+  color: var(--mute);
+  margin-bottom: var(--space-md);
+  font-size: var(--fs-body);
 }
 
 .form-footer {
+  margin-top: var(--space-lg);
+  font-size: var(--fs-small);
   text-align: center;
-  margin-top: 20px;
-  font-size: 12px;
+  color: var(--mute);
 }
-
 .form-footer a {
-  color: #3498db;
+  color: var(--signal);
   text-decoration: none;
 }
+.form-footer a:hover { text-decoration: underline; }
+.divider { margin: 0 var(--space-sm); color: var(--ink-line); }
 
-.divider {
-  margin: 0 10px;
-  color: #ccc;
+/* === 开发预览模式 === */
+.dev-preview {
+  margin-top: var(--space-lg);
+  padding-top: var(--space-md);
+  border-top: 1px dashed var(--ink-line);
+  text-align: center;
+}
+.dev-preview-row {
+  display: flex;
+  gap: var(--space-sm);
+  justify-content: center;
+}
+.dev-preview-btn {
+  background: transparent;
+  border: 1px solid var(--signal);
+  color: var(--signal);
+  padding: 8px 16px;
+  border-radius: var(--radius-md);
+  font-size: var(--fs-small);
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+  font-family: var(--font-body);
+  flex: 1;
+}
+.dev-preview-btn:hover {
+  background: var(--signal);
+  color: var(--paper);
+}
+.dev-preview-btn.admin {
+  border-color: var(--depth);
+  color: var(--depth);
+}
+.dev-preview-btn.admin:hover {
+  background: var(--depth);
+  color: var(--paper);
+}
+.dev-hint {
+  margin: var(--space-xs) 0 0 0;
+  font-size: var(--fs-small);
+  color: var(--mute);
 }
 
-/* 响应式：手机端隐藏品牌区 */
-@media (max-width: 768px) {
-  .brand-section {
-    display: none;
-  }
-  .form-section {
-    width: 100%;
-  }
-  .form-card {
-    max-width: 90%;
-    padding: 20px;
-  }
+/* === 响应式：窄屏隐藏雷达，表单居中 === */
+@media (max-width: 900px) {
+  .login-container { grid-template-columns: 1fr; }
+  .radar-section { display: none; }
+  .form-section { padding: var(--space-lg); }
 }
 </style>

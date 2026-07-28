@@ -351,6 +351,60 @@ class DistributionQueryService:
             created_by_admin_id=admin_user_id,
         )
         self.db.add(record)
+
+        # P0 修复：同步创建 IndexResult 行，确保文章列表立即可见
+        # （文章列表查 index_results 表，分发记录查 manual_distributions 表，
+        #   不同步创建会导致"文章列表和分发记录不同步"）
+        existing_index = await self.db.execute(
+            select(IndexResult).where(IndexResult.url == remote_url)
+        )
+        if not existing_index.scalar_one_or_none():
+            site_type = "manual"
+            index_record = IndexResult(
+                url=remote_url,
+                client_id=client_id,
+                site_type=site_type,
+                content_title=None,  # 异步抓取后更新
+            )
+            self.db.add(index_record)
+
         await self.db.commit()
 
-        return {"action": "created", "client_id": client_id, "source": "manual"}
+        # 异步抓取文章标题（不阻塞响应）
+        try:
+            from app.services.article_fetcher import fetch_article_title
+            import asyncio
+            asyncio.create_task(
+                self._fetch_and_update_title(remote_url, str(record.id))
+            )
+        except Exception:
+            pass  # 标题抓取失败不影响主流程
+
+        return {"action": "created", "client_id": client_id, "source": "manual", "id": str(record.id)}
+
+    async def _fetch_and_update_title(self, url: str, distribution_id: str) -> None:
+        """异步抓取文章标题并更新 IndexResult + ManualDistribution。"""
+        try:
+            from app.services.article_fetcher import ArticleFetcher
+            fetcher = ArticleFetcher()
+            title, snapshot = await fetcher.fetch_title_and_snapshot(url)
+            if title:
+                # 更新 IndexResult
+                await self.db.execute(
+                    IndexResult.__table__.update()
+                    .where(IndexResult.url == url)
+                    .values(content_title=title, content_snapshot=snapshot)
+                )
+                # 更新 ManualDistribution
+                import uuid as _uuid
+                try:
+                    await self.db.execute(
+                        ManualDistribution.__table__.update()
+                        .where(ManualDistribution.id == _uuid.UUID(distribution_id))
+                        .values(content_title=title)
+                    )
+                except (ValueError, Exception):
+                    pass
+                await self.db.commit()
+        except Exception:
+            pass  # 标题抓取失败不影响主流程

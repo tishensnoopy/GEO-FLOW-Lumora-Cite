@@ -17,6 +17,10 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
+      // 开发预览模式：跳过 401 重定向，允许无后端预览 Dashboard
+      if (localStorage.getItem('token') === 'dev-preview-token') {
+        return Promise.reject(error)
+      }
       // 登录请求的 401 不跳转（让 Login.vue 显示错误提示），其他 API 401 才跳转
       const isLoginRequest = error.config?.url?.includes('/auth/login') || error.config?.url?.includes('/sso/')
       const isLoginPage = window.location.pathname === '/login'

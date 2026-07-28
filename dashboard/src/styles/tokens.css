@@ -1,0 +1,67 @@
+/* dashboard/src/styles/tokens.css
+ * "Ink & Signal" 设计系统 token
+ * 所有颜色/字体/间距的唯一真源。禁止在组件内硬编码 hex。
+ */
+:root {
+  /* === 命名色 === */
+  --ink: #1A1A1A;          /* 主文本：暖书法墨黑 */
+  --paper: #FAFAF7;        /* 页面背景：暖宣纸白（非纯白） */
+  --surface: #FFFFFF;      /* 卡片表面 */
+  --signal: #0D9488;       /* 信号青：已收录/已采信，品牌色，克制使用 */
+  --alert: #E76F51;        /* 警示珊瑚：失败/待检测，温暖不刺眼 */
+  --depth: #4C1D95;        /* 深紫：AI 相关指标，暗示智能 */
+  --mute: #78716C;         /* 暖石灰：次要文本/边框 */
+
+  /* === 派生色（透明度变体，避免重复 rgba 计算） === */
+  --signal-soft: rgba(13, 148, 136, 0.10);   /* signal 10% 背景 */
+  --signal-line: rgba(13, 148, 136, 0.30);   /* signal 30% 描边 */
+  --alert-soft: rgba(231, 111, 81, 0.10);
+  --depth-soft: rgba(76, 29, 149, 0.10);
+  --ink-line: rgba(26, 26, 26, 0.12);        /* 细分隔线 */
+  --paper-shadow: 0 1px 2px rgba(26, 26, 26, 0.04), 0 4px 12px rgba(26, 26, 26, 0.06);
+
+  /* === 字体族 === */
+  --font-display: 'Noto Serif SC', 'Songti SC', 'STSong', serif;   /* 标题与数字 */
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+
+  /* === 字号阶梯 === */
+  --fs-display: 56px;   /* 登录页品牌大字 */
+  --fs-h1: 32px;        /* 页面主标题 */
+  --fs-h2: 22px;        /* 卡片标题 */
+  --fs-stat: 44px;      /* 统计卡片大数字（衬线） */
+  --fs-body: 14px;
+  --fs-small: 12px;
+  --fs-mono: 13px;      /* 表格/时间戳 */
+
+  /* === 间距 === */
+  --space-xs: 8px;
+  --space-sm: 12px;
+  --space-md: 20px;
+  --space-lg: 32px;
+  --space-xl: 48px;
+
+  /* === 圆角（克制，偏直角以呼应"报告"感） === */
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-pill: 999px;
+
+  /* === Element Plus 主题变量覆盖 === */
+  --el-color-primary: var(--signal);
+  --el-color-primary-light-3: #2DA89E;
+  --el-color-primary-light-5: #5DBAB2;
+  --el-color-primary-light-7: #9ED4CE;
+  --el-color-primary-light-9: #E6F4F2;  /* signal 极浅背景（固体色，非 rgba，兼容 Element Plus） */
+  --el-color-primary-dark-2: #0A7A70;
+  --el-color-danger: var(--alert);
+  --el-color-success: var(--signal);
+  --el-color-warning: #C99700;  /* 暖琥珀，区别于 alert 珊瑚 */
+  --el-text-color-primary: var(--ink);
+  --el-text-color-regular: var(--ink);
+  --el-text-color-secondary: var(--mute);
+  --el-border-color: var(--ink-line);
+  --el-bg-color: var(--surface);
+  --el-bg-color-page: var(--paper);
+  --el-font-family: var(--font-body);
+  --el-border-radius-base: var(--radius-md);
+}

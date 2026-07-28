@@ -54,13 +54,19 @@ def _is_verifiable(adapter: CitationModelAdapter, answer: ModelAnswer) -> bool:
 
 
 def probe_adapter_capability(adapter: CitationModelAdapter) -> dict:
-    """Verify that the configured model actually searches and returns source URLs."""
-    answer = ask_with_retry(adapter, CAPABILITY_PROBE_QUESTION, 0)
+    """Verify that the configured model actually searches and returns source URLs.
+
+    P0 修复：
+    1. 探测重试从 0 次改为 2 次（应对偶发超时/限流）
+    2. verified 标准从 AND 放宽为 OR（web_search 或 sources_returned 任一即可）
+       原标准过严导致大量实际支持联网的模型被淘汰，采信检测"几乎每次触发失败"。
+    """
+    answer = ask_with_retry(adapter, CAPABILITY_PROBE_QUESTION, 2)
     web_search = answer.search_used is True
     sources_returned = bool(answer.sources)
     if answer.error:
         status = "error"
-    elif web_search and sources_returned:
+    elif web_search or sources_returned:
         status = "verified"
     elif web_search:
         status = "search_without_sources"

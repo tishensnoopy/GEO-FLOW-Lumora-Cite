@@ -10,6 +10,10 @@ export default defineConfig({
       '/api/v1': {
         target: 'http://localhost:8090',
         changeOrigin: true
+      },
+      '/sso': {
+        target: 'http://localhost:8090',
+        changeOrigin: true
       }
     }
   },

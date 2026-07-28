@@ -380,7 +380,10 @@ async def create_manual_distribution(
             )
             await db.commit()
 
-            # 同时更新 IndexResult（如果记录存在）
+            # 同步写入 IndexResult（确保文章列表立即可见）
+            # 修复：原逻辑仅更新已存在的 IndexResult，手动添加时 IndexResult 不存在，
+            # 导致文章列表（数据源为 index_results）看不到手动添加的记录。
+            # 现改为：不存在则创建 pending 状态的新行，并异步触发收录扫描。
             existing = await db.execute(
                 select(IndexResult).where(IndexResult.url == req.remote_url)
             )
@@ -392,6 +395,37 @@ async def create_manual_distribution(
                     update(IndexResult).where(IndexResult.url == req.remote_url).values(**update_data)
                 )
                 await db.commit()
+            else:
+                # 创建新的 IndexResult 行（pending 状态），确保文章列表立即可见
+                from app.models.client import ClientSite
+                site_result = await db.execute(
+                    select(ClientSite).where(
+                        ClientSite.client_id == result.get("client_id"),
+                        ClientSite.status == "active",
+                    )
+                )
+                site = site_result.scalars().first()
+                site_type = site.site_type if site else "unknown"
+
+                new_index_result = IndexResult(
+                    url=req.remote_url,
+                    client_id=result.get("client_id"),
+                    site_type=site_type,
+                    content_title=title,
+                    content_snapshot=snapshot,
+                    baidu_status="pending",
+                    toutiao_status="pending",
+                    sogou_status="pending",
+                    so360_status="pending",
+                    bing_status="pending",
+                )
+                db.add(new_index_result)
+                await db.commit()
+
+                # 异步触发收录扫描（不阻塞 HTTP 响应）
+                asyncio.create_task(
+                    _run_batch_scan([(req.remote_url, result.get("client_id"))], "index")
+                )
     except Exception as exc:
         # 标题抓取失败不影响添加链接
         import logging
@@ -514,10 +548,15 @@ async def batch_scan(
     if not targets:
         raise HTTPException(status_code=404, detail="未找到对应的分发记录")
 
+    # 创建扫描任务（活动窗口）
+    from app.services.scan_task_manager import create_task
+    task_id = create_task(req.scan_type, len(targets), targets)
+
     # 异步执行检测（不阻塞响应；检测可能耗时数分钟，避免 HTTP 超时）
-    asyncio.create_task(_run_batch_scan(targets, req.scan_type))
+    asyncio.create_task(_run_batch_scan(targets, req.scan_type, task_id))
 
     return {
+        "task_id": task_id,
         "queued": len(targets),
         "scan_type": req.scan_type,
         "message": f"已开始检测 {len(targets)} 条链接，结果将异步更新",
@@ -529,76 +568,108 @@ async def _resolve_scan_targets(
 ) -> list[tuple[str, str]]:
     """将 distribution_ids 解析为 (url, client_id) 列表。
 
-    distribution_id 可能来自 ManualDistribution（手动录入，client_id 已知）
-    或 GeoflowArticleDistribution（GEOFlow 分发，需通过 domain 匹配 client_id）。
+    distribution_id 可能来自 ManualDistribution（手动录入，UUID 主键）
+    或 GeoflowArticleDistribution（GEOFlow 分发，BigInteger 主键）。
+    两表 id 类型不同，必须分别查询，否则触发 ``bigint = uuid`` 类型错误。
     """
-    try:
-        uuids = [uuid.UUID(did) for did in distribution_ids]
-    except (ValueError, AttributeError):
-        return []
-
     targets: list[tuple[str, str]] = []
     seen_urls: set[str] = set()
 
-    # 1. 查 ManualDistribution（client_id 直接可用）
-    manual_result = await db.execute(
-        select(ManualDistribution).where(ManualDistribution.id.in_(uuids))
-    )
-    for record in manual_result.scalars().all():
-        if record.remote_url and record.remote_url not in seen_urls:
-            targets.append((record.remote_url, record.client_id))
-            seen_urls.add(record.remote_url)
+    # 1. 查 ManualDistribution（id 是 UUID 类型）
+    manual_uuids: list[uuid.UUID] = []
+    for did in distribution_ids:
+        try:
+            manual_uuids.append(uuid.UUID(did))
+        except (ValueError, AttributeError):
+            pass  # 非 UUID 格式，可能是 GEOFlow 的 bigint id
 
-    # 2. 查 GeoflowArticleDistribution（需通过 domain 匹配 client_id）
-    geoflow_result = await db.execute(
-        select(GeoflowArticleDistribution).where(
-            GeoflowArticleDistribution.id.in_(uuids),
-            GeoflowArticleDistribution.remote_url.isnot(None),
+    if manual_uuids:
+        manual_result = await db.execute(
+            select(ManualDistribution).where(ManualDistribution.id.in_(manual_uuids))
         )
-    )
-    geoflow_dists = geoflow_result.scalars().all()
-    if geoflow_dists:
-        sites_result = await db.execute(
-            select(ClientSite).where(ClientSite.status == "active")
+        for record in manual_result.scalars().all():
+            if record.remote_url and record.remote_url not in seen_urls:
+                targets.append((record.remote_url, record.client_id))
+                seen_urls.add(record.remote_url)
+
+    # 2. 查 GeoflowArticleDistribution（id 是 BigInteger 类型，需转为 int）
+    geoflow_int_ids: list[int] = []
+    for did in distribution_ids:
+        try:
+            geoflow_int_ids.append(int(did))
+        except (ValueError, TypeError):
+            pass  # 非数字格式，可能是 ManualDistribution 的 UUID
+
+    if geoflow_int_ids:
+        geoflow_result = await db.execute(
+            select(GeoflowArticleDistribution).where(
+                GeoflowArticleDistribution.id.in_(geoflow_int_ids),
+                GeoflowArticleDistribution.remote_url.isnot(None),
+            )
         )
-        domain_map = {
-            normalize_domain(s.domain): s.client_id
-            for s in sites_result.scalars().all()
-        }
-        for dist in geoflow_dists:
-            if dist.remote_url and dist.remote_url not in seen_urls:
-                domain = normalize_domain(dist.remote_url)
-                client_id = domain_map.get(domain)
-                if client_id:
-                    targets.append((dist.remote_url, client_id))
-                    seen_urls.add(dist.remote_url)
+        geoflow_dists = geoflow_result.scalars().all()
+        if geoflow_dists:
+            sites_result = await db.execute(
+                select(ClientSite).where(ClientSite.status == "active")
+            )
+            domain_map = {
+                normalize_domain(s.domain): s.client_id
+                for s in sites_result.scalars().all()
+            }
+            for dist in geoflow_dists:
+                if dist.remote_url and dist.remote_url not in seen_urls:
+                    domain = normalize_domain(dist.remote_url)
+                    client_id = domain_map.get(domain)
+                    if client_id:
+                        targets.append((dist.remote_url, client_id))
+                        seen_urls.add(dist.remote_url)
 
     return targets
 
 
-async def _run_batch_scan(targets: list[tuple[str, str]], scan_type: str) -> None:
+async def _run_batch_scan(targets: list[tuple[str, str]], scan_type: str, task_id: str = None) -> None:
     """异步执行批量检测（后台任务，不阻塞 HTTP 响应）。
 
     独立 session：避免与请求级 session 生命周期耦合。
     单条失败不影响其他 URL（记录日志，继续下一条）。
+    活动窗口：通过 task_id 将进度和日志写入 scan_task_manager。
     """
     from app.services.index_checker import IndexChecker
     from app.services.citation_checker import CitationChecker
+    from app.services.scan_task_manager import add_log, update_progress, complete_task
+
+    processed = 0
+    success = 0
+    failed = 0
 
     async with async_session() as task_db:
         if scan_type in ("index", "both"):
             checker = IndexChecker(task_db)
             for url, client_id in targets:
                 try:
+                    if task_id:
+                        add_log(task_id, "info", f"[收录检测] 开始: {url}")
                     await checker.check_url(url, client_id, "official")
                     logger.info("批量收录检测完成: %s", url)
+                    success += 1
+                    if task_id:
+                        add_log(task_id, "success", f"[收录检测] 完成: {url}")
                 except Exception as exc:
                     logger.error("批量收录检测失败 %s: %s", url, exc)
+                    failed += 1
+                    if task_id:
+                        add_log(task_id, "error", f"[收录检测] 失败: {url} - {exc}")
+                finally:
+                    processed += 1
+                    if task_id:
+                        update_progress(task_id, processed=processed, success=success, failed=failed)
 
         if scan_type in ("citation", "both"):
             checker = CitationChecker(task_db)
             for url, client_id in targets:
                 try:
+                    if task_id:
+                        add_log(task_id, "info", f"[AI采信检测] 开始: {url}")
                     # 删除旧的采信记录，允许重新检测（强制刷新）
                     await task_db.execute(
                         delete(CitationResult).where(CitationResult.url == url)
@@ -606,8 +677,38 @@ async def _run_batch_scan(targets: list[tuple[str, str]], scan_type: str) -> Non
                     await task_db.commit()
                     await checker.check_url(url, client_id)
                     logger.info("批量采信检测完成: %s", url)
+                    success += 1
+                    if task_id:
+                        add_log(task_id, "success", f"[AI采信检测] 完成: {url}")
                 except Exception as exc:
                     logger.error("批量采信检测失败 %s: %s", url, exc)
+                    failed += 1
+                    if task_id:
+                        add_log(task_id, "error", f"[AI采信检测] 失败: {url} - {exc}")
+                finally:
+                    processed += 1
+                    if task_id:
+                        update_progress(task_id, processed=processed, success=success, failed=failed)
+
+    if task_id:
+        complete_task(task_id)
+
+
+@router.get("/scan/status/{task_id}")
+async def get_scan_status(
+    task_id: str,
+    admin: dict = Depends(get_current_admin),
+):
+    """获取扫描任务状态（活动窗口）。
+
+    前端通过 task_id 轮询此端点，实时显示扫描进度和日志。
+    任务状态存储在内存中，服务重启后清除。
+    """
+    from app.services.scan_task_manager import get_task
+    task = get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="扫描任务不存在或已过期")
+    return task
 
 
 @router.get("/audit_logs")

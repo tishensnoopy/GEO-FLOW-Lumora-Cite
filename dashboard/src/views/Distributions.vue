@@ -120,6 +120,9 @@
         <el-button type="primary" :loading="submitting" @click="handleBatchScan">开始检测</el-button>
       </template>
     </el-dialog>
+
+    <!-- 扫描活动窗口（终端日志） -->
+    <ScanTerminal v-model="scanTerminalVisible" :task-id="scanTaskId" />
   </div>
 </template>
 
@@ -129,6 +132,7 @@ import { useStore } from 'vuex'
 import { ElMessage } from 'element-plus'
 import { Plus, Refresh, InfoFilled } from '@element-plus/icons-vue'
 import api from '@/api'
+import ScanTerminal from '@/components/ScanTerminal.vue'
 
 const store = useStore()
 // 修复：改用 Vuex store 的 role（响应式），原 localStorage 读取非响应式，
@@ -160,6 +164,8 @@ const addRules = {
 // ---------- 批量检测 ----------
 const scanVisible = ref(false)
 const scanType = ref('index')
+const scanTerminalVisible = ref(false)
+const scanTaskId = ref('')
 
 // ---------- 生命周期 ----------
 onMounted(async () => {
@@ -259,8 +265,13 @@ async function handleBatchScan() {
       distribution_ids: selectedIds.value,
       scan_type: scanType.value,
     })
-    ElMessage.success(`已入队 ${res.data.queued} 条检测任务`)
+    ElMessage.success(`已开始检测 ${res.data.queued} 条链接`)
     scanVisible.value = false
+    // 打开扫描活动窗口
+    scanTaskId.value = res.data.task_id
+    scanTerminalVisible.value = true
+    // 刷新列表（扫描结果会异步更新）
+    setTimeout(() => fetchList(), 5000)
   } catch (err) {
     ElMessage.error(err.response?.data?.detail || '批量检测失败')
   } finally {

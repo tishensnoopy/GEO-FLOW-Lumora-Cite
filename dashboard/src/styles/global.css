@@ -1,0 +1,89 @@
+/* dashboard/src/styles/global.css
+ * 全局样式：引入 token、基础重置、字体应用
+ * 必须在 element-plus/dist/index.css 之后加载，以覆盖 Element Plus 主题变量
+ */
+@import './tokens.css';
+
+/* === 基础重置 === */
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: var(--fs-body);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#app {
+  min-height: 100vh;
+  background: var(--paper);
+}
+
+/* === 标题默认使用衬线体 === */
+/* 注意：不重置 margin，避免影响其他页面 h2 的间距（各组件 scoped 样式自行控制间距） */
+h1, h2, h3 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  color: var(--ink);
+}
+
+/* === 数字默认使用衬线体（编辑报告感） === */
+/* 仅对 .num-serif 类生效，避免全局污染 input 数字 */
+.num-serif {
+  font-family: var(--font-display);
+  font-variant-numeric: lining-nums;  /* 衬线体配 lining 数字，更现代 */
+}
+
+/* === 时间戳/表格数字用等宽体 === */
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* === Element Plus 组件级覆盖（变量已通过 :root 覆盖，此处仅微调） === */
+/* 按钮圆角收紧，呼应"报告"质感 */
+.el-button {
+  border-radius: var(--radius-md);
+  font-weight: 500;
+}
+.el-button--primary {
+  background: var(--signal);
+  border-color: var(--signal);
+}
+.el-button--primary:hover {
+  background: var(--el-color-primary-dark-2);
+  border-color: var(--el-color-primary-dark-2);
+}
+
+/* 输入框圆角收紧 */
+.el-input__wrapper {
+  border-radius: var(--radius-md);
+}
+
+/* 菜单激活态用 signal 而非 Element 默认蓝 */
+.el-menu--horizontal > .el-menu-item.is-active {
+  border-bottom-color: var(--signal) !important;
+  color: var(--signal) !important;
+}
+.el-menu--horizontal > .el-menu-item:hover {
+  color: var(--ink) !important;
+  background: transparent !important;
+}
+
+/* Tab 激活色 */
+.el-tabs__item.is-active { color: var(--signal); }
+.el-tabs__active-bar { background-color: var(--signal); }
+
+/* 滚动条：细线，纸感 */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--mute);
+  border-radius: var(--radius-pill);
+  opacity: 0.3;
+}

@@ -255,8 +255,9 @@ def fetch_public_content(url: str, timeout: int = 15) -> FetchedContent:
     request = urllib.request.Request(
         encoded_url,
         headers={
-            "User-Agent": "LumoraCitationCheck/0.1",
-            "Accept": "text/html,application/xhtml+xml",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             "Accept-Encoding": "identity",
         },
     )
@@ -279,10 +280,14 @@ def fetch_public_content(url: str, timeout: int = 15) -> FetchedContent:
             html = raw.decode(charset, errors="replace")
     except urllib.error.HTTPError as exc:
         if exc.code == 403:
+            # P0 修复：403 时尝试 headless browser 回退（原直接返回 blocked_by_site，导致大量网站无法检测）
+            fallback = _fetch_with_headless_browser(url, timeout)
+            if fallback is not None:
+                return fallback
             suitability = SuitabilityResult(
                 False,
                 "blocked_by_site",
-                "网站拒绝自动抓取（HTTP 403）。本工具不会绕过访问限制，请粘贴正文后继续检测。",
+                "网站拒绝自动抓取（HTTP 403），headless 回退也失败。请粘贴正文后继续检测。",
             )
         else:
             suitability = evaluate_content_suitability(title="", text="", access_issue=f"页面访问失败：{exc}")

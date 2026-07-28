@@ -132,7 +132,47 @@ class ArticleFetcher:
         snapshot = "\n".join(lines)
 
         # 截取前 500 字
-        return snapshot[:500] if snapshot else None
+        result = snapshot[:500] if snapshot else None
+
+        # 检测反爬虫 JavaScript 加密内容（如 lieju.com 返回的加密页面）
+        # 如果检测到，返回 None 避免 AI 监测用无效内容生成问题
+        if result and self._is_anti_scraping_content(result):
+            logger.warning("检测到反爬虫加密内容，丢弃快照: %s", result[:80])
+            return None
+
+        return result
+
+    def _is_anti_scraping_content(self, text: str) -> bool:
+        """检测是否为反爬虫 JavaScript 加密内容。
+
+        常见特征：
+        1. 包含典型的 JS 反爬虫代码（var arg1=, document.cookie 等）
+        2. 文本主要是 base64/hex 编码字符串，可读文本比例极低
+        """
+        # 特征1：典型的反爬虫 JavaScript 代码
+        js_patterns = [
+            "var arg1=", "var arg", "arg1='", "arg1=\"",
+            "document.cookie", "document.location", "window.location",
+            "eval(function", "setTimeout(function",
+        ]
+        for pattern in js_patterns:
+            if pattern in text[:300]:
+                return True
+
+        # 特征2：可读文本比例极低（大量 base64/hex 编码字符串）
+        # 如果前 300 字符中，可读中文/英文比例低于 30%，视为加密内容
+        if len(text) >= 50:
+            sample = text[:300]
+            readable = sum(
+                1 for c in sample
+                if "\u4e00" <= c <= "\u9fff"  # 中文
+                or c.isalpha()  # 英文字母
+                or c in "，。、；：！？""''（）【】《》—… \n\t"
+            )
+            if readable / len(sample) < 0.3:
+                return True
+
+        return False
 
 
 # 单例

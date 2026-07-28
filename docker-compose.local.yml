@@ -89,6 +89,11 @@ services:
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-RedisLocal2026}
       SECRET_KEY: ${SECRET_KEY:-local-jwt-secret-key-for-testing}
+      # SSO 配置（本地开发环境）
+      SSO_GEOFLOW_BASE_URL: http://localhost:18080
+      SSO_GEOFLOW_USERINFO_URL: http://geoflow-app:8080/api/sso/userinfo
+      SSO_REDIRECT_URI: http://localhost:3000/sso/callback
+      SSO_JWT_SECRET: local-sso-jwt-secret-for-testing-2026
     ports:
       - "8090:8090"
     # 挂载源码到 /app，主机改代码容器即时生效（Python 包在 site-packages 不受影响）

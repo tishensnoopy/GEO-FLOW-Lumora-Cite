@@ -1,7 +1,7 @@
 <template>
   <div class="app-container">
     <div v-if="showNav" class="nav-bar">
-      <div class="logo">知氪AI全链路监测平台</div>
+      <div class="logo">知<span class="accent">氪</span>AI 全链路监测平台</div>
       <el-menu :default-active="activeMenu" mode="horizontal" router class="nav-menu">
         <el-menu-item index="/"><el-icon><DataLine /></el-icon>仪表盘</el-menu-item>
         <el-menu-item index="/articles"><el-icon><Document /></el-icon>文章列表</el-menu-item>
@@ -66,43 +66,75 @@ const logout = () => {
 </script>
 
 <style>
-.app-container { min-height: 100vh; }
+.app-container { min-height: 100vh; background: var(--paper); }
+
 .nav-bar {
   display: flex;
   align-items: center;
-  border-bottom: 1px solid #e4e7ed;
-  padding: 0 20px;
-  background: #fff;
+  gap: var(--space-md);
+  border-bottom: 1px solid var(--ink-line);
+  padding: 0 var(--space-lg);
+  background: var(--surface);
+  position: sticky;
+  top: 0;
+  z-index: 100;
 }
+
+/* Logo：衬线体 + "氪"字 signal 高亮（标志性元素） */
 .logo {
-  font-size: 18px;
-  font-weight: bold;
-  color: #409eff;
-  margin-right: 30px;
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--ink);
+  margin-right: var(--space-md);
   white-space: nowrap;
+  letter-spacing: 0.02em;
 }
+.logo .accent {
+  color: var(--signal);
+}
+
 .nav-menu {
   flex: 1;
   border-bottom: none !important;
+  background: transparent !important;
 }
-/* 外链按钮样式：与 el-menu-item 视觉一致，避免被 vue-router 当作路由导航 */
+/* 菜单项：减少默认 padding，更紧凑报告感 */
+.nav-menu .el-menu-item {
+  font-size: var(--fs-body);
+  height: 56px;
+  line-height: 56px;
+}
+
+/* 外链按钮：与 el-menu-item 视觉一致 */
 .external-link {
   display: flex;
   align-items: center;
-  padding: 0 20px;
+  padding: 0 var(--space-md);
   text-decoration: none;
-  color: #606266;
-  font-size: 14px;
-  height: 60px;
+  color: var(--mute);
+  font-size: var(--fs-body);
+  height: 56px;
   border-bottom: 2px solid transparent;
   transition: border-color 0.2s, color 0.2s;
   white-space: nowrap;
 }
 .external-link:hover {
-  color: #409eff;
-  border-bottom-color: #409eff;
+  color: var(--signal);
+  border-bottom-color: var(--signal);
 }
 .external-link .el-icon {
   margin-right: 6px;
+}
+
+/* 退出登录按钮：去强调，避免与 logo 抢眼 */
+.nav-bar .el-button--text,
+.nav-bar .el-button.is-text {
+  color: var(--mute);
+  font-size: var(--fs-body);
+}
+.nav-bar .el-button--text:hover,
+.nav-bar .el-button.is-text:hover {
+  color: var(--alert);
 }
 </style>
