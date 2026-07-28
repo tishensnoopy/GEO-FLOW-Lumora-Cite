@@ -15,6 +15,7 @@ from app.integration.geoflow.reader import (
     fetch_distribution_count_by_date,
     fetch_distributions_with_article,
     fetch_synced_distribution_urls,
+    fetch_synced_url_exists,
 )
 
 
@@ -112,3 +113,26 @@ async def test_fetch_deleted_distributions_with_article():
     rows = await fetch_deleted_distributions_with_article(mock_db)
     assert rows == []
     mock_db.execute.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_fetch_synced_url_exists_returns_true():
+    mock_db = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalar.return_value = True
+    mock_db.execute.return_value = mock_result
+
+    exists = await fetch_synced_url_exists(mock_db, "https://a.com/1")
+    assert exists is True
+    mock_db.execute.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_fetch_synced_url_exists_returns_false():
+    mock_db = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalar.return_value = False
+    mock_db.execute.return_value = mock_result
+
+    exists = await fetch_synced_url_exists(mock_db, "https://a.com/not-exist")
+    assert exists is False

@@ -13,6 +13,7 @@ from sqlalchemy import (
     DateTime,
     String,
     Text,
+    exists,
     func,
     select,
 )
@@ -87,6 +88,23 @@ async def fetch_synced_distribution_urls(db: AsyncSession) -> list[str]:
         )
     )
     return [row[0] for row in result.fetchall()]
+
+
+async def fetch_synced_url_exists(db: AsyncSession, url: str) -> bool:
+    """检查指定 url 是否存在于 synced 且非 delete 的分发记录中。
+
+    用 ``SELECT EXISTS(...)`` 在数据库侧判定，避免拉全量 url 列表。
+    """
+    result = await db.execute(
+        select(
+            exists().where(
+                _Distribution.status == "synced",
+                _Distribution.action != "delete",
+                _Distribution.remote_url == url,
+            )
+        )
+    )
+    return bool(result.scalar())
 
 
 async def fetch_distribution_by_ids(
