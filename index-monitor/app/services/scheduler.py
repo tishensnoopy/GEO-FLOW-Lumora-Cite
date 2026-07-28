@@ -131,7 +131,7 @@ def stop_scheduler():
 async def scheduled_archive_scan():
     """每日 02:00 归档已删除的分发记录（任务 9 补丁）。
 
-    查 action=='delete' 的 GeoflowArticleDistribution，按 remote_url 的 domain
+    查 action=='delete' 的 GEOFlow article_distributions 记录，按 remote_url 的 domain
     匹配 ClientSite.client_id，写入 monitor.archived_distributions 表。
     D01/D02/D06 修复详见 ArchiveService.archive_deleted_distributions。
     """

@@ -19,11 +19,6 @@ from app.integration.geoflow.reader import (
 )
 
 
-def _row(*values):
-    """模拟 SQLAlchemy Row 的可索引对象。"""
-    return SimpleNamespace(_mapping=SimpleNamespace(values=tuple(values)))
-
-
 @pytest.mark.asyncio
 async def test_fetch_synced_distribution_urls_returns_url_list():
     mock_db = AsyncMock()

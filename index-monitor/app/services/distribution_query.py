@@ -72,7 +72,7 @@ class DistributionQueryService:
 
         domain 匹配采用 Python 层处理：先查所有 client_sites 建映射，再匹配。
 
-        日期过滤（C10 修复）：按 ``GeoflowArticleDistribution.created_at`` 过滤，
+        日期过滤（C10 修复）：按 ``article_distributions.created_at`` 过滤，
         与序列化字段 ``distributed_at`` 同源。``date_from`` 含当天起始，
         ``date_to`` 含当天结束（用 < 次日零点比较）。
         """

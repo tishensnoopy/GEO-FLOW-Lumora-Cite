@@ -543,7 +543,7 @@ async def batch_scan(
     )
 
     # 解析 distribution_ids → [(url, client_id), ...]
-    # id 可能来自 ManualDistribution 或 GeoflowArticleDistribution，两表都查
+    # id 可能来自 ManualDistribution 或 GEOFlow article_distributions，两表都查
     targets = await _resolve_scan_targets(db, req.distribution_ids)
     if not targets:
         raise HTTPException(status_code=404, detail="未找到对应的分发记录")
@@ -569,7 +569,7 @@ async def _resolve_scan_targets(
     """将 distribution_ids 解析为 (url, client_id) 列表。
 
     distribution_id 可能来自 ManualDistribution（手动录入，UUID 主键）
-    或 GeoflowArticleDistribution（GEOFlow 分发，BigInteger 主键）。
+    或 GEOFlow article_distributions（GEOFlow 分发，BigInteger 主键）。
     两表 id 类型不同，必须分别查询，否则触发 ``bigint = uuid`` 类型错误。
     """
     targets: list[tuple[str, str]] = []
@@ -592,7 +592,7 @@ async def _resolve_scan_targets(
                 targets.append((record.remote_url, record.client_id))
                 seen_urls.add(record.remote_url)
 
-    # 2. 查 GeoflowArticleDistribution（id 是 BigInteger 类型，需转为 int）
+    # 2. 查 GEOFlow article_distributions（id 是 BigInteger 类型，需转为 int）
     geoflow_int_ids: list[int] = []
     for did in distribution_ids:
         try:
