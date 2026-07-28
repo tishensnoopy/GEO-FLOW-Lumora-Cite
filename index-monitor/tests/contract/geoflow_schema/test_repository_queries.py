@@ -16,6 +16,7 @@ from tests.contract.geoflow_schema.seed_contract_data import (
     TEST_DIST_ID_1,
     TEST_DIST_ID_2,
     TEST_REMOTE_URL_1,
+    TEST_REMOTE_URL_2,
     cleanup_contract_data,
     seed_contract_data,
 )
@@ -95,3 +96,14 @@ async def test_get_deleted_distributions_with_article(repo_with_seed):
     matched = [d for d in dtos if d.distribution.id == TEST_DIST_ID_2]
     assert len(matched) == 1
     assert matched[0].distribution.action == "delete"
+
+
+@pytest.mark.asyncio
+async def test_get_synced_url_exists(repo_with_seed):
+    """get_synced_url_exists 对 synced 且非 delete 的 url 返回 True，对不存在的返回 False。"""
+    # TEST_REMOTE_URL_1 是 synced + publish → True
+    assert await repo_with_seed.get_synced_url_exists(TEST_REMOTE_URL_1) is True
+    # TEST_REMOTE_URL_2 是 synced + delete → False（action='delete' 被排除）
+    assert await repo_with_seed.get_synced_url_exists(TEST_REMOTE_URL_2) is False
+    # 不存在的 url → False
+    assert await repo_with_seed.get_synced_url_exists("https://nonexistent.example.com/x") is False
