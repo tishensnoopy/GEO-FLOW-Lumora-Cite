@@ -54,14 +54,29 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="status" label="状态" width="90">
+      <el-table-column label="状态" width="100">
         <template #default="{ row }">
-          <el-tag :type="distStatusType(row.status)" size="small">{{ row.status }}</el-tag>
+          <StatusDot :status="getStatusType(row)" />
         </template>
       </el-table-column>
       <el-table-column prop="note" label="备注" min-width="120" show-overflow-tooltip />
       <el-table-column prop="created_at" label="创建时间" width="160">
         <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
+      </el-table-column>
+      <el-table-column label="操作" width="120" fixed="right">
+        <template #default="{ row }">
+          <div class="row-actions">
+            <el-button text size="small" @click="rescanOne(row)" title="重新扫描">
+              <el-icon><Refresh /></el-icon>
+            </el-button>
+            <el-button text size="small" @click="viewCitation(row)" title="采信详情">
+              <el-icon><View /></el-icon>
+            </el-button>
+            <el-button text size="small" @click="editRow(row)" title="编辑">
+              <el-icon><Edit /></el-icon>
+            </el-button>
+          </div>
+        </template>
       </el-table-column>
     </el-table>
 
@@ -121,20 +136,21 @@
       </template>
     </el-dialog>
 
-    <!-- 扫描活动窗口（终端日志） -->
-    <ScanTerminal v-model="scanTerminalVisible" :task-id="scanTaskId" />
+    <!-- 扫描面板已由 AppLayout 的 ScanPanel 全局承载，此处不再内嵌 ScanTerminal -->
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, inject } from 'vue'
 import { useStore } from 'vuex'
 import { ElMessage } from 'element-plus'
-import { Plus, Refresh, InfoFilled } from '@element-plus/icons-vue'
+import { Plus, Refresh, View, Edit, InfoFilled } from '@element-plus/icons-vue'
 import api from '@/api'
-import ScanTerminal from '@/components/ScanTerminal.vue'
+import StatusDot from '@/components/StatusDot.vue'
 
 const store = useStore()
+// 全局扫描面板触发（由 App.vue 通过 provide('openScanPanel') 提供）
+const openScanPanel = inject('openScanPanel', null)
 // 修复：改用 Vuex store 的 role（响应式），原 localStorage 读取非响应式，
 // 退出管理员后用客户登录时 isAdmin 仍为 true，显示管理员界面。
 const isAdmin = computed(() => store.state.role === 'admin')
@@ -164,8 +180,6 @@ const addRules = {
 // ---------- 批量检测 ----------
 const scanVisible = ref(false)
 const scanType = ref('index')
-const scanTerminalVisible = ref(false)
-const scanTaskId = ref('')
 
 // ---------- 生命周期 ----------
 onMounted(async () => {
@@ -267,9 +281,8 @@ async function handleBatchScan() {
     })
     ElMessage.success(`已开始检测 ${res.data.queued} 条链接`)
     scanVisible.value = false
-    // 打开扫描活动窗口
-    scanTaskId.value = res.data.task_id
-    scanTerminalVisible.value = true
+    // 触发全局扫描面板（由 App.vue 的 AppLayout 提供）
+    if (openScanPanel) openScanPanel(res.data.task_id)
     // 刷新列表（扫描结果会异步更新）
     setTimeout(() => fetchList(), 5000)
   } catch (err) {
@@ -279,9 +292,39 @@ async function handleBatchScan() {
   }
 }
 
-function distStatusType(s) {
-  return { synced: 'success', pending: 'warning', failed: 'danger' }[s] || 'info'
+// 单条重新扫描：触发全局扫描面板
+async function rescanOne(row) {
+  try {
+    const res = await api.post('/admin/distributions/batch-scan', {
+      distribution_ids: [row.id],
+      scan_type: 'index',
+    })
+    ElMessage.success(`已开始检测: ${row.content_title || row.remote_url}`)
+    if (openScanPanel) openScanPanel(res.data.task_id)
+  } catch (err) {
+    ElMessage.error('扫描失败: ' + (err.response?.data?.detail || err.message))
+  }
 }
+
+function viewCitation(row) {
+  ElMessage.info(`采信详情功能开发中: ${row.content_title || row.remote_url}`)
+}
+
+function editRow(row) {
+  ElMessage.info(`编辑功能开发中: ${row.content_title || row.remote_url}`)
+}
+
+// 从 row.index_status（如 {baidu: 'indexed', ...}）聚合三态：
+// 全部未收录 → pending；部分收录 → partial；全部收录 → indexed
+function getStatusType(row) {
+  const status = row.index_status || {}
+  const engines = ['baidu', 'toutiao', 'sogou', 'so360', 'bing']
+  const indexed = engines.filter(e => status[e] === 'indexed')
+  if (indexed.length === 0) return 'pending'
+  if (indexed.length < engines.length) return 'partial'
+  return 'indexed'
+}
+
 function formatTime(iso) {
   if (!iso) return '—'
   return new Date(iso).toLocaleString('zh-CN', { hour12: false })
@@ -307,5 +350,44 @@ function formatTime(iso) {
   margin-top: 12px; padding: 10px 12px; background: #f4f4f5;
   border-radius: 4px; color: #909399; font-size: 13px;
   display: flex; align-items: center; gap: 6px;
+}
+
+/* 内联操作按钮组 */
+.row-actions { display: flex; gap: 4px; }
+.row-actions .el-button { padding: 4px; }
+
+/* === 移动端：表格转卡片式 === */
+@media (max-width: 768px) {
+  /* 隐藏表头 */
+  :deep(.el-table .el-table__header-wrapper) { display: none; }
+  /* 行转卡片 */
+  :deep(.el-table .el-table__row) {
+    display: flex;
+    flex-wrap: wrap;
+    padding: var(--space-sm);
+    border: 1px solid var(--ink-line);
+    border-radius: var(--radius-md);
+    margin-bottom: var(--space-sm);
+  }
+  /* 单元格转行：label 在左、value 在右 */
+  :deep(.el-table .el-table__cell) {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100% !important;
+    border: none !important;
+    padding: 4px 0 !important;
+  }
+  /* 通过 data-label 显示列名（需列配置 data-label，否则为空） */
+  :deep(.el-table .el-table__cell::before) {
+    content: attr(data-label);
+    font-size: 11px;
+    color: var(--mute);
+    margin-right: var(--space-sm);
+  }
+  .row-actions .el-button {
+    min-width: var(--touch-target);
+    min-height: var(--touch-target);
+  }
 }
 </style>
