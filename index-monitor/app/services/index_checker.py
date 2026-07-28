@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import List, Dict, Tuple
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.geoflow_models import GeoflowArticleDistribution
+from app.integration.geoflow import GeoflowRepository
 from app.models.manual_distribution import ManualDistribution
 from app.models.index_result import IndexResult, IndexHistory
 from app.models.client import ClientSite
@@ -24,16 +24,9 @@ class IndexChecker:
         list[tuple[str, str]]
             [(url, client_id), ...]
         """
-        # 1. 查 GEOFlow 分发记录（public.article_distributions）
-        geoflow_result = await self.db.execute(
-            select(GeoflowArticleDistribution.remote_url)
-            .where(
-                GeoflowArticleDistribution.status == "synced",
-                GeoflowArticleDistribution.action != "delete",
-                GeoflowArticleDistribution.remote_url.isnot(None),
-            )
-        )
-        geoflow_urls = {row[0] for row in geoflow_result.fetchall()}
+        # 1. 查 GEOFlow 分发记录（通过防腐层）
+        repo = GeoflowRepository(self.db)
+        geoflow_urls = set(await repo.get_synced_distribution_urls())
 
         # 2. 查手动录入记录
         manual_result = await self.db.execute(
