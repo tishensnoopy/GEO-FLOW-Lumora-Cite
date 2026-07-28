@@ -19,12 +19,8 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.integration.geoflow import GeoflowRepository
 from app.models.client import ClientSite
-from app.models.geoflow_models import (
-    GeoflowArticle,
-    GeoflowArticleDistribution,
-    GeoflowDistributionChannel,
-)
 from app.models.index_result import IndexResult
 from app.models.manual_distribution import ManualDistribution
 from app.utils.validators import normalize_domain
@@ -80,42 +76,31 @@ class DistributionQueryService:
         与序列化字段 ``distributed_at`` 同源。``date_from`` 含当天起始，
         ``date_to`` 含当天结束（用 < 次日零点比较）。
         """
-        query = (
-            select(
-                GeoflowArticleDistribution,
-                GeoflowArticle,
-                GeoflowDistributionChannel,
-                IndexResult,
-            )
-            .join(GeoflowArticle, GeoflowArticle.id == GeoflowArticleDistribution.article_id)
-            .outerjoin(
-                GeoflowDistributionChannel,
-                GeoflowDistributionChannel.id == GeoflowArticleDistribution.distribution_channel_id,
-            )
-            .outerjoin(IndexResult, IndexResult.url == GeoflowArticleDistribution.remote_url)
-            .where(
-                GeoflowArticleDistribution.status == "synced",
-                GeoflowArticleDistribution.action != "delete",
-                GeoflowArticleDistribution.remote_url.isnot(None),
-            )
+        # 通过防腐层查三表 join（不含 IndexResult——那是 LumoraCite 自己的表）
+        repo = GeoflowRepository(self.db)
+        geoflow_dtos = await repo.get_distributions_with_article(
+            date_from=_date_from_lower_bound(date_from) if date_from is not None else None,
+            date_to=_date_to_upper_bound(date_to) if date_to is not None else None,
         )
-        # C10：日期范围过滤（distributed_at = dist.created_at）
-        if date_from is not None:
-            query = query.where(
-                GeoflowArticleDistribution.created_at >= _date_from_lower_bound(date_from)
+
+        # 单独查 IndexResult，建 url→result 映射
+        index_result_map: dict[str, IndexResult] = {}
+        if geoflow_dtos:
+            urls = [dto.distribution.remote_url for dto in geoflow_dtos]
+            index_result_rows = await self.db.execute(
+                select(IndexResult).where(IndexResult.url.in_(urls))
             )
-        if date_to is not None:
-            query = query.where(
-                GeoflowArticleDistribution.created_at < _date_to_upper_bound(date_to)
-            )
-        result = await self.db.execute(query)
-        rows = result.fetchall()
+            for ir in index_result_rows.scalars().all():
+                index_result_map[ir.url] = ir
 
         domain_map = await self._build_domain_map()
 
         records = []
-        for row in rows:
-            dist, article, channel, index_result = row
+        for dto in geoflow_dtos:
+            dist = dto.distribution
+            article = dto.article
+            channel = dto.channel
+            index_result = index_result_map.get(dist.remote_url)
             domain = self._extract_domain(dist.remote_url)
             matched = domain_map.get(domain)
             if matched is None:
@@ -333,14 +318,10 @@ class DistributionQueryService:
         if existing_manual.scalar_one_or_none():
             raise DistributionConflictError(f"URL 已存在（手动录入）：{remote_url}")
 
-        # 检查 GEOFlow 表重复
-        existing_geoflow = await self.db.execute(
-            select(GeoflowArticleDistribution).where(
-                GeoflowArticleDistribution.remote_url == remote_url,
-                GeoflowArticleDistribution.status == "synced",
-            )
-        )
-        if existing_geoflow.scalar_one_or_none():
+        # 检查 GEOFlow 表重复（通过防腐层取 synced url 列表，Python 层匹配）
+        repo = GeoflowRepository(self.db)
+        synced_urls = await repo.get_synced_distribution_urls()
+        if remote_url in synced_urls:
             raise DistributionConflictError(f"URL 已存在（GEOFlow 推送）：{remote_url}")
 
         record = ManualDistribution(
