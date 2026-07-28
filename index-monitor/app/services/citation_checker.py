@@ -23,7 +23,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.geoflow_models import GeoflowArticleDistribution
+from app.integration.geoflow import GeoflowRepository
 from app.models.manual_distribution import ManualDistribution
 from app.models.citation_result import CitationResult
 from app.models.index_result import IndexResult
@@ -126,15 +126,8 @@ class CitationChecker:
         筛选条件：GEOFlow 分发 + 手动录入 status='synced' 且 citation_results 中无记录。
         返回 [(remote_url, client_id), ...]。
         """
-        geoflow_result = await self.db.execute(
-            select(GeoflowArticleDistribution.remote_url)
-            .where(
-                GeoflowArticleDistribution.status == "synced",
-                GeoflowArticleDistribution.action != "delete",
-                GeoflowArticleDistribution.remote_url.isnot(None),
-            )
-        )
-        geoflow_urls = {row[0] for row in geoflow_result.fetchall()}
+        repo = GeoflowRepository(self.db)
+        geoflow_urls = set(await repo.get_synced_distribution_urls())
 
         manual_result = await self.db.execute(
             select(ManualDistribution.remote_url, ManualDistribution.client_id)
