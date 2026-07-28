@@ -63,6 +63,12 @@ app.include_router(distribution_router, prefix="/api/v1")
 from app.api.export_routes import router as export_router
 app.include_router(export_router, prefix="/api/v1")
 
+# Dashboard 趋势数据 API（设计文档 Dashboard StatCard sparkline + 同比数据源）：
+# 路由内部 prefix="/admin/dashboard"，配合此处的 "/api/v1" 前缀，
+# 最终路径为 /api/v1/admin/dashboard/trend。
+from app.api.trend_routes import router as trend_router
+app.include_router(trend_router, prefix="/api/v1")
+
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "version": settings.APP_VERSION}
