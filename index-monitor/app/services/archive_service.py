@@ -14,16 +14,12 @@
 import json
 import logging
 
-from sqlalchemy import select, exists
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.integration.geoflow import GeoflowRepository
 from app.models.archived_distribution import ArchivedDistribution
 from app.models.client import ClientSite
-from app.models.geoflow_models import (
-    GeoflowArticle,
-    GeoflowArticleDistribution,
-    GeoflowDistributionChannel,
-)
 # 注：IndexResult / CitationResult 顶部 import 保留（控制者裁定 5），
 # 原计划用于 scheduled_monthly_archive（不在任务 9 范围，不实现）。
 from app.models.index_result import IndexResult  # noqa: F401
@@ -64,27 +60,28 @@ class ArchiveService:
         不是 status=="deleted"（status 默认是 queued/synced）。
         """
         # D06：查 action=='delete' 的记录
-        # 去重：排除已归档的 remote_url（scheduler 每日运行，避免重复归档）
-        query = (
-            select(GeoflowArticleDistribution, GeoflowArticle, GeoflowDistributionChannel)
-            .join(GeoflowArticle, GeoflowArticle.id == GeoflowArticleDistribution.article_id)
-            .outerjoin(
-                GeoflowDistributionChannel,
-                GeoflowDistributionChannel.id == GeoflowArticleDistribution.distribution_channel_id,
-            )
-            .where(
-                GeoflowArticleDistribution.action == "delete",  # D06
-                GeoflowArticleDistribution.remote_url.isnot(None),
-                ~exists(select(ArchivedDistribution).where(
-                    ArchivedDistribution.remote_url == GeoflowArticleDistribution.remote_url
-                )),
-            )
+        # 通过防腐层查 action='delete' 的三表 join 结果
+        repo = GeoflowRepository(self.db)
+        composite_dtos = await repo.get_deleted_distributions_with_article()
+
+        # 查已归档 url 集合（LumoraCite 自己的表，留在调用方）
+        archived_result = await self.db.execute(
+            select(ArchivedDistribution.remote_url)
         )
-        rows = (await self.db.execute(query)).fetchall()
+        archived_urls = {row[0] for row in archived_result.fetchall()}
+
+        # Python 层过滤：排除已归档的 url（原 SQL 的 ~exists 逻辑）
+        composite_dtos = [
+            dto for dto in composite_dtos
+            if dto.distribution.remote_url not in archived_urls
+        ]
         domain_map = await self._build_domain_map()
 
         count = 0
-        for dist, article, channel in rows:
+        for dto in composite_dtos:
+            dist = dto.distribution
+            article = dto.article
+            channel = dto.channel  # 当前未消费，但保留以备将来用
             domain = normalize_domain(dist.remote_url)
             client_id = domain_map.get(domain)
             if client_id is None:
@@ -104,7 +101,7 @@ class ArchiveService:
                 content_slug=article.slug if article else None,
                 content_excerpt=article.excerpt if article else None,
                 content_body=article.content if article else None,
-                content_keywords=self._parse_keywords(article.keywords),  # D02：Text→JSON
+                content_keywords=self._parse_keywords(article.keywords if article else None),  # D02：Text→JSON
                 meta_description=article.meta_description if article else None,
                 original_keyword=article.original_keyword if article else None,
                 published_at=article.published_at if article else None,
