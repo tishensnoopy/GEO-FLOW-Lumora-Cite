@@ -108,6 +108,7 @@ class DistributionChannelDTO:
     id: int
     name: str | None
     domain: str | None
+    channel_type: str | None  # distribution_query._serialize_geoflow 第 152 行消费
 
 @dataclass(frozen=True)
 class DistributionWithArticleDTO:
@@ -125,12 +126,14 @@ DTO 只暴露 LumoraCite 实际使用的字段——GEOFlow 加新字段不影�
 
 | 仓储方法 | 对应当前代码 | 业务语义 |
 |---------|-------------|---------|
-| `get_synced_distribution_urls()` | `citation_checker.py:130-134`, `index_checker.py:29-33` | 取所有 `status='synced'` 且 `action!='delete'` 的 `remote_url` |
-| `get_distributions_with_article(channel_id?, date_range?, page?)` | `distribution_query.py:85-93` | 三表 join 查询，带过滤和分页 |
-| `get_distributions_for_archive()` | `archive_service.py:69-79` | join 查询用于归档对比（检查已删除的 GEOFlow 分发） |
-| `get_distribution_by_ids(ids)` | `admin_routes.py:605-607` | 按 id 批量查分发记录 |
-| `get_distribution_trend(start_date)` | `trend_routes.py:108-111` | 按天聚合 created_at 统计趋势 |
-| `get_deleted_distribution_domains()` | `scheduler.py:134` | 查 `action='delete'` 的 domain |
+| `get_synced_distribution_urls()` | `citation_checker.py:130-134`, `index_checker.py:29-33` | 取所有 `status='synced'` 且 `action!='delete'` 且 `remote_url` 非空的 `remote_url` 列表 |
+| `get_distributions_with_article(date_from?, date_to?)` | `distribution_query.py:85-128` | 三表 join 查询，按日期范围过滤。**不含 IndexResult join 和 client_id 过滤——那些留在调用方**（依赖 LumoraCite 自身表） |
+| `get_deleted_distributions_with_article()` | `archive_service.py:68-82` | 三表 join 查询 `action='delete'` 的记录。**不含 `~exists(ArchivedDistribution)` 过滤——留在调用方**（依赖 LumoraCite 自身表） |
+| `get_distribution_by_ids(ids)` | `admin_routes.py:603-610` | 按 id 批量查，`remote_url` 非空过滤，返回 `DistributionDTO` 列表 |
+| `get_distribution_trend(start_date)` | `trend_routes.py:107-117` | 按天聚合 `created_at`，返回 `[(date, count), ...]` |
+| `get_distribution_count_by_date(start_date)` | `trend_routes.py:107-117` | （与 trend 同一查询，返回日期→计数的 dict，供 trend_routes 消费） |
+
+**注**：`get_distribution_trend` 和 `get_distribution_count_by_date` 是同一底层查询的两种返回形态——前者返回原始 `(date, count)` 行，后者返回 dict。实际实现只保留一个（`get_distribution_count_by_date` 返回 dict），trend_routes 直接消费 dict。原规格列两个是为了说明同一查询的两个消费点，实现时合并为一个方法。
 
 ### 4. 契约测试形态
 
