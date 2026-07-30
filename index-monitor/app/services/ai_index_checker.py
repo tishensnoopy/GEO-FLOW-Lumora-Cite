@@ -22,6 +22,7 @@ from app.models.ai_index_result import AIIndexResult
 from app.models.client import ClientSite
 from app.models.manual_distribution import ManualDistribution
 from app.services.citation_check.providers import adapter_catalog
+from app.services.scan_task_manager import update_progress
 from app.utils.validators import normalize_domain
 
 logger = logging.getLogger(__name__)
@@ -248,3 +249,73 @@ class AIIndexChecker:
                 checked_at=datetime.now(timezone.utc),
             ))
         await self.db.commit()
+
+    async def check_all_pending(
+        self, *, task_id: Optional[str] = None, concurrency: int = 3
+    ) -> dict:
+        """批量检测所有待检测的 URL×模型组合（增量）。
+
+        并发执行，单条失败不影响其他。
+
+        Returns:
+            {"total", "success", "failed", "failures"}
+            failures 项：{"url", "model", "error"}
+        """
+        pending = await self.get_pending_urls()
+        total = len(pending)
+        if total == 0:
+            return {"total": 0, "success": 0, "failed": 0, "failures": []}
+
+        if task_id:
+            try:
+                update_progress(task_id, total=total)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("update_progress(total) 失败（已忽略）: %s", exc)
+
+        from app.core.database import async_session
+        semaphore = asyncio.Semaphore(max(1, concurrency))
+        results: list[dict] = []
+        processed = 0
+
+        async def _check_one(url: str, client_id: str, model: str) -> None:
+            nonlocal processed
+            async with semaphore:
+                # 独立 session：AsyncSession 并发不安全
+                async with async_session() as task_db:
+                    checker = AIIndexChecker(task_db)
+                    try:
+                        await checker.check_url(url, model, task_id=task_id)
+                        results.append({"ok": True, "url": url, "model": model})
+                    except Exception as exc:  # noqa: BLE001
+                        logger.error("收录检测失败 %s [%s]: %s", url, model, exc)
+                        results.append({
+                            "ok": False, "url": url, "model": model, "error": str(exc),
+                        })
+                processed += 1
+                if task_id:
+                    try:
+                        update_progress(
+                            task_id,
+                            processed=processed,
+                            success=sum(1 for r in results if r["ok"]),
+                            failed=sum(1 for r in results if not r["ok"]),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("update_progress 失败（已忽略）: %s", exc)
+
+        await asyncio.gather(
+            *[_check_one(url, cid, model) for url, cid, model in pending]
+        )
+
+        success = sum(1 for r in results if r["ok"])
+        failures = [
+            {"url": r["url"], "model": r["model"], "error": r["error"]}
+            for r in results if not r["ok"]
+        ]
+
+        return {
+            "total": total,
+            "success": success,
+            "failed": len(failures),
+            "failures": failures,
+        }
