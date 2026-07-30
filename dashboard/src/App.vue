@@ -14,11 +14,12 @@
 </template>
 
 <script setup>
-import { ref, computed, provide } from 'vue'
+import { ref, computed, provide, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useStore } from 'vuex'
 import { ElMessage } from 'element-plus'
 import AppLayout from '@/components/AppLayout.vue'
+import { api } from '@/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -33,12 +34,48 @@ const scanPanelVisible = ref(false)
 const runningTaskCount = ref(0)
 const scanStatus = ref('idle')
 
-// 信号条事件（从全局获取，暂时用 mock）
-const signalEvents = ref([
-  { time: '10:32', engine: '百度', action: '收录', title: '《内容营销新趋势》', status: 'indexed' },
-  { time: '10:28', engine: 'DeepSeek', action: '采信', title: '《SEO 实战指南》', status: 'cited' },
-  { time: '10:15', engine: '头条', action: '待检测', title: '《GEO 优化手册》', status: 'pending' },
-])
+// 信号条事件：从后端拉取最近的分发记录动态生成，不再写死。
+// 拉取失败时回退为空数组（走马灯条不显示事件项），避免误导用户。
+const signalEvents = ref([])
+
+// 引擎中文映射 + 状态映射，用于把分发记录转成走马灯事件
+const ENGINE_LABELS = { baidu: '百度', toutiao: '头条', sogou: '搜狗', so360: '360', bing: '必应' }
+
+async function fetchSignalEvents() {
+  // 未登录（如登录页）不拉取
+  if (!localStorage.getItem('token')) return
+  try {
+    const endpoint = isAdmin.value ? '/admin/distributions' : '/distributions'
+    const resp = await api.get(endpoint, { params: { page: 1, page_size: 10 } })
+    const items = resp.data.items || []
+    signalEvents.value = items.slice(0, 8).map(item => {
+      // 从 index_status 聚合出主要引擎与状态
+      const idx = item.index_status || {}
+      const engines = Object.keys(idx)
+      // 优先取已收录的引擎，否则取第一个
+      const indexedEngine = engines.find(e => idx[e] === 'indexed')
+      const engineKey = indexedEngine || engines[0] || 'baidu'
+      const st = idx[engineKey]
+      let action = '待检测', status = 'pending'
+      if (st === 'indexed') { action = '收录'; status = 'indexed' }
+      else if (st === 'not_indexed' || st === 'failed') { action = '未收录'; status = 'failed' }
+      else if (st === 'checking') { action = '检测中'; status = 'pending' }
+      // 若有采信记录，额外标注
+      if (item.citation_status === 'cited') { action = '采信'; status = 'cited' }
+      const timeStr = item.updated_at || item.created_at || ''
+      return {
+        time: timeStr ? new Date(timeStr).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }) : '--:--',
+        engine: ENGINE_LABELS[engineKey] || engineKey,
+        action,
+        title: item.content_title ? `《${item.content_title}》` : (item.remote_url || ''),
+        status,
+      }
+    })
+  } catch (e) {
+    // 静默失败：不影响主界面，保留上次数据
+    console.debug('拉取信号条事件失败', e)
+  }
+}
 
 // 暴露给子组件触发扫描面板（通过 provide/inject 或事件总线）
 function openScanPanel(taskId) {
@@ -48,6 +85,16 @@ function openScanPanel(taskId) {
   scanStatus.value = 'running'
 }
 provide('openScanPanel', openScanPanel)
+
+let signalTimer = null
+onMounted(() => {
+  if (showLayout.value) fetchSignalEvents()
+  // 每 60 秒刷新一次信号条事件，保持走马灯展示近期活动
+  signalTimer = setInterval(fetchSignalEvents, 60000)
+})
+onUnmounted(() => {
+  if (signalTimer) clearInterval(signalTimer)
+})
 
 function logout() {
   store.dispatch('logout')

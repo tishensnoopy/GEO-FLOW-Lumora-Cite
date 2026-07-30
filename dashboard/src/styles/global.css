@@ -19,24 +19,26 @@ html, body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* 明亮 SaaS 渐变背景：整页微妙靛蓝→紫晕染 */
 #app {
   min-height: 100vh;
-  background: var(--paper);
+  background: var(--grad-bg);
+  background-attachment: fixed;
 }
 
-/* === 标题默认使用衬线体 === */
-/* 注意：不重置 margin，避免影响其他页面 h2 的间距（各组件 scoped 样式自行控制间距） */
+/* === 标题：改用 Inter 无衬线（现代 SaaS 风），取消衬线体 === */
 h1, h2, h3 {
   font-family: var(--font-display);
   font-weight: 700;
   color: var(--ink);
+  letter-spacing: -0.01em;
 }
 
-/* === 数字默认使用衬线体（编辑报告感） === */
-/* 仅对 .num-serif 类生效，避免全局污染 input 数字 */
+/* === 数字：用 Inter + lining 数字，更现代 === */
 .num-serif {
   font-family: var(--font-display);
-  font-variant-numeric: lining-nums;  /* 衬线体配 lining 数字，更现代 */
+  font-variant-numeric: lining-nums;
+  font-feature-settings: "tnum";
 }
 
 /* === 时间戳/表格数字用等宽体 === */
@@ -45,27 +47,46 @@ h1, h2, h3 {
   font-variant-numeric: tabular-nums;
 }
 
-/* === Element Plus 组件级覆盖（变量已通过 :root 覆盖，此处仅微调） === */
-/* 按钮圆角收紧，呼应"报告"质感 */
+/* === Element Plus 组件级覆盖 === */
+/* 按钮圆角加大，现代感 */
 .el-button {
   border-radius: var(--radius-md);
   font-weight: 500;
+  transition: all var(--transition-base);
 }
+/* 主按钮：品牌渐变 —— SaaS 现代风核心视觉 */
 .el-button--primary {
-  background: var(--signal);
-  border-color: var(--signal);
+  background: var(--grad-brand-2);
+  border-color: transparent;
+  box-shadow: 0 1px 2px rgba(99, 102, 241, 0.2), 0 4px 12px rgba(99, 102, 241, 0.15);
 }
 .el-button--primary:hover {
-  background: var(--el-color-primary-dark-2);
-  border-color: var(--el-color-primary-dark-2);
+  background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%);
+  border-color: transparent;
+  box-shadow: 0 4px 16px rgba(99, 102, 241, 0.35);
+  transform: translateY(-1px);
+}
+.el-button--primary:active {
+  transform: translateY(0);
 }
 
-/* 输入框圆角收紧 */
+/* 输入框圆角加大 */
 .el-input__wrapper {
   border-radius: var(--radius-md);
+  transition: box-shadow var(--transition-base);
+}
+.el-input__wrapper.is-focus {
+  box-shadow: 0 0 0 1px var(--signal) inset, var(--shadow-glow);
 }
 
-/* 菜单激活态用 signal 而非 Element 默认蓝 */
+/* 卡片圆角加大、阴影柔和 */
+.el-card {
+  border-radius: var(--radius-lg);
+  border-color: var(--ink-line);
+  box-shadow: var(--shadow-card);
+}
+
+/* 菜单激活态用 signal 靛蓝 */
 .el-menu--horizontal > .el-menu-item.is-active {
   border-bottom-color: var(--signal) !important;
   color: var(--signal) !important;
@@ -76,14 +97,32 @@ h1, h2, h3 {
 }
 
 /* Tab 激活色 */
-.el-tabs__item.is-active { color: var(--signal); }
-.el-tabs__active-bar { background-color: var(--signal); }
+.el-tabs__item.is-active { color: var(--signal); font-weight: 600; }
+.el-tabs__active-bar { background-color: var(--signal); height: 3px; border-radius: var(--radius-pill); }
 
-/* 滚动条：细线，纸感 */
-::-webkit-scrollbar { width: 8px; height: 8px; }
+/* 标签圆角胶囊化 */
+.el-tag {
+  border-radius: var(--radius-pill);
+  font-weight: 500;
+}
+
+/* 滚动条：现代细线 + 渐变拇指 */
+::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: var(--mute);
+  background: linear-gradient(180deg, #CBD5E1 0%, #94A3B8 100%);
   border-radius: var(--radius-pill);
-  opacity: 0.3;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #94A3B8 0%, #64748B 100%);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+
+/* 选中文本配色 */
+::selection {
+  background: rgba(99, 102, 241, 0.2);
+  color: var(--ink);
 }

@@ -62,16 +62,19 @@ const scanPanelVisible = computed({
 <style scoped>
 .app-layout {
   min-height: 100vh;
-  background: var(--paper);
+  background: var(--grad-bg);
   display: flex;
   flex-direction: column;
 }
 
-/* 顶栏 */
+/* 顶栏：玻璃态（半透明白 + 模糊 + 渐变细边） */
 .topbar {
   height: var(--topbar-height);
-  background: var(--surface);
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: saturate(180%) blur(14px);
+  -webkit-backdrop-filter: saturate(180%) blur(14px);
   border-bottom: 1px solid var(--ink-line);
+  box-shadow: 0 1px 0 rgba(99, 102, 241, 0.04);
   display: flex;
   align-items: center;
   gap: var(--space-md);
@@ -84,18 +87,37 @@ const scanPanelVisible = computed({
   display: flex;
   align-items: baseline;
   gap: var(--space-xs);
+  /* 品牌区宽度对齐侧栏宽度，使走马灯条从侧栏右边缘开始，
+     不再入侵左侧菜单区。宽度与 SidebarNav 的 --sidebar-width 一致。 */
+  width: var(--sidebar-width);
+  min-width: var(--sidebar-width);
   flex-shrink: 0;
+  border-right: 1px solid var(--ink-line);
+  padding-right: var(--space-md);
+  box-sizing: border-box;
 }
 .brand-text {
   font-family: var(--font-display);
-  font-size: 20px;
-  font-weight: 700;
+  font-size: 21px;
+  font-weight: 800;
   color: var(--ink);
+  white-space: nowrap;
+  letter-spacing: -0.02em;
 }
-.brand-text .accent { color: var(--signal); }
+/* "氪"字用品牌渐变，呼应主视觉 */
+.brand-text .accent {
+  background: var(--grad-brand-2);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
 .brand-sub {
   font-size: var(--fs-small);
   color: var(--mute);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
 }
 
 /* 主体 */
@@ -111,10 +133,16 @@ const scanPanelVisible = computed({
   padding-bottom: env(safe-area-inset-bottom, 0);
 }
 
-/* 移动端：顶栏精简 */
+/* 移动端：顶栏精简，侧栏隐藏，品牌区不再固定宽度 */
 @media (max-width: 768px) {
   .topbar {
     padding: 0 var(--space-sm);
+  }
+  .topbar-brand {
+    width: auto;
+    min-width: 0;
+    border-right: none;
+    padding-right: 0;
   }
   .brand-sub { display: none; }
   .main-content {

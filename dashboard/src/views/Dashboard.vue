@@ -143,29 +143,22 @@ const stats = ref({
 const indexRate = computed(() => (stats.value.avg_index_rate * 100).toFixed(1))
 const isAdmin = computed(() => store.state.role === 'admin')
 
-// 信号条 mock 事件（真实数据接入前占位；后续可从 /distributions 实时拉取）
-const signalEvents = ref([
-  { time: '10:32', engine: '百度',     action: '收录',   title: '《内容营销新趋势》', status: 'indexed' },
-  { time: '10:28', engine: 'DeepSeek', action: '采信',   title: '《SEO 实战指南》',  status: 'cited' },
-  { time: '10:15', engine: '头条',     action: '待检测', title: '《GEO 优化手册》',  status: 'pending' },
-  { time: '10:02', engine: '必应',     action: '收录',   title: '《AI 搜索原理》',   status: 'indexed' },
-  { time: '09:48', engine: '千问',     action: '采信',   title: '《长尾词策略》',    status: 'cited' },
-  { time: '09:30', engine: '搜狗',     action: '未收录', title: '《外链建设》',      status: 'failed' },
-])
+// 信号条事件已由 App.vue 统一拉取并经 AppLayout 传给 SignalBar，本页不再维护。
 
-// === ECharts "Ink & Signal" 调色板 ===
+// === ECharts "SaaS Spectrum" 多彩调色板 ===
 const ECHARTS_PALETTE = {
-  signal: '#0D9488',
-  alert: '#E76F51',
-  depth: '#4C1D95',
-  ink: '#1A1A1A',
-  mute: '#78716C',
-  series: ['#0D9488', '#4C1D95', '#E76F51', '#78716C', '#1A1A1A'],
-  pie: ['#0D9488', '#4C1D95', '#E76F51', '#78716C', '#C9C5BD'],
+  signal: '#6366F1',
+  alert: '#EF4444',
+  depth: '#8B5CF6',
+  ink: '#0F172A',
+  mute: '#64748B',
+  // 多彩系列色：靛蓝/紫/粉/青/翠，现代 SaaS 仪表盘标准色板
+  series: ['#6366F1', '#8B5CF6', '#EC4899', '#06B6D4', '#10B981'],
+  pie: ['#6366F1', '#8B5CF6', '#EC4899', '#06B6D4', '#94A3B8'],
 }
 
 const ECHARTS_BASE = {
-  textStyle: { fontFamily: 'Inter, sans-serif', color: '#1A1A1A' },
+  textStyle: { fontFamily: 'Inter, sans-serif', color: '#0F172A' },
   color: ECHARTS_PALETTE.series,
 }
 
@@ -236,14 +229,17 @@ async function fetchStats() {
 
 function initCharts() {
   const baseAxis = {
-    axisLine: { lineStyle: { color: '#78716C' } },
-    axisLabel: { color: '#78716C', fontFamily: 'JetBrains Mono, monospace', fontSize: 11 },
-    splitLine: { lineStyle: { color: 'rgba(26,26,26,0.06)' } },
+    axisLine: { lineStyle: { color: '#CBD5E1' } },
+    axisLabel: { color: '#64748B', fontFamily: 'JetBrains Mono, monospace', fontSize: 11 },
+    splitLine: { lineStyle: { color: 'rgba(15,23,42,0.06)' } },
   }
   const darkTooltip = {
-    backgroundColor: '#1A1A1A',
-    borderColor: '#1A1A1A',
-    textStyle: { color: '#FAFAF7' },
+    backgroundColor: 'rgba(15, 23, 42, 0.92)',
+    borderColor: 'rgba(99, 102, 241, 0.3)',
+    textStyle: { color: '#F8FAFC' },
+    borderRadius: 8,
+    padding: [8, 12],
+    extraCssText: 'box-shadow: 0 8px 24px rgba(15,23,42,0.18); backdrop-filter: blur(8px);',
   }
 
   // 趋势图：多引擎折线，signal 主色
@@ -252,7 +248,7 @@ function initCharts() {
     chart.setOption({
       ...ECHARTS_BASE,
       tooltip: { trigger: 'axis', ...darkTooltip },
-      legend: { data: ['百度', '头条', '搜狗', '360', '必应'], textStyle: { color: '#1A1A1A' }, bottom: 0 },
+      legend: { data: ['百度', '头条', '搜狗', '360', '必应'], textStyle: { color: '#0F172A' }, bottom: 0 },
       grid: { left: 40, right: 20, top: 20, bottom: 40 },
       xAxis: { type: 'category', data: ['7/19', '7/20', '7/21', '7/22', '7/23', '7/24', '7/25'], ...baseAxis },
       yAxis: { type: 'value', ...baseAxis },
@@ -273,13 +269,13 @@ function initCharts() {
     chart.setOption({
       ...ECHARTS_BASE,
       tooltip: { trigger: 'item', ...darkTooltip },
-      legend: { bottom: 0, textStyle: { color: '#1A1A1A' } },
+      legend: { bottom: 0, textStyle: { color: '#0F172A' } },
       series: [{
         type: 'pie',
         radius: ['35%', '65%'],
         center: ['50%', '45%'],
         itemStyle: { borderColor: '#FFFFFF', borderWidth: 2 },
-        label: { color: '#1A1A1A' },
+        label: { color: '#0F172A' },
         data: [
           { value: 35, name: '千问',     itemStyle: { color: ECHARTS_PALETTE.pie[0] } },
           { value: 25, name: '豆包',     itemStyle: { color: ECHARTS_PALETTE.pie[1] } },
@@ -292,7 +288,7 @@ function initCharts() {
     chartInstances.pie = chart
   }
 
-  // 柱状图：引擎收录对比
+  // 柱状图：引擎收录对比（渐变柱体）
   if (barChartRef.value) {
     const chart = echarts.init(barChartRef.value)
     chart.setOption({
@@ -304,7 +300,13 @@ function initCharts() {
       series: [{
         type: 'bar',
         data: [25, 15, 8, 7, 16],
-        itemStyle: { color: ECHARTS_PALETTE.signal, borderRadius: [2, 2, 0, 0] },
+        itemStyle: {
+          borderRadius: [6, 6, 0, 0],
+          color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [
+            { offset: 0, color: '#6366F1' },
+            { offset: 1, color: '#8B5CF6' },
+          ] },
+        },
         barWidth: '50%',
       }],
     })
@@ -317,12 +319,12 @@ function initCharts() {
     chart.setOption({
       ...ECHARTS_BASE,
       tooltip: { trigger: 'item', ...darkTooltip },
-      legend: { bottom: 0, textStyle: { color: '#1A1A1A' } },
+      legend: { bottom: 0, textStyle: { color: '#0F172A' } },
       series: [{
         type: 'pie',
         radius: ['45%', '70%'],
         itemStyle: { borderColor: '#FFFFFF', borderWidth: 2 },
-        label: { color: '#1A1A1A' },
+        label: { color: '#0F172A' },
         data: [
           { value: 40, name: 'GEOFlow 推送', itemStyle: { color: ECHARTS_PALETTE.signal } },
           { value: 10, name: '手动录入',     itemStyle: { color: ECHARTS_PALETTE.mute } },
@@ -332,7 +334,7 @@ function initCharts() {
     chartInstances.ring = chart
   }
 
-  // 活动统计
+  // 活动统计（渐变柱体）
   if (activityChartRef.value) {
     const chart = echarts.init(activityChartRef.value)
     chart.setOption({
@@ -344,7 +346,13 @@ function initCharts() {
       series: [{
         type: 'bar',
         data: [12, 18, 15, 22, 28, 8, 5],
-        itemStyle: { color: ECHARTS_PALETTE.depth, borderRadius: [2, 2, 0, 0] },
+        itemStyle: {
+          borderRadius: [6, 6, 0, 0],
+          color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [
+            { offset: 0, color: '#8B5CF6' },
+            { offset: 1, color: '#EC4899' },
+          ] },
+        },
         barWidth: '50%',
       }],
     })
@@ -398,10 +406,10 @@ function onExportCreated(taskId) {
   gap: var(--space-xs);
   padding: var(--space-sm) var(--space-md);
   margin-bottom: var(--space-md);
-  background: rgba(201, 151, 0, 0.08);
-  border-left: 3px solid #C99700;
-  border-radius: var(--radius-sm);
-  color: #8a6800;
+  background: rgba(245, 158, 11, 0.08);
+  border-left: 3px solid var(--c-amber);
+  border-radius: var(--radius-md);
+  color: #92400E;
   font-size: var(--fs-small);
 }
 
@@ -425,20 +433,26 @@ function onExportCreated(taskId) {
   gap: var(--space-md);
 }
 .chart-card {
-  background: var(--surface);
+  background: var(--grad-surface);
   border: 1px solid var(--ink-line);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   padding: var(--space-md);
-  box-shadow: var(--paper-shadow);
+  box-shadow: var(--shadow-card);
   display: flex;
   flex-direction: column;
+  transition: box-shadow var(--transition-base), transform var(--transition-base);
+}
+.chart-card:hover {
+  box-shadow: var(--shadow-hover);
+  transform: translateY(-2px);
 }
 .chart-card h3 {
   margin: 0 0 var(--space-sm) 0;
   font-size: var(--fs-h2);
   color: var(--ink);
   position: relative;
-  padding-left: 12px;
+  padding-left: 14px;
+  letter-spacing: -0.01em;
 }
 .chart-card h3::before {
   content: '';
@@ -447,9 +461,9 @@ function onExportCreated(taskId) {
   top: 50%;
   transform: translateY(-50%);
   width: 4px;
-  height: 18px;
-  background: var(--signal);
-  border-radius: var(--radius-sm);
+  height: 20px;
+  background: var(--grad-brand);
+  border-radius: var(--radius-pill);
 }
 .chart-body { flex: 1; min-height: 240px; }
 

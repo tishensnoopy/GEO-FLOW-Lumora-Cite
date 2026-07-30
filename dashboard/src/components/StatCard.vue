@@ -61,11 +61,11 @@ const changeClass = computed(() => ({
 const changeArrow = computed(() => props.changeDirection === 'up' ? '↑' : '↓')
 
 const sparkColor = computed(() => ({
-  ink: '#1A1A1A',
-  signal: '#0D9488',
-  depth: '#4C1D95',
-  alert: '#E76F51',
-}[props.color] || '#0D9488'))
+  ink: '#0F172A',
+  signal: '#6366F1',
+  depth: '#8B5CF6',
+  alert: '#EF4444',
+}[props.color] || '#6366F1'))
 
 const sparkWidth = computed(() => props.featured ? 180 : 120)
 </script>
@@ -73,9 +73,9 @@ const sparkWidth = computed(() => props.featured ? 180 : 120)
 <style scoped>
 .stat-card {
   position: relative;
-  background: var(--surface);
+  background: var(--grad-surface);
   border: 1px solid var(--ink-line);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-card);
   display: flex;
   overflow: hidden;
@@ -83,25 +83,36 @@ const sparkWidth = computed(() => props.featured ? 180 : 120)
   cursor: default;
 }
 .stat-card:hover {
-  transform: translateY(-2px);
+  transform: translateY(-3px);
   box-shadow: var(--shadow-hover);
-  border-color: rgba(13, 148, 136, 0.2);
+  border-color: rgba(99, 102, 241, 0.25);
+}
+/* 特色卡片：顶部品牌渐变细条 */
+.stat-card.featured::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--grad-brand);
+  z-index: 1;
 }
 .color-bar {
-  width: 3px;
+  width: 4px;
   flex-shrink: 0;
 }
-.color-ink .color-bar { background: var(--ink); }
-.color-signal .color-bar { background: var(--signal); }
-.color-depth .color-bar { background: var(--depth); }
-.color-alert .color-bar { background: var(--alert); }
+.color-ink .color-bar { background: linear-gradient(180deg, #0F172A, #475569); }
+.color-signal .color-bar { background: var(--grad-brand-2); }
+.color-depth .color-bar { background: linear-gradient(180deg, #8B5CF6, #EC4899); }
+.color-alert .color-bar { background: linear-gradient(180deg, #EF4444, #F59E0B); }
 
 .card-body {
-  padding: var(--space-sm) var(--space-md);
+  padding: var(--space-md);
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 .card-header {
   display: flex;
@@ -111,11 +122,13 @@ const sparkWidth = computed(() => props.featured ? 180 : 120)
 .index-label {
   font-size: 10px;
   color: var(--mute);
-  letter-spacing: 0.1em;
+  letter-spacing: 0.12em;
+  font-weight: 600;
 }
 .card-label {
   font-size: var(--fs-small);
   color: var(--mute);
+  font-weight: 500;
 }
 .card-main {
   display: flex;
@@ -124,18 +137,22 @@ const sparkWidth = computed(() => props.featured ? 180 : 120)
 }
 .card-value {
   font-family: var(--font-display);
-  font-size: 28px;
-  font-weight: 700;
+  font-size: 30px;
+  font-weight: 800;
   line-height: 1.1;
   color: var(--ink);
+  letter-spacing: -0.02em;
+  font-variant-numeric: lining-nums;
 }
-.featured .card-value { font-size: 32px; }
+.featured .card-value { font-size: 36px; }
 .card-change {
   font-size: var(--fs-small);
-  font-weight: 600;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
 }
-.change-up { color: var(--signal); }
-.change-down { color: var(--alert); }
+.change-up { color: #059669; background: rgba(16, 185, 129, 0.12); }
+.change-down { color: #DC2626; background: rgba(239, 68, 68, 0.12); }
 
 .card-sparkline {
   margin: 2px 0;
@@ -149,12 +166,12 @@ const sparkWidth = computed(() => props.featured ? 180 : 120)
 }
 .submetric strong {
   color: var(--ink);
-  font-weight: 600;
+  font-weight: 700;
 }
 
 /* 移动端：卡片单列时增大内边距 */
 @media (max-width: 768px) {
-  .card-body { padding: var(--space-sm) var(--space-md); }
-  .card-value { font-size: 26px; }
+  .card-body { padding: var(--space-md); }
+  .card-value { font-size: 28px; }
 }
 </style>

@@ -119,7 +119,15 @@ const clientForm = reactive({
 // 开发预览：设置 token + role，跳转 Dashboard
 // mode='client' 用假 token（Dashboard 显示 mock 数据）
 // mode='admin' 用真实 admin JWT（可调 admin API，看真实数据）
-const ADMIN_DEV_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIiwicm9sZSI6ImFkbWluIiwidHlwZSI6ImFkbWluIiwibmFtZSI6ImFkbWluIiwiZXhwIjoxNzg1MjU3MjQ0fQ.SGb5RwFWOjEb1oucTeMieKF-MN7RDw709Ylv162rSbQ'
+//
+// ADMIN_DEV_TOKEN 用后端 SSO_JWT_SECRET 签发，exp 设到 2027-12-31 避免频繁过期。
+// 重新生成命令（在 index-monitor 容器内执行）：
+//   python -c "import jwt; from datetime import datetime,timezone; from app.core.config import settings; \
+//     print(jwt.encode({'sub':'1','role':'admin','type':'admin','name':'admin',\
+//     'exp':datetime(2027,12,31,tzinfo=timezone.utc)}, settings.SSO_JWT_SECRET, algorithm='HS256'))"
+// 注意：token 过期会导致走马灯无文字（/admin/distributions 401）+ admin API 全部失败，
+// 表现为"批量删除不执行"等假性 bug。若 dev 预览模式异常，先检查此 token 是否过期。
+const ADMIN_DEV_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIiwicm9sZSI6ImFkbWluIiwidHlwZSI6ImFkbWluIiwibmFtZSI6ImFkbWluIiwiZXhwIjoxODMwMjk3NTk5LCJpYXQiOjE3ODUzNTA0NTN9.PgNxobvz2UH5F0L1yn2W4P3AAecoRx9gfPGLwfHd0Y4'
 
 function enterPreview(mode = 'client') {
   if (mode === 'admin') {
@@ -181,7 +189,7 @@ function handleSsoLogin() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #0D1F1D;  /* 深青绿——比纯墨黑轻，呼应 signal 色 */
+  background: linear-gradient(135deg, #0F172A 0%, #1E1B4B 60%, #312E81 100%);
   overflow: hidden;
 }
 /* 背景网格：极淡 signal 色网格暗示"监测" */
@@ -189,8 +197,8 @@ function handleSsoLogin() {
   position: absolute;
   inset: 0;
   background-image:
-    linear-gradient(rgba(13, 148, 136, 0.07) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(13, 148, 136, 0.07) 1px, transparent 1px);
+    linear-gradient(rgba(99, 102, 241, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(99, 102, 241, 0.07) 1px, transparent 1px);
   background-size: 40px 40px;
 }
 /* 径向渐变：中心微亮，边缘渐暗，增加深度 */
@@ -198,7 +206,7 @@ function handleSsoLogin() {
   content: '';
   position: absolute;
   inset: 0;
-  background: radial-gradient(circle at center, rgba(13, 148, 136, 0.08) 0%, transparent 60%);
+  background: radial-gradient(circle at center, rgba(99, 102, 241, 0.08) 0%, transparent 60%);
 }
 
 .radar {
@@ -210,7 +218,7 @@ function handleSsoLogin() {
 /* 十字准线：极淡 signal 色，辅助定位"监测" */
 .radar-crosshair-h, .radar-crosshair-v {
   position: absolute;
-  background: rgba(13, 148, 136, 0.12);
+  background: rgba(99, 102, 241, 0.12);
 }
 .radar-crosshair-h {
   top: 50%; left: 0; right: 0; height: 1px;
@@ -250,9 +258,9 @@ function handleSsoLogin() {
   height: 300px;
   background: conic-gradient(
     from 0deg,
-    rgba(13, 148, 136, 0.55) 0deg,
-    rgba(13, 148, 136, 0.25) 12deg,
-    rgba(13, 148, 136, 0.08) 50deg,
+    rgba(99, 102, 241, 0.55) 0deg,
+    rgba(99, 102, 241, 0.25) 12deg,
+    rgba(99, 102, 241, 0.08) 50deg,
     transparent 90deg,
     transparent 360deg
   );
@@ -348,10 +356,16 @@ function handleSsoLogin() {
   font-size: var(--fs-display);
   font-weight: 900;
   color: var(--ink);
-  letter-spacing: 0.02em;
+  letter-spacing: -0.03em;
   line-height: 1;
 }
-.brand-title .accent { color: var(--signal); }
+/* "氪"字品牌渐变 */
+.brand-title .accent {
+  background: var(--grad-brand);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
 .brand-sub {
   margin-top: var(--space-sm);
   color: var(--mute);

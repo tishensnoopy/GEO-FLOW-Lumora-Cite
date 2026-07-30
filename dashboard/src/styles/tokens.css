@@ -1,27 +1,55 @@
 /* dashboard/src/styles/tokens.css
- * "Ink & Signal" 设计系统 token
+ * "SaaS Spectrum" 设计系统 token —— 明亮多彩现代风
  * 所有颜色/字体/间距的唯一真源。禁止在组件内硬编码 hex。
+ *
+ * 设计理念：Linear/Vercel 式明亮 SaaS 仪表盘风格。
+ * 靛蓝→紫→粉品牌渐变 + 多彩数据色板 + 柔和阴影 + 玻璃态。
+ * 保留原变量名（--signal/--alert/--depth/--ink/--paper/--surface/--mute），
+ * 仅重新赋值，确保组件零破坏；新增 --c-* 多彩色板与 --grad-* 渐变。
  */
 :root {
-  /* === 命名色 === */
-  --ink: #1A1A1A;          /* 主文本：暖书法墨黑 */
-  --paper: #FAFAF7;        /* 页面背景：暖宣纸白（非纯白） */
-  --surface: #FFFFFF;      /* 卡片表面 */
-  --signal: #0D9488;       /* 信号青：已收录/已采信，品牌色，克制使用 */
-  --alert: #E76F51;        /* 警示珊瑚：失败/待检测，温暖不刺眼 */
-  --depth: #4C1D95;        /* 深紫：AI 相关指标，暗示智能 */
-  --mute: #78716C;         /* 暖石灰：次要文本/边框 */
+  /* === 命名色（重新赋值为明亮 SaaS 色板） === */
+  --ink: #0F172A;          /* 主文本：slate-900（深石板，比纯黑柔和） */
+  --paper: #F8FAFC;        /* 页面背景：slate-50（明亮冷白） */
+  --surface: #FFFFFF;      /* 卡片表面：纯白 */
+  --signal: #6366F1;       /* 信号靛蓝：indigo-500，品牌主色（替代原青色） */
+  --alert: #EF4444;        /* 警示红：red-500（替代原珊瑚） */
+  --depth: #8B5CF6;        /* 深紫：violet-500（AI 相关，更明亮） */
+  --mute: #64748B;         /* 石板灰：slate-500（次要文本/边框） */
 
-  /* === 派生色（透明度变体，避免重复 rgba 计算） === */
-  --signal-soft: rgba(13, 148, 136, 0.10);   /* signal 10% 背景 */
-  --signal-line: rgba(13, 148, 136, 0.30);   /* signal 30% 描边 */
-  --alert-soft: rgba(231, 111, 81, 0.10);
-  --depth-soft: rgba(76, 29, 149, 0.10);
-  --ink-line: rgba(26, 26, 26, 0.12);        /* 细分隔线 */
-  --paper-shadow: 0 1px 2px rgba(26, 26, 26, 0.04), 0 4px 12px rgba(26, 26, 26, 0.06);
+  /* === 多彩数据色板（新增，用于图表/状态标签/分类） === */
+  --c-indigo: #6366F1;
+  --c-violet: #8B5CF6;
+  --c-pink: #EC4899;
+  --c-rose: #F43F5E;
+  --c-amber: #F59E0B;
+  --c-emerald: #10B981;
+  --c-cyan: #06B6D4;
+  --c-blue: #3B82F6;
+  --c-slate: #64748B;
+
+  /* === 渐变（新增，现代感核心） === */
+  --grad-brand: linear-gradient(135deg, #6366F1 0%, #8B5CF6 50%, #EC4899 100%);
+  --grad-brand-2: linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%);
+  --grad-brand-soft: linear-gradient(135deg, rgba(99,102,241,0.12) 0%, rgba(139,92,246,0.12) 100%);
+  --grad-bg: linear-gradient(180deg, #F8FAFC 0%, #EEF2FF 60%, #F5F3FF 100%);
+  --grad-surface: linear-gradient(180deg, #FFFFFF 0%, #FAFAFF 100%);
+  --grad-success: linear-gradient(135deg, #10B981 0%, #06B6D4 100%);
+  --grad-warning: linear-gradient(135deg, #F59E0B 0%, #EF4444 100%);
+
+  /* === 派生色（透明度变体） === */
+  --signal-soft: rgba(99, 102, 241, 0.10);    /* signal 10% 背景 */
+  --signal-line: rgba(99, 102, 241, 0.30);    /* signal 30% 描边 */
+  --alert-soft: rgba(239, 68, 68, 0.10);
+  --depth-soft: rgba(139, 92, 246, 0.10);
+  --ink-line: rgba(15, 23, 42, 0.08);         /* 细分隔线（更柔和） */
+  --paper-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 16px rgba(15, 23, 42, 0.06);
+  --shadow-card: 0 1px 3px rgba(15, 23, 42, 0.04), 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-hover: 0 10px 30px rgba(99, 102, 241, 0.12), 0 4px 12px rgba(15, 23, 42, 0.06);
+  --shadow-glow: 0 0 0 4px rgba(99, 102, 241, 0.12);
 
   /* === 字体族 === */
-  --font-display: 'Noto Serif SC', 'Songti SC', 'STSong', serif;   /* 标题与数字 */
+  --font-display: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   --font-mono: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
 
@@ -29,7 +57,7 @@
   --fs-display: 56px;   /* 登录页品牌大字 */
   --fs-h1: 32px;        /* 页面主标题 */
   --fs-h2: 22px;        /* 卡片标题 */
-  --fs-stat: 44px;      /* 统计卡片大数字（衬线） */
+  --fs-stat: 44px;      /* 统计卡片大数字 */
   --fs-body: 14px;
   --fs-small: 12px;
   --fs-mono: 13px;      /* 表格/时间戳 */
@@ -41,21 +69,23 @@
   --space-lg: 32px;
   --space-xl: 48px;
 
-  /* === 圆角（克制，偏直角以呼应"报告"感） === */
-  --radius-sm: 2px;
-  --radius-md: 4px;
+  /* === 圆角（增大，更现代柔和） === */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
   --radius-pill: 999px;
 
   /* === Element Plus 主题变量覆盖 === */
   --el-color-primary: var(--signal);
-  --el-color-primary-light-3: #2DA89E;
-  --el-color-primary-light-5: #5DBAB2;
-  --el-color-primary-light-7: #9ED4CE;
-  --el-color-primary-light-9: #E6F4F2;  /* signal 极浅背景（固体色，非 rgba，兼容 Element Plus） */
-  --el-color-primary-dark-2: #0A7A70;
+  --el-color-primary-light-3: #818CF8;   /* indigo-400 */
+  --el-color-primary-light-5: #A5B4FC;   /* indigo-300 */
+  --el-color-primary-light-7: #C7D2FE;   /* indigo-200 */
+  --el-color-primary-light-9: #EEF2FF;   /* indigo-50（极浅背景） */
+  --el-color-primary-dark-2: #4F46E5;    /* indigo-600 */
   --el-color-danger: var(--alert);
-  --el-color-success: var(--signal);
-  --el-color-warning: #C99700;  /* 暖琥珀，区别于 alert 珊瑚 */
+  --el-color-success: var(--c-emerald);
+  --el-color-warning: var(--c-amber);
   --el-text-color-primary: var(--ink);
   --el-text-color-regular: var(--ink);
   --el-text-color-secondary: var(--mute);
@@ -64,13 +94,14 @@
   --el-bg-color-page: var(--paper);
   --el-font-family: var(--font-body);
   --el-border-radius-base: var(--radius-md);
+  --el-border-radius-small: var(--radius-sm);
 
   /* === UI 优化新增 token === */
 
   /* 布局尺寸 */
   --sidebar-width: 220px;
   --sidebar-width-collapsed: 64px;
-  --topbar-height: 56px;
+  --topbar-height: 60px;
   --mobile-tabbar-height: 56px;
   --scan-panel-width-desktop: 50%;
   --scan-panel-width-tablet: 60%;
@@ -80,21 +111,19 @@
   --breakpoint-md: 768px;
 
   /* 动效 */
-  --transition-fast: 150ms ease-out;
-  --transition-base: 200ms ease-out;
-  --transition-slow: 300ms ease-out;
-  --shadow-hover: 0 8px 24px rgba(13, 148, 136, 0.12);
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 300ms cubic-bezier(0.4, 0, 0.2, 1);
 
   /* 状态色 */
-  --status-indexed: #0D9488;
+  --status-indexed: #10B981;
   --status-partial: #F59E0B;
-  --status-pending: #78716C;
+  --status-pending: #64748B;
 
   /* 触摸尺寸 */
   --touch-target: 44px;
 
-  /* 扫描面板 */
-  --terminal-bg: #0D1F1D;
-  --terminal-text: #D4D4D4;
+  /* 扫描面板终端（保留深色，配多彩品牌渐变边） */
+  --terminal-bg: #0F172A;
+  --terminal-text: #E2E8F0;
 }

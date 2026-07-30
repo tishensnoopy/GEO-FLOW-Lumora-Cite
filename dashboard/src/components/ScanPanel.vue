@@ -44,11 +44,39 @@
 
         <!-- 引擎状态卡片（仅收录扫描显示） -->
         <div class="engine-status" v-if="task.scan_type === 'index' || task.scan_type === 'both'">
+          <div class="section-title">搜索引擎收录状态</div>
           <div class="engine-grid">
             <div v-for="engine in engines" :key="engine.name" class="engine-item">
               <span class="engine-dot" :class="engine.status"></span>
               <span class="engine-name">{{ engine.name }}</span>
               <span class="engine-result">{{ engine.result }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 采信模型状态卡片（仅采信扫描显示，阶段 4 - ⑤） -->
+        <!-- 从 task.citation_models 结构化读取 stage 4 probe 结果，
+             替代从日志文本脆弱解析。后端 citation_checker stage 4 逐模型上报。 -->
+        <div
+          class="engine-status"
+          v-if="task.scan_type === 'citation' || task.scan_type === 'both'"
+        >
+          <div class="section-title">
+            AI 采信模型状态
+            <span class="section-hint" v-if="!task.citation_models || task.citation_models.length === 0">
+              等待模型探测…
+            </span>
+          </div>
+          <div class="engine-grid" v-if="task.citation_models && task.citation_models.length > 0">
+            <div
+              v-for="m in task.citation_models"
+              :key="m.model"
+              class="engine-item"
+              :title="m.error || citationModelTip(m.status)"
+            >
+              <span class="engine-dot" :class="citationModelDotClass(m.status)"></span>
+              <span class="engine-name">{{ m.model }}</span>
+              <span class="engine-result">{{ citationModelResult(m.status) }}</span>
             </div>
           </div>
         </div>
@@ -89,7 +117,7 @@ let pollTimer = null
 const task = reactive({
   task_id: '', scan_type: '', status: 'running',
   total: 0, processed: 0, success: 0, failed: 0,
-  logs: [], created_at: null, updated_at: null,
+  logs: [], citation_models: [], created_at: null, updated_at: null,
 })
 
 const scanTypeText = computed(() => ({
@@ -98,7 +126,10 @@ const scanTypeText = computed(() => ({
 
 const progressPercent = computed(() => {
   if (task.total === 0) return 0
-  return Math.round((task.processed / task.total) * 100)
+  // clamp 到 [0, 100]：后端已修正 total 与实际检测数一致，但保留前端防御，
+  // 避免任何瞬态不一致（如并发进度更新）导致进度环和百分比显示 >100% 或负数。
+  const pct = Math.round((task.processed / task.total) * 100)
+  return Math.max(0, Math.min(100, pct))
 })
 
 const progressColorClass = computed(() => {
@@ -132,6 +163,36 @@ const engines = computed(() => {
     return { name, status, result }
   })
 })
+
+// 采信模型状态展示辅助（阶段 4 - ⑤）
+// 后端 probe 状态：verified / error / no_search / search_without_sources
+function citationModelDotClass(status) {
+  return {
+    verified: 'success',
+    error: 'failed',
+    no_search: 'pending',
+    search_without_sources: 'running',
+    unknown: 'pending',
+  }[status] || 'pending'
+}
+function citationModelResult(status) {
+  return {
+    verified: '✓',
+    error: '✗',
+    no_search: '◌',
+    search_without_sources: '⏳',
+    unknown: '◌',
+  }[status] || '◌'
+}
+function citationModelTip(status) {
+  return {
+    verified: '已通过联网搜索验证，可用于引用检测',
+    error: 'Key 不可用或探测失败，该模型本轮可能无法返回来源',
+    no_search: 'Key 有效但未检测到联网搜索能力',
+    search_without_sources: '模型联网搜索但未返回来源 URL',
+    unknown: '未知状态',
+  }[status] || '未知状态'
+}
 
 function formatTime(iso) {
   if (!iso) return ''
@@ -175,7 +236,7 @@ watch(() => props.taskId, (newId) => {
     Object.assign(task, {
       task_id: '', scan_type: '', status: 'running',
       total: 0, processed: 0, success: 0, failed: 0,
-      logs: [], created_at: null, updated_at: null,
+      logs: [], citation_models: [], created_at: null, updated_at: null,
     })
     startPolling()
   }
@@ -309,6 +370,19 @@ onUnmounted(() => stopPolling())
   padding: var(--space-md);
   border-bottom: 1px solid var(--ink-line);
   flex-shrink: 0;
+}
+.section-title {
+  font-size: var(--fs-small);
+  color: var(--mute);
+  margin-bottom: var(--space-xs);
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+.section-hint {
+  font-size: var(--fs-small);
+  color: var(--mute);
+  font-weight: normal;
 }
 .engine-grid {
   display: grid;
