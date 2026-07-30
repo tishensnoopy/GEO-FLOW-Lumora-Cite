@@ -75,6 +75,12 @@ app.include_router(trend_router, prefix="/api/v1")
 from app.api.client_question_routes import router as client_question_router
 app.include_router(client_question_router, prefix="/api/v1")
 
+# AI 收录检测路由（设计文档 Phase 3）：
+# - 触发: /admin/ai-index/scan, /admin/ai-index/scan/{url}
+# - 查询: /admin/ai-index/results, /admin/ai-index/stats
+from app.api.ai_index_routes import router as ai_index_router
+app.include_router(ai_index_router, prefix="/api/v1")
+
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "version": settings.APP_VERSION}
