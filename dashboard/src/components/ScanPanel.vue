@@ -156,6 +156,7 @@ function phaseStatus(phase) {
 function phaseIcon(phase) {
   const s = phaseStatuses[phase]
   if (s === 'completed') return '✓'
+  if (s === 'failed') return '✗'
   if (s === 'active') return '⏳'
   return '○'
 }
@@ -291,8 +292,8 @@ async function fetchPhaseStatus(phase, tid) {
     } else if (status === 'running') {
       phaseStatuses[phase] = 'active'
     } else if (status === 'failed') {
-      // 失败也视为本阶段结束，停止轮询（保留 active 高亮由父组件决定）
-      phaseStatuses[phase] = 'completed'
+      // 失败：独立标记为 failed（红 ✗），与 completed 视觉区分，停止该阶段轮询
+      phaseStatuses[phase] = 'failed'
       if (phasePollTimers[phase]) {
         clearInterval(phasePollTimers[phase])
         delete phasePollTimers[phase]
@@ -505,6 +506,10 @@ onUnmounted(() => {
   opacity: 1;
   border-color: var(--signal);
 }
+.phase-ring.failed {
+  opacity: 1;
+  border-color: var(--alert);
+}
 .phase-icon {
   font-size: 18px;
   font-weight: 700;
@@ -512,6 +517,7 @@ onUnmounted(() => {
 }
 .phase-ring.completed .phase-icon { color: var(--status-indexed); }
 .phase-ring.active .phase-icon { color: var(--signal); }
+.phase-ring.failed .phase-icon { color: var(--alert); }
 .phase-label {
   font-size: var(--fs-small);
   color: var(--ink);
