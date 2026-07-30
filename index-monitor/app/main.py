@@ -69,6 +69,12 @@ app.include_router(export_router, prefix="/api/v1")
 from app.api.trend_routes import router as trend_router
 app.include_router(trend_router, prefix="/api/v1")
 
+# 客户问题管理路由（设计文档 Phase 3）：
+# - 运营端 CRUD: /admin/clients/{client_id}/questions
+# - 客户端只读: /questions
+from app.api.client_question_routes import router as client_question_router
+app.include_router(client_question_router, prefix="/api/v1")
+
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "version": settings.APP_VERSION}
