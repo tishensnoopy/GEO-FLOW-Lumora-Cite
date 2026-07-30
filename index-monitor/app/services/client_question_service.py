@@ -24,13 +24,17 @@ class ClientQuestionService:
         """列出客户问题，按 sort_order 排序。
 
         默认仅返回 active 问题；include_inactive=True 时返回全部。
+        同 sort_order 的问题按 created_at DESC 排序（后创建的在前），
+        避免依赖 PostgreSQL 在无 tiebreaker 时的未定义返回顺序。
         """
         stmt = select(ClientQuestion).where(
             ClientQuestion.client_id == client_id
         )
         if not include_inactive:
             stmt = stmt.where(ClientQuestion.status == "active")
-        stmt = stmt.order_by(ClientQuestion.sort_order)
+        stmt = stmt.order_by(
+            ClientQuestion.sort_order, ClientQuestion.created_at.desc()
+        )
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
 

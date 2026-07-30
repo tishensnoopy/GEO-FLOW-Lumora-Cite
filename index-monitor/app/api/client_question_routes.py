@@ -153,11 +153,9 @@ async def list_own_questions(
     if client_id == "admin":
         raise HTTPException(status_code=403, detail="本端点仅供客户使用")
     service = ClientQuestionService(db)
+    # service 已按 sort_order, created_at DESC 排序（同 sort_order 时后创建的在前），
+    # 此处直接使用 service 返回顺序，无需再排序。
     questions = await service.list_questions(client_id)
-    # service 仅按 sort_order 排序；同 sort_order 时 PostgreSQL 返回顺序不确定。
-    # 此处对同 sort_order 的问题按插入逆序排列（后插入的在前），保证显式指定
-    # sort_order 的问题（如 create_question(sort_order=1)）在同序号下优先展示。
-    questions = sorted(reversed(questions), key=lambda q: q.sort_order)
     return [
         {
             "id": str(q.id),
