@@ -114,10 +114,14 @@
       <el-button type="primary" @click="saveConfig">保存配置</el-button>
       <el-button type="warning" @click="triggerScan('index')">立即收录扫描</el-button>
       <el-button type="warning" @click="triggerScan('citation')">立即 AI 采信扫描</el-button>
+      <!-- I3：新增 AI 收录检测 / 全量扫描触发入口，对接 Phase 3 统一扫描入口 -->
+      <el-button type="success" @click="triggerScan('ai_index')">AI 收录扫描</el-button>
+      <el-button type="success" @click="triggerScan('all')">全量扫描</el-button>
     </div>
 
-    <!-- 扫描运行状态面板（阶段 4 - ⑤）：触发扫描后滑出，实时显示进度+模型状态 -->
-    <ScanPanel v-model="scanPanelVisible" :task-id="scanTaskId" />
+    <!-- 扫描运行状态面板（阶段 4 - ⑤）：触发扫描后滑出，实时显示进度+模型状态。
+         I2：透传 task-ids 给 ScanPanel，all 类型时驱动三阶段进度环（index → ai_index → citation）。 -->
+    <ScanPanel v-model="scanPanelVisible" :task-id="scanTaskId" :task-ids="scanTaskIds" />
   </div>
 </template>
 
@@ -127,6 +131,7 @@ import { ElMessage } from 'element-plus'
 import { CircleCheck, CircleClose, ArrowDown, ArrowRight } from '@element-plus/icons-vue'
 import api from '../api'
 import ScanPanel from '../components/ScanPanel.vue'
+import { useScanTrigger } from '@/composables/useScanTrigger'
 
 const config = ref({})
 
@@ -329,9 +334,16 @@ function toggleGuide(key) {
 const testingKey = ref('')
 const testResult = reactive({})
 
-// 扫描面板状态（阶段 4 - ⑤）：triggerScan 触发后拿 task_id 打开 ScanPanel
-const scanPanelVisible = ref(false)
-const scanTaskId = ref('')
+// 扫描面板状态（阶段 4 - ⑤ + I1+I2+I4）：
+// 使用 useScanTrigger 复用扫描触发逻辑，统一调 /admin/scan/trigger（Phase 3 统一入口），
+// 支持 index/citation/ai_index/all 四种类型。taskIds 仅在 all 类型时填充，
+// 驱动 ScanPanel 三阶段进度环（index → ai_index → citation）。
+const {
+  trigger: triggerScanTask,
+  taskIds: scanTaskIds,
+  currentTaskId: scanTaskId,
+  panelVisible: scanPanelVisible,
+} = useScanTrigger()
 
 // 测试单个 API Key：调用后端 /config/test-key 端点即时验证。
 // 若输入框是脱敏占位（含 ****）或为空，后端会用已存储的 Key 测试。
@@ -379,18 +391,18 @@ const saveConfig = async () => {
   }
 }
 
+// I4：迁移到 Phase 3 统一扫描入口 /admin/scan/trigger（body 传 scan_type）。
+// 旧路径参数式 /scan/trigger/{type} 已 deprecated 且不支持 ai_index/all。
+// useScanTrigger 内部调统一入口，并设置 currentTaskId / taskIds / panelVisible。
 const triggerScan = async (type) => {
   try {
-    const res = await api.post(`/scan/trigger/${type}`)
-    const data = res.data || {}
-    // 阶段 4 - ⑤：异步触发返回 task_id，打开 ScanPanel 实时展示进度+模型状态
-    if (data.task_id) {
-      scanTaskId.value = data.task_id
-      scanPanelVisible.value = true
-      ElMessage.success(data.message || `扫描任务已触发，共 ${data.queued} 条`)
-    } else {
-      // 无待检测 URL
+    const data = await triggerScanTask(type)
+    // currentTaskId 为 null 表示无待检测 URL：关闭面板，提示用户
+    if (!scanTaskId.value) {
+      scanPanelVisible.value = false
       ElMessage.info(data.message || '没有待检测的 URL')
+    } else {
+      ElMessage.success(data.message || '扫描任务已触发')
     }
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '触发失败')

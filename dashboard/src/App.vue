@@ -3,6 +3,7 @@
     v-if="showLayout && !isClientRoute"
     :signal-events="signalEvents"
     :scan-task-id="scanTaskId"
+    :scan-task-ids="scanTaskIds"
     v-model:scan-panel-visible="scanPanelVisible"
     :running-task-count="runningTaskCount"
     :scan-status="scanStatus"
@@ -41,7 +42,10 @@ const isClientRoute = computed(() =>
 )
 
 // 扫描面板状态（全局，由 Distributions.vue 触发）
+// I2：scanTaskIds 用于 all 类型扫描，驱动 ScanPanel 三阶段进度环。
+//     单类型扫描时 scanTaskIds 为 null，仅 scanTaskId 驱动主进度环。
 const scanTaskId = ref('')
+const scanTaskIds = ref(null)
 const scanPanelVisible = ref(false)
 const runningTaskCount = ref(0)
 const scanStatus = ref('idle')
@@ -90,8 +94,11 @@ async function fetchSignalEvents() {
 }
 
 // 暴露给子组件触发扫描面板（通过 provide/inject 或事件总线）
-function openScanPanel(taskId) {
+// I2：扩展签名以接收 taskIds 对象（all 类型三阶段进度环）。
+//     单类型扫描的调用方仅传 taskId，taskIds 默认 null，向后兼容。
+function openScanPanel(taskId, taskIds = null) {
   scanTaskId.value = taskId
+  scanTaskIds.value = taskIds
   scanPanelVisible.value = true
   runningTaskCount.value = 1
   scanStatus.value = 'running'

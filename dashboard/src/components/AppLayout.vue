@@ -26,8 +26,8 @@
     <!-- 移动端底部 Tab -->
     <MobileTabBar />
 
-    <!-- 扫描面板（全局） -->
-    <ScanPanel v-model="scanPanelVisible" :task-id="scanTaskId" />
+    <!-- 扫描面板（全局）。I2：透传 scanTaskIds 以驱动 all 类型三阶段进度环 -->
+    <ScanPanel v-model="scanPanelVisible" :task-id="scanTaskId" :task-ids="scanTaskIds" />
   </div>
 </template>
 
@@ -42,6 +42,7 @@ import ScanPanel from './ScanPanel.vue'
 const props = defineProps({
   signalEvents: { type: Array, default: () => [] },
   scanTaskId: String,
+  scanTaskIds: { type: Object, default: null }, // I2: all 类型 {index, ai_index, citation} | null
   scanPanelVisible: Boolean,
   runningTaskCount: { type: Number, default: 0 },
   scanStatus: { type: String, default: 'idle' },

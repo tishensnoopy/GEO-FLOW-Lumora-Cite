@@ -627,15 +627,31 @@ function getStatusType(row) {
   return 'indexed'
 }
 
-// === AI 收录联动徽章映射 ===
-// pending(黄,检测中) / indexed(绿,已收录) / not_indexed(灰,未收录) / failed(红,检测失败)
+// === AI 收录联动徽章映射（I5：双阶段管道 6 状态）===
+// pending(黄,收录检测中) / indexed(蓝,已收录问题监测中) / cited(绿,监测完成有引用) /
+// not_cited(灰,监测完成无引用) / not_indexed(灰,未收录) / failed(红,检测失败)
+// indexed 后切换到 citation 阶段继续轮询，故 indexed 用蓝色"问题监测中"区分于 cited 绿色"监测完成"
 function pipelineTagType(url) {
   const s = pipelineStatus(url)
-  return { pending: 'warning', indexed: 'success', not_indexed: 'info', failed: 'danger' }[s] || 'info'
+  return {
+    pending: 'warning',
+    indexed: 'primary',
+    cited: 'success',
+    not_cited: 'info',
+    not_indexed: 'info',
+    failed: 'danger',
+  }[s] || 'info'
 }
 function pipelineTagLabel(url) {
   const s = pipelineStatus(url)
-  return { pending: '收录检测中', indexed: '已收录', not_indexed: '未收录', failed: '检测失败' }[s] || s
+  return {
+    pending: '收录检测中',
+    indexed: '问题监测中',
+    cited: '监测完成',
+    not_cited: '无引用',
+    not_indexed: '未收录',
+    failed: '检测失败',
+  }[s] || s
 }
 
 function formatTime(iso) {
