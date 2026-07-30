@@ -218,6 +218,41 @@ class CitationChecker:
                 os.environ[env_key] = value
 
     # ------------------------------------------------------------------
+    # Phase 2 辅助方法
+    # ------------------------------------------------------------------
+
+    async def _get_client_questions(self, client_id: str) -> list[str]:
+        """获取客户的活跃监测问题，按 sort_order 排序。
+
+        替代 Phase 1 的 LLM 自动生成问题。
+        """
+        from app.models.client_question import ClientQuestion
+        result = await self.db.execute(
+            select(ClientQuestion.question)
+            .where(
+                ClientQuestion.client_id == client_id,
+                ClientQuestion.status == "active",
+            )
+            .order_by(ClientQuestion.sort_order)
+        )
+        return [row[0] for row in result.fetchall()]
+
+    async def _get_indexed_models(self, url: str) -> list[str]:
+        """从 ai_index_results 取该 URL 已收录的模型列表。
+
+        仅 index_status='indexed' 的模型才执行问题监测。
+        """
+        from app.models.ai_index_result import AIIndexResult
+        result = await self.db.execute(
+            select(AIIndexResult.model)
+            .where(
+                AIIndexResult.url == url,
+                AIIndexResult.index_status == "indexed",
+            )
+        )
+        return [row[0] for row in result.fetchall()]
+
+    # ------------------------------------------------------------------
     # 单 URL 检测
     # ------------------------------------------------------------------
 
