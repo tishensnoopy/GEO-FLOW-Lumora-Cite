@@ -1,14 +1,15 @@
 # index-monitor/tests/unit/test_citation_check_progress.py
-"""check_url progress 回调测试（阶段 2 - ④b）。
+"""check_url progress 回调测试（Phase 2 - 3 阶段）。
 
 验证目标：
 1. check_url 在每个 stage 开始/结束调用 progress 回调
 2. stage 失败时 progress 收到 "error" 状态
-3. stage 4 probe 结果按模型逐条上报
+3. stage 2 模型探测 probe 结果按模型逐条上报
 4. 默认 progress 回调持久化 CitationCheckLog 到 db
 5. 默认 progress 回调同步写 scan_task_manager.add_log（供 ScanPanel 实时轮询）
 
-解决用户问题 3：采信检测黑盒，只报成功/失败，不知道失败在哪。
+Phase 2 改造：5 阶段（抓取→目的推断→问题生成→模型探测→引用检测）
+→ 3 阶段（准备→模型探测→引用检测）。问题来源从 LLM 生成改为客户指定。
 """
 import asyncio
 import time
@@ -20,16 +21,26 @@ from app.services.citation_checker import CitationChecker
 
 
 def _setup_success_mocks(monkeypatch, checker):
-    """配置 check_url 全流程成功的 mock，返回捕获 run_citation_check 入参的 dict。"""
+    """配置 check_url 全流程成功的 mock（3 阶段），返回捕获 run_citation_check 入参的 dict。
+
+    Phase 2 改造后不再 mock 目的推断/问题生成（parse_purpose_response /
+    generate_candidates / call_llm_with_parse_retry_fallback），改为 mock
+    _get_client_questions + _get_indexed_models（客户问题 + 已收录模型）。
+    """
 
     async def mock_load_ai_config():
         return {
             "ai_deepseek_api_key": "ds-key",
             "ai_question_model": "deepseek-chat",
-            "ai_citation_models": "qwen",
+            # 包含 qwen + doubao，供多模型测试覆盖 _get_indexed_models 后通过过滤
+            "ai_citation_models": "qwen,doubao",
         }
     checker._load_ai_config = mock_load_ai_config
     checker._set_provider_env = MagicMock()
+
+    # Phase 2：mock 客户问题（替代 LLM 自动生成）+ 已收录模型
+    checker._get_client_questions = AsyncMock(return_value=["测试问题"])
+    checker._get_indexed_models = AsyncMock(return_value=["qwen"])
 
     mock_content = MagicMock()
     mock_content.suitability.suitable = True
@@ -42,39 +53,6 @@ def _setup_success_mocks(monkeypatch, checker):
     monkeypatch.setattr(
         "app.services.citation_checker.fetch_public_content",
         lambda url: mock_content,
-    )
-
-    from app.services.citation_check.question_generation import ArticlePurpose
-    fake_purpose = ArticlePurpose(
-        content_type="x", primary_purpose="y", secondary_purposes=[],
-        target_audience="z", desired_takeaway="a", desired_action="b",
-        query_territories=[], evidence_assets=[],
-    )
-    monkeypatch.setattr(
-        "app.services.citation_checker.call_llm_with_parse_retry_fallback",
-        lambda providers, prompt, *, parser, **kw: "raw purpose text",
-    )
-    monkeypatch.setattr(
-        "app.services.citation_checker.parse_purpose_response",
-        lambda text: fake_purpose,
-    )
-
-    from app.services.citation_check.questions import QuestionCandidate
-    fake_candidates = [
-        QuestionCandidate(
-            question=f"Q{i}", selection_reason="r",
-            content_support=0.9, natural_intent=0.8, citation_need=0.7,
-            distinctiveness=0.6, freshness=0.5, metadata={},
-        )
-        for i in range(5)
-    ]
-    monkeypatch.setattr(
-        "app.services.citation_checker.generate_candidates",
-        lambda **kw: fake_candidates,
-    )
-    monkeypatch.setattr(
-        "app.services.citation_checker.make_fallback_parse_retry_generator",
-        lambda providers, *, parser, **kw: (lambda prompt: ""),
     )
 
     monkeypatch.setattr(
@@ -120,7 +98,7 @@ def _make_recording_progress():
 
 @pytest.mark.asyncio
 async def test_progress_called_for_each_stage(monkeypatch):
-    """check_url 应为 5 个 stage 各调用 progress（至少 start + success）。"""
+    """check_url 应为 3 个 stage 各调用 progress（至少 start + success）。"""
     checker = CitationChecker(db=MagicMock())
     _setup_success_mocks(monkeypatch, checker)
     progress, calls = _make_recording_progress()
@@ -128,16 +106,14 @@ async def test_progress_called_for_each_stage(monkeypatch):
     await checker.check_url("https://example.com/a", "client-1", progress=progress)
 
     stages_reported = {c["stage"] for c in calls}
-    # 5 个阶段都应被上报
-    assert "1/5 抓取" in stages_reported
-    assert "2/5 目的推断" in stages_reported
-    assert "3/5 问题生成" in stages_reported
-    assert "4/5 模型探测" in stages_reported
-    assert "5/5 引用检测" in stages_reported
+    # 3 个阶段都应被上报
+    assert "1/3 准备" in stages_reported
+    assert "2/3 模型探测" in stages_reported
+    assert "3/3 引用检测" in stages_reported
 
     # 每个 stage 应有 success 状态
     success_stages = {c["stage"] for c in calls if c["status"] == "success"}
-    assert success_stages == {"1/5 抓取", "2/5 目的推断", "3/5 问题生成", "4/5 模型探测", "5/5 引用检测"}
+    assert success_stages == {"1/3 准备", "2/3 模型探测", "3/3 引用检测"}
 
 
 # --------------------------------------------------------------------------- #
@@ -146,7 +122,7 @@ async def test_progress_called_for_each_stage(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_progress_error_on_stage1_failure(monkeypatch):
-    """stage 1 抓取失败时，progress 应收到 '1/5 抓取' + 'error' 状态。"""
+    """stage 1 准备阶段抓取失败时，progress 应收到 '1/3 准备' + 'error' 状态。"""
     checker = CitationChecker(db=MagicMock())
 
     async def mock_load_ai_config():
@@ -166,19 +142,22 @@ async def test_progress_error_on_stage1_failure(monkeypatch):
 
     error_calls = [c for c in calls if c["status"] == "error"]
     assert len(error_calls) >= 1, "stage 1 失败应上报 error"
-    assert error_calls[0]["stage"] == "1/5 抓取"
+    assert error_calls[0]["stage"] == "1/3 准备"
     assert "超时" in error_calls[0]["message"]
 
 
 # --------------------------------------------------------------------------- #
-# stage 4 probe 按模型逐条上报                                                  #
+# stage 2 模型探测 probe 按模型逐条上报                                         #
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
 async def test_progress_reports_probe_per_model(monkeypatch):
-    """stage 4 应按模型逐条上报 probe 结果（千问: verified / 豆包: error）。"""
+    """stage 2 模型探测应按模型逐条上报 probe 结果（千问: verified / 豆包: error）。"""
     checker = CitationChecker(db=MagicMock())
     _setup_success_mocks(monkeypatch, checker)
+
+    # 覆盖已收录模型：2 个模型，供 stage 2 探测
+    checker._get_indexed_models = AsyncMock(return_value=["qwen", "doubao"])
 
     # 覆盖 probe：返回 2 个模型，状态不同
     monkeypatch.setattr(
@@ -196,8 +175,8 @@ async def test_progress_reports_probe_per_model(monkeypatch):
     progress, calls = _make_recording_progress()
     await checker.check_url("https://example.com/a", "client-1", progress=progress)
 
-    # 找到 stage 4 的模型级上报（model 字段非空）
-    probe_model_calls = [c for c in calls if c["stage"] == "4/5 模型探测" and c["model"]]
+    # 找到 stage 2 的模型级上报（model 字段非空）
+    probe_model_calls = [c for c in calls if c["stage"] == "2/3 模型探测" and c["model"]]
     models_reported = {c["model"] for c in probe_model_calls}
     assert "千问" in models_reported, "应上报千问的 probe 结果"
     assert "豆包" in models_reported, "应上报豆包的 probe 结果"
@@ -226,8 +205,8 @@ async def test_default_progress_persists_citation_check_log(monkeypatch):
 
     await checker.check_url("https://example.com/a", "client-1", task_id="task-xyz")
 
-    # 应至少有 5 条 CitationCheckLog（每 stage 至少一条）
-    assert len(added_logs) >= 5, f"应持久化至少 5 条日志，实际 {len(added_logs)}"
+    # 应至少有 3 条 CitationCheckLog（每 stage 至少一条）
+    assert len(added_logs) >= 3, f"应持久化至少 3 条日志，实际 {len(added_logs)}"
     assert all(isinstance(log, CitationCheckLog) for log in added_logs)
     # task_id 和 url 应正确填充
     assert all(log.task_id == "task-xyz" for log in added_logs)
@@ -288,7 +267,7 @@ async def test_default_progress_no_task_id_skips_add_log(monkeypatch):
     await checker.check_url("https://example.com/a", "client-1")
 
     assert add_log_calls == [], "无 task_id 时不应调用 add_log"
-    assert len(added_logs) >= 5, "无 task_id 时仍应持久化 CitationCheckLog"
+    assert len(added_logs) >= 3, "无 task_id 时仍应持久化 CitationCheckLog"
     assert all(log.task_id is None for log in added_logs)
 
 
@@ -333,18 +312,22 @@ async def test_check_all_pending_passes_task_id_to_check_url(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# 默认 progress 在 stage 4 调用 update_citation_model（结构化模型状态）        #
+# 默认 progress 在 stage 2 模型探测调用 update_citation_model（结构化模型状态） #
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
-async def test_default_progress_updates_citation_model_in_stage4(monkeypatch):
-    """stage 4 模型级上报时，默认回调应调用 update_citation_model（结构化存储）。
+async def test_default_progress_updates_citation_model_in_stage2_model_probe(monkeypatch):
+    """stage 2 模型探测模型级上报时，默认回调应调用 update_citation_model（结构化存储）。
 
-    阶段 4 - ⑤：让 ScanPanel 模型状态卡片直接读 task.citation_models，
+    Phase 2：原 stage 4 模型探测改为 stage 2/3 模型探测。
+    让 ScanPanel 模型状态卡片直接读 task.citation_models，
     而非从日志文本脆弱解析。
     """
     checker = CitationChecker(db=MagicMock())
     _setup_success_mocks(monkeypatch, checker)
+
+    # 覆盖已收录模型：2 个模型，供 stage 2 探测
+    checker._get_indexed_models = AsyncMock(return_value=["qwen", "doubao"])
 
     # 覆盖 probe：返回 2 个模型
     monkeypatch.setattr(
