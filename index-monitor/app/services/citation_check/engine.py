@@ -187,15 +187,35 @@ def run_citation_check(
     adapters: list[CitationModelAdapter],
     question_count: int = DEFAULT_QUESTION_COUNT,
     forbidden_terms: list[str] | None = None,
+    client_questions: list[str] | None = None,
 ) -> dict:
-    """Run selected questions against configured adapters and aggregate evidence."""
-    selected = select_best_questions(
-        candidates,
-        count=question_count,
-        forbidden_terms=forbidden_terms,
-    )
-    if len(selected) < question_count:
-        raise ValueError(f"合格问题不足：需要 {question_count} 个，实际 {len(selected)} 个")
+    """Run selected questions against configured adapters and aggregate evidence.
+
+    当 client_questions 非 None 时，跳过 select_best_questions 评分筛选，
+    直接用客户指定问题（每个构造默认评分的 QuestionCandidate）。
+    """
+    if client_questions is not None:
+        # 客户问题直通：跳过评分筛选，构造默认评分的 QuestionCandidate
+        selected = [
+            QuestionCandidate(
+                question=q,
+                content_support=1.0,
+                natural_intent=1.0,
+                citation_need=1.0,
+                distinctiveness=1.0,
+                freshness=1.0,
+                selection_reason="客户指定问题",
+            )
+            for q in client_questions
+        ]
+    else:
+        selected = select_best_questions(
+            candidates,
+            count=question_count,
+            forbidden_terms=forbidden_terms,
+        )
+        if len(selected) < question_count:
+            raise ValueError(f"合格问题不足：需要 {question_count} 个，实际 {len(selected)} 个")
     if not adapters:
         raise ValueError("至少需要配置一个模型适配器")
 
