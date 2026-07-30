@@ -1,11 +1,12 @@
 """Phase 2: CitationChecker 改造后的测试。"""
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from app.services.citation_checker import CitationChecker
 from app.models.client_question import ClientQuestion
 from app.models.ai_index_result import AIIndexResult
+from app.models.citation_result import CitationResult
 
 
 async def _cleanup_test_data(db_session):
@@ -22,6 +23,11 @@ async def _cleanup_test_data(db_session):
     await db_session.execute(
         delete(AIIndexResult).where(
             AIIndexResult.url == "https://example.com/test"
+        )
+    )
+    await db_session.execute(
+        delete(CitationResult).where(
+            CitationResult.url == "https://example.com/test"
         )
     )
     await db_session.commit()
@@ -96,3 +102,45 @@ async def test_get_indexed_models_empty(db_session):
     checker = CitationChecker(db_session)
     models = await checker._get_indexed_models("https://example.com/no-record")
     assert models == []
+
+
+@pytest.mark.asyncio
+async def test_store_results_links_client_question_id(db_session):
+    """_store_results 关联 client_question_id。"""
+    from app.models.citation_result import CitationResult
+
+    await _cleanup_test_data(db_session)
+
+    # 创建客户问题
+    q = ClientQuestion(
+        client_id="client_a",
+        question="这个产品怎么样？",
+        sort_order=1,
+        status="active",
+    )
+    db_session.add(q)
+    await db_session.commit()
+    await db_session.refresh(q)
+
+    checker = CitationChecker(db_session)
+    fake_result = {
+        "results": [{
+            "question": "这个产品怎么样？",
+            "model": "qwen",
+            "answer": "回答",
+            "hit": {"layer": "none"},
+            "sources": [],
+        }],
+    }
+    await checker._store_results(
+        "https://example.com/test",
+        fake_result,
+        ["这个产品怎么样？"],
+        "client_a",
+    )
+
+    stored = await db_session.execute(
+        select(CitationResult).where(CitationResult.url == "https://example.com/test")
+    )
+    record = stored.scalar_one()
+    assert record.client_question_id == q.id

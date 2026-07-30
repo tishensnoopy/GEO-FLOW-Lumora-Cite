@@ -534,15 +534,29 @@ class CitationChecker:
     # 结果存储
     # ------------------------------------------------------------------
 
-    async def _store_results(self, url: str, result: dict) -> None:
-        """将检测结果存入 citation_results 表（幂等：URL+model+question 唯一）。"""
+    async def _store_results(
+        self, url: str, result: dict, questions: list[str], client_id: str
+    ) -> None:
+        """将检测结果存入 citation_results 表（幂等：URL+model+question 唯一）。
+
+        Phase 2: 关联 client_question_id（通过 question 文本匹配 ClientQuestion.id）。
+        """
+        # 构建 question → client_question_id 映射
+        from app.models.client_question import ClientQuestion
+        q_result = await self.db.execute(
+            select(ClientQuestion.id, ClientQuestion.question).where(
+                ClientQuestion.client_id == client_id,
+                ClientQuestion.status == "active",
+            )
+        )
+        question_id_map = {row[1]: row[0] for row in q_result.fetchall()}
+
         stored_count = 0
         for item in result.get("results", []):
             hit_type = item["hit"]["layer"]
             question = item["question"]
             model = item["model"]
 
-            # 幂等检查：URL + model + question 唯一
             existing = await self.db.execute(
                 select(CitationResult).where(
                     CitationResult.url == url,
@@ -560,14 +574,12 @@ class CitationChecker:
                 answer=item.get("answer", ""),
                 hit_type=hit_type,
                 sources=item.get("sources", []),
+                client_question_id=question_id_map.get(question),
             ))
             stored_count += 1
 
         await self.db.commit()
-        logger.info(
-            "采信检测结果已存储: %s（%d 条新记录）",
-            url, stored_count,
-        )
+        logger.info("采信检测结果已存储: %s（%d 条新记录）", url, stored_count)
 
     # ------------------------------------------------------------------
     # 批量检测
