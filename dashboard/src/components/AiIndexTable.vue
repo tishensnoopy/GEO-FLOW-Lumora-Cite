@@ -121,6 +121,9 @@ function statusLabel(status) {
 function formatTime(t) {
   return dayjs(t).format('YYYY-MM-DD HH:mm')
 }
+
+// 暴露纯函数供单元测试验证颜色/标签映射（不改变运行时行为）
+defineExpose({ statusType, statusLabel })
 </script>
 
 <style scoped>

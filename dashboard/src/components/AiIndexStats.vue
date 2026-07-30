@@ -84,7 +84,7 @@ const props = defineProps({
   stats: {
     type: Object,
     default: () => ({
-      indexed: 0, not_indexed: 0, pending: 0, rate: 0,
+      indexed: 0, not_indexed: 0, pending: 0, index_rate: 0,
       by_model: [], by_client: [],
     }),
   },
@@ -93,7 +93,9 @@ const props = defineProps({
 const chartRef = ref(null)
 let chartInstance = null
 
-const ratePercent = computed(() => (props.stats.rate * 100).toFixed(1))
+// 顶层收录率字段名与后端 GET /admin/ai-index/stats 契约一致（index_rate）
+// 注意：by_model / by_client 项内的 rate 字段名不变（后端项内字段就是 rate）
+const ratePercent = computed(() => (props.stats.index_rate * 100).toFixed(1))
 
 function rateClass(rate) {
   if (rate >= 0.8) return 'rate-high'

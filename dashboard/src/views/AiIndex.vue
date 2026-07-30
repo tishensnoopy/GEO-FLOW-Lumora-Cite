@@ -35,7 +35,7 @@ const stats = ref({
   indexed: 0,
   not_indexed: 0,
   pending: 0,
-  rate: 0,
+  index_rate: 0,
   by_model: [],
   by_client: [],
 })

@@ -16,12 +16,15 @@ vi.mock('element-plus', () => ({
 }))
 
 // mock aiIndexApi（任务 2 已实现）
+// mock 形状与后端 GET /admin/ai-index/stats 真实响应一致：
+//   顶层收录率字段是 index_rate（非 rate）；by_model / by_client 项内才是 rate
 vi.mock('@/api/aiIndex', () => ({
   aiIndexApi: {
     getStats: vi.fn(() => Promise.resolve({
       data: {
-        indexed: 5, not_indexed: 3, pending: 2, rate: 0.625,
-        by_model: [{ model: 'doubao', indexed: 3, not_indexed: 1, pending: 0 }],
+        total_combinations: 10,
+        indexed: 5, not_indexed: 3, pending: 2, index_rate: 0.625,
+        by_model: [{ model: 'doubao', indexed: 3, not_indexed: 1, pending: 0, rate: 0.75 }],
         by_client: [{ client_id: 'DEMO001', indexed: 5, not_indexed: 3, pending: 2, rate: 0.625 }],
       },
     })),
@@ -35,6 +38,7 @@ vi.mock('@/api/aiIndex', () => ({
 }))
 
 import AiIndex from '@/views/AiIndex.vue'
+import AiIndexTable from '@/components/AiIndexTable.vue'
 import { aiIndexApi } from '@/api/aiIndex'
 
 // 自定义 stub：el-table 直接迭代 data 把每行 stringify 成文本，便于断言行内容
@@ -137,5 +141,67 @@ describe('AiIndex', () => {
     expect(aiIndexApi.listResults).toHaveBeenCalledWith(
       expect.objectContaining({ page: 1, page_size: 20 }),
     )
+  })
+
+  // M2：筛选触发重新查询并重置 page=1
+  it('筛选变更触发重新 listResults 并重置 page=1', async () => {
+    wrapper = mount(AiIndex, mountOptions())
+    await flushPromises()
+    aiIndexApi.listResults.mockClear()
+    wrapper.findComponent(AiIndexTable).vm.$emit('filter-change', {
+      url: 'x.com', model: 'doubao', index_status: 'indexed',
+    })
+    await flushPromises()
+    expect(aiIndexApi.listResults).toHaveBeenCalledTimes(1)
+    expect(aiIndexApi.listResults).toHaveBeenCalledWith(
+      expect.objectContaining({ url: 'x.com', model: 'doubao', index_status: 'indexed', page: 1 }),
+    )
+  })
+
+  // M2：翻页时传新 page（不重置）
+  it('翻页时传新 page 参数给 listResults', async () => {
+    wrapper = mount(AiIndex, mountOptions())
+    await flushPromises()
+    aiIndexApi.listResults.mockClear()
+    wrapper.findComponent(AiIndexTable).vm.$emit('page-change', 3)
+    await flushPromises()
+    expect(aiIndexApi.listResults).toHaveBeenCalledTimes(1)
+    expect(aiIndexApi.listResults).toHaveBeenCalledWith(
+      expect.objectContaining({ page: 3, page_size: 20 }),
+    )
+  })
+})
+
+// M3：AiIndexTable 的 index_status tag 颜色映射
+// 通过 defineExpose 暴露的纯函数直接验证 statusType / statusLabel 映射
+describe('AiIndexTable statusType 颜色映射', () => {
+  const mountTable = () => mount(AiIndexTable, {
+    props: { items: [], page: 1, pageSize: 20, total: 0 },
+    global: { stubs, directives },
+  })
+
+  it('indexed → success / 已收录', () => {
+    wrapper = mountTable()
+    expect(wrapper.vm.statusType('indexed')).toBe('success')
+    expect(wrapper.vm.statusLabel('indexed')).toBe('已收录')
+  })
+
+  it('not_indexed → danger / 未收录', () => {
+    wrapper = mountTable()
+    expect(wrapper.vm.statusType('not_indexed')).toBe('danger')
+    expect(wrapper.vm.statusLabel('not_indexed')).toBe('未收录')
+  })
+
+  it('pending → info / 待检测', () => {
+    wrapper = mountTable()
+    expect(wrapper.vm.statusType('pending')).toBe('info')
+    expect(wrapper.vm.statusLabel('pending')).toBe('待检测')
+  })
+
+  it('未知状态 → info / 兜底显示', () => {
+    wrapper = mountTable()
+    expect(wrapper.vm.statusType('unknown')).toBe('info')
+    expect(wrapper.vm.statusLabel('unknown')).toBe('unknown')
+    expect(wrapper.vm.statusLabel('')).toBe('—')
   })
 })
