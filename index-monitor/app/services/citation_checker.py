@@ -1,16 +1,16 @@
 # index-monitor/app/services/citation_checker.py
-"""AI 采信检测服务：封装 lumora-cite 完整检测流程。
+"""AI 采信检测服务：封装 lumora-cite 完整检测流程（3 阶段）。
 
-流程：抓取公开内容 → DeepSeek 推断发布目的+生成检测问题 →
-      配置引用检测模型 → 探测模型联网能力 → 执行引用检测 → 存储结果。
+流程：
+1. 准备：抓取公开内容、加载客户活跃监测问题、配置引用检测模型
+2. 模型探测：探测所选模型联网能力（probe_adapter_capabilities）
+3. 引用检测：执行 run_citation_check 并存储结果
 
 所有 lumora-cite 同步调用通过 asyncio.to_thread() 包装，不阻塞事件循环。
 
-P1 稳定性增强（子项目 A）：
-- 步骤 2/3 改用 call_deepseek_with_parse_retry / make_parse_retry_generator
-  对 LLM 返回的脏 JSON 自动重调
-- 步骤 4 加 catalog 过滤：selected_ids 含已下线 id 时过滤并告警
-- 每步骤失败时异常带阶段标签 [N/5 阶段名]，便于批量失败诊断
+稳定性增强：
+- selected_ids 含已下线 id 时过滤并告警
+- 每步骤失败时异常带阶段标签 [N/3 阶段名]，便于批量失败诊断
 - check_all_pending 的 failures 项含 {url, stage, error} 结构
 - on_config_changed() 清探测缓存，供配置变更后调用
 """
@@ -31,40 +31,16 @@ from app.models.citation_check_log import CitationCheckLog
 from app.models.index_result import IndexResult
 from app.models.client import ClientSite
 from app.utils.validators import normalize_domain
-from app.models.system_config import SystemConfig
 # 阶段 2 - ④b：progress 回调默认实现复用 scan_task_manager.add_log（sync，线程安全）
 # 阶段 4 - ⑤：复用 update_citation_model 结构化存储模型 probe 状态
 # 阶段 4 - ⑤：复用 update_progress 推进活动窗口进度计数（processed/success/failed）
 from app.services.scan_task_manager import add_log, update_citation_model, update_progress
-from app.services.llm_client import (
-    call_deepseek,
-    load_ai_configs,
-    make_call_generator,
-    # P1 新增：带解析重试的调用入口
-    call_deepseek_with_parse_retry,
-    make_parse_retry_generator,
-    # 阶段 2 - ⑥b 新增：通用 provider fallback 入口
-    build_question_providers,
-    call_llm_with_parse_retry_fallback,
-    make_fallback_parse_retry_generator,
-)
-# 修复：DEFAULT_QUESTION_MODEL 从 llm_client 导入，保持单一数据源。
-# 原本地定义 "deepseek-chat" 已被 DeepSeek API 废弃（2026年），
-# 会调用失败导致采信检测整体失灵。
-from app.services.llm_client import DEFAULT_QUESTION_MODEL
-from app.services.citation_check import (
-    generate_candidates,
-    run_citation_check,
-)
+from app.services.llm_client import load_ai_configs
+from app.services.citation_check import run_citation_check
 from app.services.citation_check.engine import probe_adapter_capabilities
 from app.services.citation_check.engine import invalidate_probe_cache
 from app.services.citation_check.fetcher import fetch_public_content
 from app.services.citation_check.providers import default_adapters, adapter_catalog
-from app.services.citation_check.question_generation import (
-    build_purpose_prompt,
-    parse_purpose_response,
-    parse_candidate_response,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +53,6 @@ AI_CONFIG_KEYS = [
     "ai_openai_api_key",
     "ai_gemini_api_key",
     "ai_anthropic_api_key",
-    "ai_question_model",
     "ai_citation_models",
 ]
 
