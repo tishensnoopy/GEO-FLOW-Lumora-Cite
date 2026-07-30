@@ -19,17 +19,21 @@ _tasks: dict[str, dict] = {}
 _lock = threading.Lock()
 
 
-def create_task(scan_type: str, total: int, targets: list[tuple[str, str]]) -> str:
+def create_task(scan_type: str, total: int, targets: list[tuple]) -> str:
     """创建扫描任务，返回 task_id。
 
     Parameters
     ----------
     scan_type : str
-        'index' / 'citation' / 'both'
+        'index' / 'citation' / 'ai_index' / 'both'
     total : int
         待检测的 URL 总数
-    targets : list[tuple[str, str]]
-        [(url, client_id), ...] 用于日志展示
+    targets : list[tuple]
+        用于日志展示的 targets。兼容 2 元组与 3 元组：
+        - 2 元组：(url, client_id)
+        - 3 元组：(url, client_id, model) —— 第 3 个元素 model 可选，
+          ai_index 场景由 AIIndexChecker.get_pending_urls 返回。
+        日志展示时只用 url 与 client_id，model 被忽略。
     """
     import uuid
     task_id = str(uuid.uuid4())
@@ -47,7 +51,7 @@ def create_task(scan_type: str, total: int, targets: list[tuple[str, str]]) -> s
                 "level": "info",
                 "message": f"扫描任务已启动，共 {total} 条链接待检测（类型: {scan_type}）",
             }],
-            "targets": [{"url": url, "client_id": cid} for url, cid in targets],
+            "targets": [{"url": t[0], "client_id": t[1]} for t in targets],
             # 阶段 4 - ⑤：采信模型 probe 状态（结构化），供 ScanPanel 模型状态卡片展示。
             # key: 模型名，value: {"model", "status", "error"}。get_task 转为 list 返回。
             "citation_models": {},

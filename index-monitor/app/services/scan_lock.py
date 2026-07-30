@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 _LOCK_KEYS = {
     "index": 0x5C414E01,
     "citation": 0x5C414E02,
+    "ai_index": 0x5C414E03,
 }
 
 
