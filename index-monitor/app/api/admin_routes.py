@@ -583,14 +583,17 @@ async def batch_scan(
                 "scan_type": "ai_index",
                 "message": f"已开始 AI 收录检测 {len(targets)} 条链接",
             }
-        # all 类型：ai_index 后继续 citation（由 _run_batch_scan 处理）
+        # all 类型：ai_index 由 _run_batch_ai_index 处理，index+citation 由 _run_batch_scan(scan_type="both") 处理
 
     # 创建扫描任务（活动窗口）
     from app.services.scan_task_manager import create_task
     task_id = create_task(req.scan_type, len(targets), targets)
 
     # 异步执行检测（不阻塞响应；检测可能耗时数分钟，避免 HTTP 超时）
-    asyncio.create_task(_run_batch_scan(targets, req.scan_type, task_id))
+    # "all" 类型已由上方 _run_batch_ai_index 处理 ai_index 部分，
+    # 这里 _run_batch_scan 只需处理 index+citation，映射为 "both"
+    batch_scan_type = "both" if req.scan_type == "all" else req.scan_type
+    asyncio.create_task(_run_batch_scan(targets, batch_scan_type, task_id))
 
     return {
         "task_id": task_id,
