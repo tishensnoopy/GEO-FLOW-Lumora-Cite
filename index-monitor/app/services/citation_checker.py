@@ -129,16 +129,19 @@ class CitationChecker:
     # ------------------------------------------------------------------
 
     async def get_pending_urls(self) -> list[tuple[str, str]]:
-        """获取待检测采信的 URL 列表（增量 + 优先级）。
+        """获取待检测采信的 URL 列表（增量 + 4 条件 pending + 优先级）。
 
-        筛选条件：GEOFlow 分发 + 手动录入 status='synced' 且 citation_results 中无记录。
+        4 条件全满足才 pending：
+        1. URL 已分发（manual_distributions 或 GEOFlow，status='synced'）
+        2. URL 有至少一个已收录模型（ai_index_results.index_status='indexed'）
+        3. URL 对应客户有活跃监测问题（client_questions.status='active'）
+        4. URL 尚无 citation_results 记录（增量）
+
         返回 [(remote_url, client_id), ...]。
 
-        阶段 3 - ② 增量优先级：
-        - 增量：排除已有 citation_results 记录的 URL（LEFT JOIN ... IS NULL 语义）。
-        - 优先级：按 IndexResult.created_at DESC 排序，新文章优先检测。
-          已收录文章更可能被 AI 引用，优先做采信检测；未收录文章（无 IndexResult，
-          created_at 为 NULL）排末尾。
+        优先级：按 IndexResult.created_at DESC 排序，新文章优先检测。
+        已收录文章更可能被 AI 引用，优先做采信检测；未收录文章（无 IndexResult，
+        created_at 为 NULL）排末尾。
         """
         repo = GeoflowRepository(self.db)
         geoflow_urls = set(await repo.get_synced_distribution_urls())
@@ -164,13 +167,34 @@ class CitationChecker:
             if client_id:
                 distributed.setdefault(url, client_id)
 
-        # 增量：排除已有采信记录的 URL
+        if not distributed:
+            return []
+
+        # 条件 2: 有已收录模型的 URL 集合
+        from app.models.ai_index_result import AIIndexResult
+        indexed_result = await self.db.execute(
+            select(AIIndexResult.url).where(AIIndexResult.index_status == "indexed")
+        )
+        indexed_urls = {row[0] for row in indexed_result.fetchall()}
+
+        # 条件 3: 有活跃监测问题的 client_id 集合
+        from app.models.client_question import ClientQuestion
+        active_clients_result = await self.db.execute(
+            select(ClientQuestion.client_id).where(ClientQuestion.status == "active")
+        )
+        active_clients = {row[0] for row in active_clients_result.fetchall()}
+
+        # 条件 4: 无 citation_results 记录的 URL 集合（增量）
         checked_result = await self.db.execute(select(CitationResult.url))
         checked_urls = {row[0] for row in checked_result.fetchall()}
+
+        # 4 条件过滤：synced（已在 distributed）+ indexed + 客户有 active 问题 + 增量
         pending = [
             (url, client_id)
             for url, client_id in distributed.items()
-            if url not in checked_urls
+            if url in indexed_urls  # 条件 2
+            and client_id in active_clients  # 条件 3
+            and url not in checked_urls  # 条件 4
         ]
         if not pending:
             return []

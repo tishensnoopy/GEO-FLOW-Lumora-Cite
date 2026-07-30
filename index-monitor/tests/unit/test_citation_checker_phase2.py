@@ -276,3 +276,101 @@ async def test_check_url_no_client_questions_raises(db_session, monkeypatch):
     checker = CitationChecker(db_session)
     with pytest.raises(ValueError, match="未配置监测问题"):
         await checker.check_url("https://example.com/test", "no_questions_client")
+
+
+@pytest.mark.asyncio
+async def test_get_pending_urls_4_conditions(db_session):
+    """get_pending_urls 需 4 条件全满足：synced + 有 indexed 模型 + 客户有 active 问题 + 无 citation 记录。"""
+    from app.models.manual_distribution import ManualDistribution
+
+    # 清理本测试用到的 example.com URL 和 client_a/client_b 残留数据，
+    # 保证测试可重复运行（db_session fixture 不做事务回滚）。
+    await db_session.execute(
+        delete(ManualDistribution).where(
+            ManualDistribution.remote_url.like("https://example.com/%")
+        )
+    )
+    await db_session.execute(
+        delete(AIIndexResult).where(AIIndexResult.url.like("https://example.com/%"))
+    )
+    await db_session.execute(
+        delete(ClientQuestion).where(
+            ClientQuestion.client_id.in_(["client_a", "client_b"])
+        )
+    )
+    await db_session.execute(
+        delete(CitationResult).where(
+            CitationResult.url.like("https://example.com/%")
+        )
+    )
+    await db_session.commit()
+
+    # URL1: 全满足 → pending
+    db_session.add(ManualDistribution(
+        client_id="client_a",
+        remote_url="https://example.com/pending-url",
+        status="synced",
+    ))
+    db_session.add(AIIndexResult(
+        url="https://example.com/pending-url",
+        model="qwen",
+        index_status="indexed",
+    ))
+    db_session.add(ClientQuestion(
+        client_id="client_a",
+        question="问题",
+        sort_order=1,
+        status="active",
+    ))
+
+    # URL2: 无已收录模型 → 不 pending
+    db_session.add(ManualDistribution(
+        client_id="client_a",
+        remote_url="https://example.com/no-index-model",
+        status="synced",
+    ))
+
+    # URL3: 客户无问题 → 不 pending
+    db_session.add(ManualDistribution(
+        client_id="client_b",
+        remote_url="https://example.com/no-questions",
+        status="synced",
+    ))
+    db_session.add(AIIndexResult(
+        url="https://example.com/no-questions",
+        model="qwen",
+        index_status="indexed",
+    ))
+
+    # URL4: 已有 citation 记录 → 不 pending
+    db_session.add(ManualDistribution(
+        client_id="client_a",
+        remote_url="https://example.com/already-checked",
+        status="synced",
+    ))
+    db_session.add(AIIndexResult(
+        url="https://example.com/already-checked",
+        model="qwen",
+        index_status="indexed",
+    ))
+    db_session.add(CitationResult(
+        url="https://example.com/already-checked",
+        model="qwen",
+        question="旧问题",
+        answer="",
+        hit_type="none",
+        sources=[],
+    ))
+
+    await db_session.commit()
+
+    checker = CitationChecker(db_session)
+    pending = await checker.get_pending_urls()
+
+    # 过滤出本测试的 URL，避免其他测试残留影响
+    my_pending = [p for p in pending if p[0].startswith("https://example.com/")]
+    pending_urls = {p[0] for p in my_pending}
+    assert "https://example.com/pending-url" in pending_urls
+    assert "https://example.com/no-index-model" not in pending_urls
+    assert "https://example.com/no-questions" not in pending_urls
+    assert "https://example.com/already-checked" not in pending_urls
