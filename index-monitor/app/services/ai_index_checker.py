@@ -8,22 +8,6 @@
 
 仅对 index_status='indexed' 的组合执行问题监测（Phase 2 改造）。
 """
-import asyncio
-import logging
-import time
-from typing import Awaitable, Callable, Optional
-
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.models.ai_index_result import AIIndexResult
-from app.models.manual_distribution import ManualDistribution
-from app.models.citation_check_log import CitationCheckLog
-from app.models.system_config import SystemConfig
-from app.services.scan_task_manager import add_log, update_progress
-
-logger = logging.getLogger(__name__)
-
 # AI 回复中的否定短语——命中即判定 not_indexed
 NEGATIVE_PHRASES = (
     "不了解", "不知道", "无法访问", "没有相关信息",
