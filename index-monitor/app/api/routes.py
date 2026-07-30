@@ -332,6 +332,12 @@ def _test_citation_key(provider_id: str) -> dict:
 #   让 check_url 的 progress 回调把 5 阶段进度 + 模型 probe 状态写入活动窗口。
 @router.post("/scan/trigger/{scan_type}")
 async def trigger_scan(scan_type: str, db: AsyncSession = Depends(get_db)):
+    """[DEPRECATED] 请使用 POST /api/v1/admin/scan/trigger。
+
+    Phase 3：此端点已迁移到统一扫描入口 /api/v1/admin/scan/trigger。
+    保留向后兼容，前端 Phase 4 迁移后删除。响应中携带 ``deprecated: True``
+    字段提示调用方尽快切换。
+    """
     if scan_type not in ("index", "citation"):
         raise HTTPException(
             status_code=400,
@@ -356,6 +362,7 @@ async def trigger_scan(scan_type: str, db: AsyncSession = Depends(get_db)):
             "task_id": None,
             "message": "没有待检测的 URL（所有已同步文章均已检测或无文章）",
             "queued": 0,
+            "deprecated": True,
         }
 
     # 创建活动窗口任务（前端按 task_id 轮询 /admin/scan/status/{task_id}）
@@ -370,6 +377,7 @@ async def trigger_scan(scan_type: str, db: AsyncSession = Depends(get_db)):
         "queued": len(pending),
         "scan_type": scan_type,
         "message": f"已开始检测 {len(pending)} 条链接，结果将异步更新",
+        "deprecated": True,
     }
 
 

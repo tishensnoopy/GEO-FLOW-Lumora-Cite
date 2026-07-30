@@ -89,6 +89,31 @@ async def scheduled_citation_check():
             await release_scan_lock(db, "citation")
 
 
+async def scheduled_ai_index_check():
+    """每日 02:30 AI 收录检测（兜底 pending）。
+
+    处理自动联动触发失败的 URL×模型组合。
+    在搜索引擎收录检测（02:00）之后、采信检测（03:00）之前执行。
+    """
+    from app.services.ai_index_checker import AIIndexChecker
+    async with async_session() as db:
+        if not await acquire_scan_lock(db, "ai_index"):
+            logger.warning("已有 AI 收录扫描在运行，定时任务跳过")
+            return
+        try:
+            checker = AIIndexChecker(db)
+            pending = await checker.get_pending_urls()
+            if not pending:
+                logger.info("AI 收录检测：无待检测组合")
+                return
+            task_id = create_task("ai_index", len(pending), pending)
+            logger.info("AI 收录检测定时任务启动：共 %d 组合（task_id=%s）", len(pending), task_id)
+            await checker.check_all_pending(task_id=task_id)
+            complete_task(task_id)
+        finally:
+            await release_scan_lock(db, "ai_index")
+
+
 async def scheduled_export_processor():
     """每 30 秒扫描 pending 导出任务并处理。
 
@@ -135,6 +160,13 @@ def start_scheduler():
         id="citation_check",
         replace_existing=True,
     )
+    # AI 收录检测：每日 02:30（Phase 3 新增，兜底 pending）
+    scheduler.add_job(
+        scheduled_ai_index_check,
+        CronTrigger(hour=2, minute=30),
+        id="ai_index_check",
+        replace_existing=True,
+    )
     # 导出处理：每 30 秒扫 pending（M4 补全）
     scheduler.add_job(
         scheduled_export_processor,
@@ -154,8 +186,8 @@ def start_scheduler():
     if not scheduler.running:
         scheduler.start()
         logger.info(
-            "APScheduler 已启动：收录检测(每日 02:00) + 采信检测(每日 03:00) "
-            "+ 导出处理(每 30 秒) + 归档扫描(每日 02:00)"
+            "APScheduler 已启动：收录检测(每日 02:00) + AI 收录检测(每日 02:30) "
+            "+ 采信检测(每日 03:00) + 导出处理(每 30 秒) + 归档扫描(每日 02:00)"
         )
 
 
