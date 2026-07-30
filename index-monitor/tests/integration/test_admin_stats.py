@@ -97,15 +97,25 @@ async def _cleanup_citation_data(db_session):
 
 @pytest.mark.asyncio
 async def test_admin_citation_stats_returns_aggregated_count(client, db_session):
-    """admin 获取全量采信统计：total=3, cited=2（exact + domain，排除 none）。"""
+    """admin 获取全量采信统计：新增 3 条（total +3, cited +2，exact + domain，排除 none）。
+
+    共享本地测试 DB 已有预存采信数据（5 条），无法断言绝对总数。改用 delta 方式：
+    记录 seeding 前的全量基线，断言 seeding 后 total/cited 的增量符合预期。
+    """
     try:
+        # 记录基线（共享 DB 可能有预存数据）
+        resp_before = await client.get("/api/v1/admin/stats/citation", headers=_admin_headers())
+        assert resp_before.status_code == 200
+        before = resp_before.json()
+
         await _seed_citation_data(db_session)
 
         resp = await client.get("/api/v1/admin/stats/citation", headers=_admin_headers())
         assert resp.status_code == 200
         data = resp.json()
-        assert data["total"] == 3
-        assert data["cited"] == 2
+        # 增量断言：seeding 新增 3 条 total（2 exact/none + 1 domain）、2 条 cited（exact + domain）
+        assert data["total"] == before["total"] + 3
+        assert data["cited"] == before["cited"] + 2
     finally:
         await _cleanup_citation_data(db_session)
 
@@ -138,8 +148,15 @@ async def test_admin_citation_stats_filter_by_client_id(client, db_session):
 
 @pytest.mark.asyncio
 async def test_admin_citation_stats_empty_when_no_data(client):
-    """无数据时返回 total=0, cited=0。"""
-    resp = await client.get("/api/v1/admin/stats/citation", headers=_admin_headers())
+    """无数据时返回 total=0, cited=0。
+
+    共享本地测试 DB 已有预存采信数据，无法断言全局为空。改用不存在的 client_id
+    过滤，确保该客户维度下无任何记录，验证空数据分支返回 0。
+    """
+    resp = await client.get(
+        "/api/v1/admin/stats/citation?client_id=nonexistent_empty_client_xyz",
+        headers=_admin_headers(),
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert data["total"] == 0

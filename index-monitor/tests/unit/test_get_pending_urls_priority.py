@@ -8,6 +8,10 @@
 
 设计文档②：SQL 层增量（LEFT JOIN citation_results IS NULL）+
 按 IndexResult.created_at DESC 排序（新文章优先）。
+
+Phase 3 改造：get_pending_urls 新增 4 条件 pending 过滤（synced + indexed +
+active questions + 增量），mock side_effect 需补全 ai_index_results 与
+client_questions 两个新查询，否则 side_effect 耗尽抛 StopAsyncIteration。
 """
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -56,9 +60,18 @@ async def test_get_pending_urls_priority_newest_first(monkeypatch):
         ]),
         # 2. client_sites：1 个 active 站点
         _result(scalars_all=[SimpleNamespace(domain="x.com", client_id="c1")]),
-        # 3. citation_results：空（全部未检测）
+        # 3. ai_index_results：4 个 URL 均已收录（条件 2 全满足，专注验证优先级）
+        _result(fetchall=[
+            ("https://old.com/a",),
+            ("https://new.com/a",),
+            ("https://mid.com/a",),
+            ("https://norec.com/a",),
+        ]),
+        # 4. client_questions：c1 有活跃问题（条件 3 满足）
+        _result(fetchall=[("c1",)]),
+        # 5. citation_results：空（全部未检测，条件 4 满足）
         _result(fetchall=[]),
-        # 4. index_results.created_at：old/mid/new 有记录，norec 无
+        # 6. index_results.created_at：old/mid/new 有记录，norec 无
         _result(fetchall=[
             ("https://old.com/a", t_old),
             ("https://mid.com/a", t_mid),
@@ -103,7 +116,15 @@ async def test_get_pending_urls_excludes_already_cited(monkeypatch):
             ("https://c.com/1", "c1"),
         ]),
         _result(scalars_all=[SimpleNamespace(domain="x.com", client_id="c1")]),
-        # citation_results：b.com 已检测 → 应被排除
+        # ai_index_results：3 个 URL 均已收录（条件 2 满足，专注验证增量排除）
+        _result(fetchall=[
+            ("https://a.com/1",),
+            ("https://b.com/1",),
+            ("https://c.com/1",),
+        ]),
+        # client_questions：c1 有活跃问题（条件 3 满足）
+        _result(fetchall=[("c1",)]),
+        # citation_results：b.com 已检测 → 应被排除（条件 4 增量）
         _result(fetchall=[("https://b.com/1",)]),
         # index_results：a/c 有记录
         _result(fetchall=[

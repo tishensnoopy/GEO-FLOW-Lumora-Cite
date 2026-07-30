@@ -178,7 +178,7 @@ async def test_deactivate_client_blocks_login(client, db_session):
         # 尝试登录应失败
         resp = await client.post(
             "/api/v1/auth/login",
-            json={"client_id": "deactivate_test", "password": "Pass1234"},
+            json={"username": "deactivate_test", "password": "Pass1234"},
         )
         assert resp.status_code == 401
     finally:
@@ -464,7 +464,7 @@ async def test_client_change_password_success(client, db_session):
         # 用新密码登录
         resp = await client.post(
             "/api/v1/auth/login",
-            json={"client_id": "changepw_test", "password": "NewPass456"},
+            json={"username": "changepw_test", "password": "NewPass456"},
         )
         assert resp.status_code == 200
     finally:
@@ -523,7 +523,7 @@ async def test_admin_reset_client_password(client, db_session):
         # 用新密码登录
         resp = await client.post(
             "/api/v1/auth/login",
-            json={"client_id": "reset_test", "password": "NewReset123"},
+            json={"username": "reset_test", "password": "NewReset123"},
         )
         assert resp.status_code == 200
 

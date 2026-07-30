@@ -101,6 +101,12 @@ def geoflow_mock_tables():
     用 ``psycopg2`` 同步连接（独立于 asyncio 事件循环），避免 strict 模式下
     模块级 async fixture 与 per-test 事件循环冲突。DDL 用 ``autocommit`` 提交，
     不会被 per-test 事务回滚影响。
+
+    安全修复：共享本地 DB 已有 GEOFlow 真实表（public.articles 等，含外键依赖
+    article_images/article_reviews/article_risk_scans）。创建前先查
+    information_schema 判断表是否已存在——若已存在则跳过 CREATE（IF NOT EXISTS
+    本就 no-op），并在 teardown 跳过 DROP，避免误删真实 GEOFlow 表导致
+    DependentObjectsStillExist 错误 + 数据丢失风险。
     """
     import psycopg2
 
@@ -114,13 +120,32 @@ def geoflow_mock_tables():
     conn.autocommit = True
     try:
         with conn.cursor() as cur:
-            cur.execute(_CREATE_ARTICLES_SQL)
-            cur.execute(_CREATE_ARTICLE_DISTRIBUTIONS_SQL)
+            # 检查表是否已存在（GEOFlow migration 可能已创建真实表）
+            cur.execute(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema='public' AND table_name='articles'"
+            )
+            articles_existed = cur.fetchone() is not None
+            cur.execute(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema='public' AND table_name='article_distributions'"
+            )
+            distributions_existed = cur.fetchone() is not None
+
+            # 只创建不存在的表（IF NOT EXISTS 本就 no-op，这里显式判断便于 teardown 决策）
+            if not articles_existed:
+                cur.execute(_CREATE_ARTICLES_SQL)
+            if not distributions_existed:
+                cur.execute(_CREATE_ARTICLE_DISTRIBUTIONS_SQL)
         yield conn
     finally:
         with conn.cursor() as cur:
-            cur.execute(_DROP_ARTICLE_DISTRIBUTIONS_SQL)
-            cur.execute(_DROP_ARTICLES_SQL)
+            # 只 DROP 我们创建的 mock 表，绝不 DROP 预存的 GEOFlow 真实表
+            # （真实表有外键依赖，DROP 会抛 DependentObjectsStillExist 且有数据丢失风险）
+            if not distributions_existed:
+                cur.execute(_DROP_ARTICLE_DISTRIBUTIONS_SQL)
+            if not articles_existed:
+                cur.execute(_DROP_ARTICLES_SQL)
         conn.close()
 
 

@@ -147,7 +147,11 @@ async def test_sso_callback_valid_code_signs_jwt(client, db_session, fake_redis)
 
 @pytest.mark.asyncio
 async def test_sso_callback_invalid_code_returns_401(client, fake_redis):
-    """验证无效 code 返回 401（state 有效先被消费，再 code 交换失败）。"""
+    """验证无效 code 返回 HTML 错误页（state 有效先被消费，再 code 交换失败）。
+
+    设计变更：SSO callback 按产品要求返回 HTML 错误页（含"重新登录"按钮），
+    而非 raw JSON 401。测试断言需适配 HTML 响应（200 + 错误码在 HTML body 中）。
+    """
     fake_redis.data["sso:state:valid-state"] = "1"
     with patch(
         "app.services.sso_service.SsoService.exchange_code",
@@ -155,42 +159,43 @@ async def test_sso_callback_invalid_code_returns_401(client, fake_redis):
     ):
         response = await client.get("/sso/callback?code=invalid-code&state=valid-state")
 
-    assert response.status_code == 401, f"期望 401，实际 {response.status_code}: {response.text}"
-    assert response.json()["detail"] == "invalid_code"
+    assert response.status_code == 200, f"期望 200 HTML，实际 {response.status_code}: {response.text}"
+    assert "invalid_code" in response.text, f"HTML 应含错误码 invalid_code: {response.text}"
+    assert "重新登录" in response.text, f"HTML 应含重新登录按钮: {response.text}"
     # state 已被一次性消费（即使 code 交换失败也不回滚）
     assert "sso:state:valid-state" not in fake_redis.data
 
 
 @pytest.mark.asyncio
 async def test_sso_callback_missing_code_returns_400(client, fake_redis):
-    """验证缺少 code 参数返回 400 missing_code（state 有效，进入 code 验证后报错）。"""
+    """验证缺少 code 参数返回 HTML 错误页 missing_code（state 有效，进入 code 验证后报错）。"""
     fake_redis.data["sso:state:valid-state"] = "1"
     response = await client.get("/sso/callback?state=valid-state")
 
-    assert response.status_code == 400, f"期望 400，实际 {response.status_code}: {response.text}"
-    assert response.json()["detail"] == "missing_code"
+    assert response.status_code == 200, f"期望 200 HTML，实际 {response.status_code}: {response.text}"
+    assert "missing_code" in response.text, f"HTML 应含错误码 missing_code: {response.text}"
     # state 仍被消费（验证通过即消费，不论后续是否因 code 缺失报错）
     assert "sso:state:valid-state" not in fake_redis.data
 
 
 @pytest.mark.asyncio
 async def test_sso_callback_missing_state_returns_400(client):
-    """验证 callback 缺少 state 参数返回 400 missing_state（先于 code 检查）。"""
+    """验证 callback 缺少 state 参数返回 HTML 错误页 missing_state（先于 code 检查）。"""
     # 注意：不注入 fake_redis——state 缺失应在调用 get_redis 之前就报错
     response = await client.get("/sso/callback?code=valid-code")
 
-    assert response.status_code == 400, f"期望 400，实际 {response.status_code}: {response.text}"
-    assert response.json()["detail"] == "missing_state"
+    assert response.status_code == 200, f"期望 200 HTML，实际 {response.status_code}: {response.text}"
+    assert "missing_state" in response.text, f"HTML 应含错误码 missing_state: {response.text}"
 
 
 @pytest.mark.asyncio
 async def test_sso_callback_invalid_state_returns_401(client, fake_redis):
-    """验证 callback state 不在 Redis 返回 401 invalid_state。"""
+    """验证 callback state 不在 Redis 返回 HTML 错误页 invalid_state。"""
     # fake_redis 默认空，state 不存在
     response = await client.get("/sso/callback?code=valid-code&state=invalid-state")
 
-    assert response.status_code == 401, f"期望 401，实际 {response.status_code}: {response.text}"
-    assert response.json()["detail"] == "invalid_state"
+    assert response.status_code == 200, f"期望 200 HTML，实际 {response.status_code}: {response.text}"
+    assert "invalid_state" in response.text, f"HTML 应含错误码 invalid_state: {response.text}"
 
 
 @pytest.mark.asyncio

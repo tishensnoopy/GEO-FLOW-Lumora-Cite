@@ -43,7 +43,7 @@ def _result(*, fetchall=None, scalars_all=None):
 
 
 def _build_mock_db(n, with_unrecorded_ratio=0.2, seed=42):
-    """构造 mock db，4 次 execute 分别返回 manual/sites/checked/index 结果。
+    """构造 mock db，6 次 execute 分别返回 manual/sites/ai_index/questions/checked/index 结果。
 
     Parameters
     ----------
@@ -53,6 +53,12 @@ def _build_mock_db(n, with_unrecorded_ratio=0.2, seed=42):
         无 IndexResult 记录（未收录）的 URL 占比，用于测试 partition 排序
     seed : int
         随机种子（created_at 顺序打乱用）
+
+    Phase 3 改造：get_pending_urls 新增 4 条件 pending 过滤（synced + indexed +
+    active questions + 增量），mock side_effect 需补全 ai_index_results 与
+    client_questions 两个新查询，否则 side_effect 耗尽抛 StopAsyncIteration。
+    本性能测试专注排序开销，故全部 URL 均设为已收录 + 客户有活跃问题 + 未检测，
+    确保 n 个 URL 全部走排序路径。
     """
     rng = random.Random(seed)
     base = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -61,6 +67,10 @@ def _build_mock_db(n, with_unrecorded_ratio=0.2, seed=42):
     manual = [(f"https://site-{i}.com/article-{i}", "client-1") for i in range(n)]
     # 1 个 active 站点
     sites = [SimpleNamespace(domain="site-0.com", client_id="client-1")]
+    # ai_index_results：n 个 URL 均已收录（条件 2 全满足，确保走排序路径）
+    ai_index = [(url,) for url, _ in manual]
+    # client_questions：client-1 有活跃问题（条件 3 满足）
+    active_clients = [("client-1",)]
     # 已检测 URL：空（全部 pending，走完整排序路径）
     checked = []
     # IndexResult.created_at：部分 URL 无记录（未收录）
@@ -78,8 +88,10 @@ def _build_mock_db(n, with_unrecorded_ratio=0.2, seed=42):
     db.execute = AsyncMock(side_effect=[
         _result(fetchall=manual),          # 1. manual_distributions
         _result(scalars_all=sites),        # 2. client_sites
-        _result(fetchall=checked),         # 3. citation_results（增量）
-        _result(fetchall=idx_rows),        # 4. index_results.created_at（IN 查询）
+        _result(fetchall=ai_index),        # 3. ai_index_results（条件 2：已收录）
+        _result(fetchall=active_clients),  # 4. client_questions（条件 3：活跃问题）
+        _result(fetchall=checked),         # 5. citation_results（条件 4：增量）
+        _result(fetchall=idx_rows),        # 6. index_results.created_at（IN 查询）
     ])
     return db, manual, idx_rows
 

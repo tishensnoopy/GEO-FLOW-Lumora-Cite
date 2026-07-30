@@ -4,6 +4,7 @@ import sys
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 # 让 `app` 包从 index-monitor 项目根可导入，无论 pytest 从哪个目录启动
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -21,6 +22,9 @@ async def db_session():
     为每个测试用例创建独立事件循环，复用模块级 engine（app.core.database.engine）
     会触发 "Future attached to a different loop"。这里就地构造 engine，
     既避免污染生产 engine，也保证测试间事件循环隔离。
+
+    连接池：使用 ``NullPool``——每个 session 的连接用完立即释放，避免测试套件
+    累积大量空闲连接耗尽 PostgreSQL 的 max_connections（100）。
     """
     from app.core.config import settings
 
@@ -28,7 +32,7 @@ async def db_session():
         f"postgresql+asyncpg://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
         f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
     )
-    engine = create_async_engine(url, echo=False)
+    engine = create_async_engine(url, echo=False, poolclass=NullPool)
     session_factory = async_sessionmaker(
         engine, class_=AsyncSession, expire_on_commit=False
     )

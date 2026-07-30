@@ -26,11 +26,16 @@ def test_manual_distribution_schema_is_monitor():
 
 
 def test_manual_distribution_required_columns():
-    """字段集合与设计文档第 4.1 节一致。"""
+    """字段集合与设计文档第 4.1 节一致。
+
+    注：``content_title`` 由 010 迁移添加（Phase 3 前的功能，用于存储抓取的文章标题），
+    属于设计演进后的合法字段，测试断言需同步更新。
+    """
     cols = {c.name for c in ManualDistribution.__table__.columns}
     expected = {
         "id", "client_id", "remote_url", "status", "note",
         "created_by_admin_id", "created_at", "updated_at",
+        "content_title",  # 010 迁移新增
     }
     assert cols == expected, f"缺失字段：{expected - cols}，多余字段：{cols - expected}"
 

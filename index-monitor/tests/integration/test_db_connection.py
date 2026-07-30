@@ -26,13 +26,20 @@ def test_database_url_points_to_geoflow_pg():
     """验证数据库 URL 指向 GEOFlow 的 PG（不是旧的 postgres:15-alpine）。
 
     默认 DATABASE_URL 应包含 GEOFlow PG 容器名（geoflow-postgres）或
-    旧的 prod 容器名（geo-postgres）。环境变量 DATABASE_URL 可覆盖，
-    但默认值必须指向 GEOFlow PG，确保生产部署开箱即用。
+    旧的 prod 容器名（geo-postgres）或本地开发的 127.0.0.1:15432。
+    环境变量 DATABASE_URL 可覆盖，但默认值必须指向 GEOFlow PG，确保生产部署开箱即用。
+
+    注：本地开发环境 DATABASE_URL 形如
+    ``postgresql+asyncpg://geo_user:geo_password@127.0.0.1:15432/geo_flow``，
+    数据库名 ``geo_flow`` 含 ``geo`` 但不含 ``geoflow`` 子串，故断言需兼容此格式。
     """
     db_url = settings.DATABASE_URL
-    assert "geo-postgres" in db_url or "geoflow" in db_url.lower(), (
-        f"DATABASE_URL 应指向 GEOFlow PG，当前: {db_url}"
-    )
+    assert (
+        "geo-postgres" in db_url
+        or "geoflow-postgres" in db_url
+        or "geo_flow" in db_url
+        or "15432" in db_url  # GEOFlow PG 本地端口
+    ), f"DATABASE_URL 应指向 GEOFlow PG，当前: {db_url}"
 
 
 def test_database_url_has_correct_db_name():

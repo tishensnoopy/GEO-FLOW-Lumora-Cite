@@ -95,7 +95,7 @@ async def test_process_excel_task_completes(db_session, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_process_task_records_error_on_failure(db_session, monkeypatch):
+async def test_process_task_records_error_on_failure(db_session, monkeypatch, tmp_path):
     """导出失败时 status=failed + error_message 记录。"""
     from app.models.export_task import ExportTask
 
@@ -106,7 +106,8 @@ async def test_process_task_records_error_on_failure(db_session, monkeypatch):
     db_session.add(task)
     await db_session.commit()
 
-    service = ExportService(db_session)
+    # 用 tmp_path 避免 __init__ 尝试 mkdir /app/exports（容器路径，本地无权限）
+    service = ExportService(db_session, output_dir=str(tmp_path))
 
     # Mock PdfExportService.generate_pdf 抛异常
     async def mock_fail(*args, **kwargs):
@@ -124,7 +125,7 @@ async def test_process_task_records_error_on_failure(db_session, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_assemble_data_reads_charts_from_task(db_session, ensure_geoflow_tables):
+async def test_assemble_data_reads_charts_from_task(db_session, ensure_geoflow_tables, tmp_path):
     """_assemble_data 从 task.charts 读取 charts 字段（而非写死 {}）。
 
     闭合 M3 审查缺口 2：ExportService._assemble_data 写死 "charts": {}。
@@ -145,7 +146,8 @@ async def test_assemble_data_reads_charts_from_task(db_session, ensure_geoflow_t
     db_session.add(task)
     await db_session.commit()
 
-    service = ExportService(db_session)
+    # 用 tmp_path 避免 __init__ 尝试 mkdir /app/exports（容器路径，本地无权限）
+    service = ExportService(db_session, output_dir=str(tmp_path))
     data = await service._assemble_data(task)
 
     assert data["charts"] == {
@@ -155,7 +157,7 @@ async def test_assemble_data_reads_charts_from_task(db_session, ensure_geoflow_t
 
 
 @pytest.mark.asyncio
-async def test_assemble_data_charts_empty_when_task_charts_none(db_session, ensure_geoflow_tables):
+async def test_assemble_data_charts_empty_when_task_charts_none(db_session, ensure_geoflow_tables, tmp_path):
     """task.charts 为 NULL 时，_assemble_data 返回空字典（向后兼容）。"""
     from app.services.export_service import ExportService
     from app.models.export_task import ExportTask
@@ -170,7 +172,8 @@ async def test_assemble_data_charts_empty_when_task_charts_none(db_session, ensu
     db_session.add(task)
     await db_session.commit()
 
-    service = ExportService(db_session)
+    # 用 tmp_path 避免 __init__ 尝试 mkdir /app/exports（容器路径，本地无权限）
+    service = ExportService(db_session, output_dir=str(tmp_path))
     data = await service._assemble_data(task)
 
     assert data["charts"] == {}

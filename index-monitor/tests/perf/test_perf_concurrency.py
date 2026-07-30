@@ -57,7 +57,7 @@ def _run_once(pending, concurrency, per_call=PER_CALL):
     current = 0
     max_concurrent = 0
 
-    async def fake_check_url(url, client_id, *, task_id=None, progress=None):
+    async def fake_check_url(self, url, client_id, *, task_id=None, progress=None):
         nonlocal current, max_concurrent
         current += 1
         if current > max_concurrent:
@@ -65,14 +65,28 @@ def _run_once(pending, concurrency, per_call=PER_CALL):
         await asyncio.sleep(per_call)
         current -= 1
 
-    checker.check_url = fake_check_url
+    # Phase 3 改造：check_all_pending 内部为每个 _check_one 创建独立
+    # AsyncSession + CitationChecker 实例（AsyncSession 并发不安全）。
+    # 实例级 checker.check_url = fake 不会传播到内部实例，需类级 patch。
+    # 同时 patch async_session 返回 mock context manager，避免真实 DB 连接
+    # （本测试只测并发调度开销，不触 DB）。
+    # 注意：citation_checker 在 check_all_pending 内部用 ``from app.core.database
+    # import async_session`` 局部导入，所以 patch 目标是源头 app.core.database。
+    from contextlib import asynccontextmanager
+    from unittest.mock import patch as _patch
 
-    async def _main():
-        return await checker.check_all_pending(concurrency=concurrency)
+    @asynccontextmanager
+    async def fake_session():
+        yield MagicMock()
 
-    t0 = time.perf_counter()
-    summary = asyncio.run(_main())
-    elapsed = time.perf_counter() - t0
+    with _patch("app.core.database.async_session", lambda: fake_session()), \
+         _patch.object(CitationChecker, "check_url", fake_check_url):
+        async def _main():
+            return await checker.check_all_pending(concurrency=concurrency)
+
+        t0 = time.perf_counter()
+        summary = asyncio.run(_main())
+        elapsed = time.perf_counter() - t0
     return elapsed, max_concurrent, summary
 
 

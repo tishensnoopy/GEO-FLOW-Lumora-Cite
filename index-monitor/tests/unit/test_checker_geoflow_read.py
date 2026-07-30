@@ -278,8 +278,17 @@ async def test_get_pending_urls_skips_unregistered_domain(db_session):
 
 @pytest.mark.asyncio
 async def test_citation_checker_reads_geoflow_distribution(db_session):
-    """CitationChecker.get_pending_urls 读 GEOFlow 分发。"""
+    """CitationChecker.get_pending_urls 读 GEOFlow 分发。
+
+    Phase 3 改造后 CitationChecker.get_pending_urls 有 4 个 pending 条件：
+    1. URL 已分发（GEOFlow/manual）  2. URL 有已收录模型（ai_index_results.indexed）
+    3. 客户有活跃问题（client_questions.active）  4. 无 citation_results 记录
+
+    本测试需同时 setup 条件 2、3 的数据，否则 URL 不会进入 pending。
+    """
     from app.models.client import Client, ClientSite
+    from app.models.ai_index_result import AIIndexResult
+    from app.models.client_question import ClientQuestion
     from tests._geoflow_test_models import GeoflowArticle, GeoflowArticleDistribution
 
     client, site = await _seed_client_and_site(
@@ -288,6 +297,17 @@ async def test_citation_checker_reads_geoflow_distribution(db_session):
     article, dist = await _seed_geoflow_article_and_distribution(
         db_session, "https://cite-pending.example.com/article/1",
     )
+    # 条件 2：URL 有已收录模型
+    ai_idx = AIIndexResult(
+        url="https://cite-pending.example.com/article/1",
+        model="doubao", index_status="indexed",
+    )
+    db_session.add(ai_idx)
+    # 条件 3：客户有活跃监测问题
+    question = ClientQuestion(
+        client_id="cite_geoflow_test", question="测试问题", status="active",
+    )
+    db_session.add(question)
     await db_session.commit()
 
     try:
@@ -299,6 +319,8 @@ async def test_citation_checker_reads_geoflow_distribution(db_session):
         assert target_url in pending_dict, "CitationChecker 应读到 GEOFlow 分发的 URL"
         assert pending_dict[target_url] == "cite_geoflow_test"
     finally:
+        await db_session.delete(question)
+        await db_session.delete(ai_idx)
         await db_session.delete(dist)
         await db_session.delete(article)
         await db_session.delete(site)
@@ -308,8 +330,14 @@ async def test_citation_checker_reads_geoflow_distribution(db_session):
 
 @pytest.mark.asyncio
 async def test_citation_checker_excludes_already_checked(db_session):
-    """CitationChecker 排除已有 citation_results 记录的 URL。"""
+    """CitationChecker 排除已有 citation_results 记录的 URL。
+
+    Phase 3 改造后需同时满足 4 条件才 pending，故 pending URL 需额外 setup
+    ai_index_results(indexed) + client_questions(active)。
+    """
     from app.models.client import Client, ClientSite
+    from app.models.ai_index_result import AIIndexResult
+    from app.models.client_question import ClientQuestion
     from tests._geoflow_test_models import GeoflowArticle, GeoflowArticleDistribution
     from app.models.citation_result import CitationResult
 
@@ -329,6 +357,21 @@ async def test_citation_checker_excludes_already_checked(db_session):
         answer="x", hit_type="none", sources=[],
     )
     db_session.add(cr)
+    # 条件 2：两个 URL 都有已收录模型（pending URL 需要满足此条件才进入 pending）
+    ai_idx_checked = AIIndexResult(
+        url="https://cite-checked.example.com/checked",
+        model="doubao", index_status="indexed",
+    )
+    ai_idx_pending = AIIndexResult(
+        url="https://cite-checked.example.com/pending",
+        model="doubao", index_status="indexed",
+    )
+    db_session.add_all([ai_idx_checked, ai_idx_pending])
+    # 条件 3：客户有活跃监测问题
+    question = ClientQuestion(
+        client_id="cite_checked_test", question="测试问题", status="active",
+    )
+    db_session.add(question)
     await db_session.commit()
 
     try:
@@ -343,6 +386,9 @@ async def test_citation_checker_excludes_already_checked(db_session):
             "未检测的 GEOFlow URL 应出现在 pending 中（对照验证）"
         )
     finally:
+        await db_session.delete(question)
+        await db_session.delete(ai_idx_pending)
+        await db_session.delete(ai_idx_checked)
         await db_session.delete(cr)
         await db_session.delete(dist_checked)
         await db_session.delete(article_checked)

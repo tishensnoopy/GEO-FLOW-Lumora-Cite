@@ -1,6 +1,7 @@
 """AutoPipeline 自动联动管道单元测试。"""
 import pytest
 import pytest_asyncio
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.services.auto_pipeline import AutoPipeline
@@ -29,6 +30,32 @@ async def _cleanup_test_data(db_session):
         )
     )
     await db_session.commit()
+    yield
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _patch_async_session(db_session, monkeypatch):
+    """将 auto_pipeline 模块级 ``async_session`` 替换为返回当前测试 ``db_session`` 的上下文管理器。
+
+    背景：``app.services.auto_pipeline`` import 的 ``async_session`` 是
+    ``app.core.database`` 模块级 ``async_sessionmaker``，首次使用时绑定到首个测试
+    的事件循环。pytest-asyncio strict 模式每个测试独立事件循环 → 跨用例复用会触发
+    "Future attached to a different loop"。
+
+    替换为 yield 当前测试 ``db_session``（绑定到当前循环）的 async context manager，
+    使 ``trigger_for_url`` 内部的 ``async with async_session() as db`` 拿到正确的
+    session。需要自定义 fake_session 的测试（如 no_indexed_models/no_client_questions）
+    可在测试体内再次 ``monkeypatch.setattr`` 覆盖本 fixture 的设置（后设置的生效）。
+    """
+
+    @asynccontextmanager
+    async def fake_session():
+        yield db_session
+
+    monkeypatch.setattr(
+        "app.services.auto_pipeline.async_session",
+        lambda: fake_session(),
+    )
     yield
 
 

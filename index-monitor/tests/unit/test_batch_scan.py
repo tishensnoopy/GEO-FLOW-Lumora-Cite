@@ -16,6 +16,7 @@ import pytest
 import pytest_asyncio
 import jwt
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch, AsyncMock
 
 from app.core.config import settings
 
@@ -30,8 +31,9 @@ async def _override_app_db():
     from app.main import app
     from app.core.database import get_db
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    from sqlalchemy.pool import NullPool
 
-    engine = create_async_engine(settings.DATABASE_URL, echo=False)
+    engine = create_async_engine(settings.DATABASE_URL, echo=False, poolclass=NullPool)
     session_factory = async_sessionmaker(
         engine, class_=AsyncSession, expire_on_commit=False
     )
@@ -72,13 +74,28 @@ async def _cleanup_batch_scan_logs(db_session) -> None:
 
 @pytest.mark.asyncio
 async def test_batch_scan_queues_index_check(client, db_session):
-    """batch_scan scan_type=index 入队收录检测。"""
+    """batch_scan scan_type=index 入队收录检测。
+
+    mock ``_resolve_scan_targets`` 返回真实 targets，避免依赖 DB 分发记录
+    （测试用虚构 distribution_ids，真实查询会返回 404）。
+    同时 mock ``_run_batch_scan`` 避免异步检测任务执行副作用。
+    """
+    # 测试前清理其他文件（如 test_auto_pipeline_e2e）可能残留的 batch_scan 日志，
+    # 避免 audit_logs[-1] 取到非本测试的日志（跨文件测试隔离）。
+    await _cleanup_batch_scan_logs(db_session)
     try:
-        resp = await client.post(
-            "/api/v1/admin/distributions/batch-scan",
-            json={"distribution_ids": ["id1", "id2", "id3"], "scan_type": "index"},
-            headers=_admin_headers(),
-        )
+        with patch("app.api.admin_routes._resolve_scan_targets", new_callable=AsyncMock) as mock_resolve, \
+             patch("app.api.admin_routes._run_batch_scan", new_callable=AsyncMock):
+            mock_resolve.return_value = [
+                ("https://example.com/a1", "client_a"),
+                ("https://example.com/a2", "client_b"),
+                ("https://example.com/a3", "client_c"),
+            ]
+            resp = await client.post(
+                "/api/v1/admin/distributions/batch-scan",
+                json={"distribution_ids": ["id1", "id2", "id3"], "scan_type": "index"},
+                headers=_admin_headers(),
+            )
         assert resp.status_code == 200
         data = resp.json()
         assert data["queued"] == 3
@@ -92,13 +109,16 @@ async def test_batch_scan_queues_index_check(client, db_session):
         from sqlalchemy import select
         import json
 
+        # ORDER BY id DESC 取最新一条（避免无序返回取到残留日志）
         audit_result = await db_session.execute(
-            select(AdminAuditLog).where(AdminAuditLog.action == "batch_scan")
+            select(AdminAuditLog)
+            .where(AdminAuditLog.action == "batch_scan")
+            .order_by(AdminAuditLog.id.desc())
         )
         audit_logs = audit_result.scalars().all()
         assert len(audit_logs) >= 1, "审计日志未写入"
         # 验证最新一条的 detail
-        latest = audit_logs[-1]
+        latest = audit_logs[0]
         detail = json.loads(latest.detail) if isinstance(latest.detail, str) else latest.detail
         assert detail["ids"] == ["id1", "id2", "id3"], f"detail.ids 不匹配: {detail.get('ids')}"
         assert detail["type"] == "index", f"detail.type 不匹配: {detail.get('type')}"
@@ -110,11 +130,16 @@ async def test_batch_scan_queues_index_check(client, db_session):
 async def test_batch_scan_queues_both(client, db_session):
     """scan_type=both 同时入队收录+采信。"""
     try:
-        resp = await client.post(
-            "/api/v1/admin/distributions/batch-scan",
-            json={"distribution_ids": ["id1"], "scan_type": "both"},
-            headers=_admin_headers(),
-        )
+        with patch("app.api.admin_routes._resolve_scan_targets", new_callable=AsyncMock) as mock_resolve, \
+             patch("app.api.admin_routes._run_batch_scan", new_callable=AsyncMock):
+            mock_resolve.return_value = [
+                ("https://example.com/b1", "client_a"),
+            ]
+            resp = await client.post(
+                "/api/v1/admin/distributions/batch-scan",
+                json={"distribution_ids": ["id1"], "scan_type": "both"},
+                headers=_admin_headers(),
+            )
         assert resp.status_code == 200
         assert resp.json()["queued"] == 1
     finally:
