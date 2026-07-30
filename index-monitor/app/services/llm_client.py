@@ -13,7 +13,9 @@ P1 修复（子项目 A）：
 """
 import asyncio
 import logging
+import os
 import time
+from dataclasses import dataclass
 from typing import Callable
 
 import httpx
@@ -33,6 +35,194 @@ DEFAULT_QUESTION_MODEL = "deepseek-chat"
 DEFAULT_TIMEOUT = 120  # 秒，问题生成/目的推断可能较慢
 DEFAULT_MAX_TOKENS = 8192  # 目的推断 + 10 个候选问题 JSON 容易超 4K
 DEFAULT_TEMPERATURE = 0.3  # 结构化 JSON 输出更稳定
+
+
+# =========================================================================== #
+# 阶段 2 - ⑥b：通用 provider 入口 + fallback                                   #
+# --------------------------------------------------------------------------- #
+# 解决痛点 6：Stage 2/3 强依赖 DeepSeek，DeepSeek 失效（限流/Key 过期/服务波动）
+# 则采信检测全盘失败。新增通用 OpenAI 兼容 /chat/completions 入口，支持
+# DeepSeek → 千问 → 豆包 顺序 fallback，任一可用即可继续检测。
+# =========================================================================== #
+
+
+@dataclass(frozen=True)
+class LLMProvider:
+    """问题生成用的 LLM provider（OpenAI 兼容 chat/completions）。
+
+    Attributes
+    ----------
+    provider_id : str
+        "deepseek" / "qwen" / "doubao"
+    api_key : str
+        API Key（非空时视为可用）
+    model : str
+        chat 模型名（如 deepseek-chat / qwen-plus / doubao-pro-32k）
+    base_url : str
+        OpenAI 兼容 base URL，调用时拼接 /chat/completions
+    """
+
+    provider_id: str
+    api_key: str
+    model: str
+    base_url: str
+
+    @property
+    def is_available(self) -> bool:
+        return bool(self.api_key)
+
+
+# 问题生成 provider 定义（OpenAI 兼容 chat/completions）。
+# 顺序即 fallback 顺序：DeepSeek → 千问 → 豆包。
+# 元组：(provider_id, api_key_config_key, model_env, default_model, base_url)
+# - DeepSeek 的 model 优先取 ai_question_model 配置（向后兼容），其余取环境变量或默认值
+# - base_url 均为各家 OpenAI 兼容端点，调用时拼接 /chat/completions
+_QUESTION_PROVIDER_DEFS = [
+    (
+        "deepseek",
+        "ai_deepseek_api_key",
+        "QUESTION_DEEPSEEK_MODEL",
+        "deepseek-chat",
+        "https://api.deepseek.com/v1",
+    ),
+    (
+        "qwen",
+        "ai_dashscope_api_key",
+        "QUESTION_QWEN_MODEL",
+        "qwen-plus",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    ),
+    (
+        "doubao",
+        "ai_ark_api_key",
+        "QUESTION_DOUBAO_MODEL",
+        "doubao-pro-32k",
+        "https://ark.cn-beijing.volces.com/api/v3",
+    ),
+]
+
+
+def build_question_providers(config: dict[str, str]) -> list[LLMProvider]:
+    """从 AI 配置构建问题生成 provider 列表（按 fallback 顺序，跳过无 Key 的）。
+
+    - DeepSeek 的 model 取 ``ai_question_model`` 配置（向后兼容旧部署），其余 provider
+      的 model 取环境变量（如 ``QUESTION_QWEN_MODEL``）或默认值；
+    - 无 API Key 的 provider 被跳过（未配置即不可用，不参与 fallback）。
+    """
+    providers: list[LLMProvider] = []
+    for provider_id, key, model_env, default_model, base_url in _QUESTION_PROVIDER_DEFS:
+        api_key = config.get(key, "")
+        if not api_key:
+            continue
+        if provider_id == "deepseek":
+            model = config.get("ai_question_model", "") or default_model
+        else:
+            model = os.getenv(model_env, default_model)
+        providers.append(LLMProvider(provider_id, api_key, model, base_url))
+    return providers
+
+
+def _call_llm_sync(provider: LLMProvider, prompt: str, timeout: int = DEFAULT_TIMEOUT) -> str:
+    """通用 OpenAI 兼容 ``/chat/completions`` 调用，复用 ``_call_with_retry``。
+
+    返回 ``choices[0].message.content`` 文本。429/5xx 指数退避重试，4xx 立即抛出
+    （由上层 ``call_llm_with_parse_retry_fallback`` 捕获后切换 provider）。
+    """
+    def do_post() -> str:
+        with httpx.Client(timeout=timeout) as client:
+            response = client.post(
+                f"{provider.base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {provider.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": provider.model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": DEFAULT_TEMPERATURE,
+                    "max_tokens": DEFAULT_MAX_TOKENS,
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data["choices"][0]["message"]["content"]
+
+    return _call_with_retry(do_post, max_retries=2)
+
+
+def call_llm_with_parse_retry_fallback(
+    providers: list[LLMProvider],
+    prompt: str,
+    *,
+    parser: Callable[[str], object],
+    max_parse_retries: int = 2,
+) -> str:
+    """按顺序尝试 providers，调用/解析失败则换下一个 provider。
+
+    流程（每个 provider）：
+    1. 调用 ``_call_llm_sync`` 取响应文本（429/5xx 内部已退避重试，4xx 立即抛出）；
+    2. 用 ``parser`` 解析；解析失败则追加"请严格只返回 JSON"提示重调，最多
+       ``max_parse_retries`` 次；
+    3. 调用或解析最终失败 → 记录 warning，切换下一个 provider。
+
+    返回首个成功调用且解析通过的 raw text（供调用方二次解析，幂等）。
+    全部 provider 都失败时抛最后一个异常；providers 为空时抛 RuntimeError。
+    """
+    if not providers:
+        raise RuntimeError("无可用问题生成 provider（未配置任何 chat 模型 API Key）")
+
+    last_exc: Exception | None = None
+    for idx, provider in enumerate(providers):
+        try:
+            current_prompt = prompt
+            for attempt in range(max_parse_retries + 1):
+                text = _call_llm_sync(provider, current_prompt)
+                try:
+                    parser(text)
+                    return text  # 解析通过，返回 raw text
+                except (ValueError, KeyError, TypeError) as exc:
+                    if attempt >= max_parse_retries:
+                        logger.warning(
+                            "provider %s 响应解析失败（已重试 %d 次），切换下一个 provider: %s",
+                            provider.provider_id, attempt, exc,
+                        )
+                        raise  # 触发外层 except → fallback
+                    logger.warning(
+                        "provider %s 响应解析失败（第 %d 次），追加 JSON 提示重试",
+                        provider.provider_id, attempt + 1,
+                    )
+                    current_prompt = prompt + "\n\n请严格只返回 JSON，不要任何解释文字。"
+        except Exception as exc:  # noqa: BLE001 - 任何异常都尝试下一个 provider
+            last_exc = exc
+            logger.warning(
+                "provider %s 不可用（第 %d/%d 个），尝试下一个: %s",
+                provider.provider_id, idx + 1, len(providers), exc,
+            )
+            continue
+    # 全部失败
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("无可用问题生成 provider")  # 理论上不会执行到
+
+
+def make_fallback_parse_retry_generator(
+    providers: list[LLMProvider],
+    *,
+    parser: Callable[[str], object],
+    max_parse_retries: int = 2,
+) -> Callable[[str], str]:
+    """创建带 provider fallback + 解析重试的 call_generator，供 generate_candidates 使用。
+
+    与 ``make_parse_retry_generator`` 契约一致：返回 ``call_generator(prompt) -> str``，
+    内部完成"重调 LLM 直到可解析 + provider 间 fallback"，让 generate_candidates
+    拿到的 raw text 一定是可解析的。
+    """
+    def call_generator(prompt: str) -> str:
+        return call_llm_with_parse_retry_fallback(
+            providers, prompt, parser=parser, max_parse_retries=max_parse_retries,
+        )
+
+    return call_generator
 
 
 async def get_ai_config(db: AsyncSession, key: str) -> str:

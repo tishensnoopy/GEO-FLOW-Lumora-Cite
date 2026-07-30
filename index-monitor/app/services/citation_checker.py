@@ -18,7 +18,8 @@ import asyncio
 import logging
 import os
 import re
-from typing import Optional
+import time
+from typing import Awaitable, Callable, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,10 +27,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.integration.geoflow import GeoflowRepository
 from app.models.manual_distribution import ManualDistribution
 from app.models.citation_result import CitationResult
+from app.models.citation_check_log import CitationCheckLog
 from app.models.index_result import IndexResult
 from app.models.client import ClientSite
 from app.utils.validators import normalize_domain
 from app.models.system_config import SystemConfig
+# 阶段 2 - ④b：progress 回调默认实现复用 scan_task_manager.add_log（sync，线程安全）
+# 阶段 4 - ⑤：复用 update_citation_model 结构化存储模型 probe 状态
+# 阶段 4 - ⑤：复用 update_progress 推进活动窗口进度计数（processed/success/failed）
+from app.services.scan_task_manager import add_log, update_citation_model, update_progress
 from app.services.llm_client import (
     call_deepseek,
     load_ai_configs,
@@ -37,6 +43,10 @@ from app.services.llm_client import (
     # P1 新增：带解析重试的调用入口
     call_deepseek_with_parse_retry,
     make_parse_retry_generator,
+    # 阶段 2 - ⑥b 新增：通用 provider fallback 入口
+    build_question_providers,
+    call_llm_with_parse_retry_fallback,
+    make_fallback_parse_retry_generator,
 )
 # 修复：DEFAULT_QUESTION_MODEL 从 llm_client 导入，保持单一数据源。
 # 原本地定义 "deepseek-chat" 已被 DeepSeek API 废弃（2026年），
@@ -121,10 +131,16 @@ class CitationChecker:
     # ------------------------------------------------------------------
 
     async def get_pending_urls(self) -> list[tuple[str, str]]:
-        """获取待检测采信的 URL 列表。
+        """获取待检测采信的 URL 列表（增量 + 优先级）。
 
         筛选条件：GEOFlow 分发 + 手动录入 status='synced' 且 citation_results 中无记录。
         返回 [(remote_url, client_id), ...]。
+
+        阶段 3 - ② 增量优先级：
+        - 增量：排除已有 citation_results 记录的 URL（LEFT JOIN ... IS NULL 语义）。
+        - 优先级：按 IndexResult.created_at DESC 排序，新文章优先检测。
+          已收录文章更可能被 AI 引用，优先做采信检测；未收录文章（无 IndexResult，
+          created_at 为 NULL）排末尾。
         """
         repo = GeoflowRepository(self.db)
         geoflow_urls = set(await repo.get_synced_distribution_urls())
@@ -150,15 +166,37 @@ class CitationChecker:
             if client_id:
                 distributed.setdefault(url, client_id)
 
-        # 排除已有采信记录的 URL
+        # 增量：排除已有采信记录的 URL
         checked_result = await self.db.execute(select(CitationResult.url))
         checked_urls = {row[0] for row in checked_result.fetchall()}
-
-        return [
+        pending = [
             (url, client_id)
             for url, client_id in distributed.items()
             if url not in checked_urls
         ]
+        if not pending:
+            return []
+
+        # 优先级：按 IndexResult.created_at DESC（新文章优先）；未收录文章排末尾。
+        # 一次 IN 查询拿到所有待检测 URL 的首次收录时间，避免 N 次查询。
+        pending_urls = [url for url, _ in pending]
+        idx_result = await self.db.execute(
+            select(IndexResult.url, IndexResult.created_at)
+            .where(IndexResult.url.in_(pending_urls))
+        )
+        created_at_map = {row[0]: row[1] for row in idx_result.fetchall()}
+
+        with_ts: list[tuple[object, str, str]] = []
+        without_ts: list[tuple[str, str]] = []
+        for url, cid in pending:
+            ts = created_at_map.get(url)
+            if ts is None:
+                without_ts.append((url, cid))
+            else:
+                with_ts.append((ts, url, cid))
+        # created_at 降序：新文章（ts 大）排前
+        with_ts.sort(key=lambda x: x[0], reverse=True)
+        return [(url, cid) for _, url, cid in with_ts] + without_ts
 
     # ------------------------------------------------------------------
     # 配置加载
@@ -183,7 +221,14 @@ class CitationChecker:
     # 单 URL 检测
     # ------------------------------------------------------------------
 
-    async def check_url(self, url: str, client_id: str) -> dict:
+    async def check_url(
+        self,
+        url: str,
+        client_id: str,
+        *,
+        task_id: Optional[str] = None,
+        progress: Optional[Callable[..., Awaitable[None]]] = None,
+    ) -> dict:
         """对单个 URL 执行完整 AI 采信检测。
 
         返回 lumora-cite run_citation_check 的完整结果 dict，
@@ -191,18 +236,38 @@ class CitationChecker:
 
         每步骤失败时抛带阶段标签 [N/5 阶段名] 的 ValueError，便于
         check_all_pending 汇总失败诊断。
+
+        阶段 2 - ④b：新增 task_id + progress 回调，解决"采信检测黑盒"问题。
+        - progress(stage, status, message, *, detail, model, duration_ms) 是 async 回调；
+        - 不传 progress 时用默认回调：写 scan_task_manager.add_log（供 ScanPanel 实时
+          轮询）+ 持久化 CitationCheckLog（供历史查询）；
+        - task_id 为 None（定时任务）时只写 CitationCheckLog，不写内存任务日志。
         """
+        if progress is None:
+            progress = self._make_default_progress(task_id, url)
+
+        async def _report(stage: str, status: str, message: str, **kw) -> None:
+            """progress 回调的薄封装，忽略回调自身异常不影响主流程。"""
+            try:
+                await progress(stage, status, message, **kw)
+            except Exception as cb_exc:  # noqa: BLE001 - 回调失败不应中断检测
+                logger.warning("progress 回调异常（已忽略）: %s", cb_exc)
+
         config = await self._load_ai_config()
-        deepseek_key = config.get("ai_deepseek_api_key", "")
         question_model = config.get("ai_question_model", DEFAULT_QUESTION_MODEL)
 
-        if not deepseek_key:
+        # 阶段 2 - ⑥b：构建问题生成 provider 列表（DeepSeek→千问→豆包 fallback）。
+        question_providers = build_question_providers(config)
+        if not question_providers:
+            await _report("2/5 目的推断", "error", "未配置任何可用于问题生成的 chat 模型 API Key")
             raise ValueError(
-                "DeepSeek API Key 未配置，无法生成检测问题。"
-                "请在系统设置 → AI API Key 管理中配置 DeepSeek API Key。"
+                "未配置任何可用于问题生成的 chat 模型 API Key。"
+                "请在系统设置 → AI API Key 管理中配置 DeepSeek / DashScope(千问) / ARK(豆包) 任一 Key。"
             )
 
         # Step 1: 抓取公开内容
+        await _report("1/5 抓取", "start", f"开始抓取内容: {url}")
+        t0 = time.time()
         logger.info("采信检测 [1/5] 抓取内容: %s", url)
         try:
             content = await asyncio.to_thread(fetch_public_content, url)
@@ -212,7 +277,13 @@ class CitationChecker:
                     f"（code={content.suitability.rejection_code}）"
                 )
         except Exception as exc:
+            await _report("1/5 抓取", "error", f"抓取失败: {exc}", duration_ms=int((time.time() - t0) * 1000))
             raise _wrap_with_stage(1, exc) from exc
+        await _report(
+            "1/5 抓取", "success", f"抓取完成: {content.title}",
+            detail={"extraction_method": content.extraction_method},
+            duration_ms=int((time.time() - t0) * 1000),
+        )
 
         title = content.title
         text = content.text
@@ -221,29 +292,37 @@ class CitationChecker:
             if u
         ]
 
-        # Step 2: DeepSeek 推断发布目的（带解析重试）
-        logger.info("采信检测 [2/5] 推断发布目的（DeepSeek %s）: %s", question_model, title)
+        # Step 2: 推断发布目的（带 provider fallback + 解析重试）
+        await _report("2/5 目的推断", "start", f"开始推断发布目的（providers: {','.join(p.provider_id for p in question_providers)}）")
+        t0 = time.time()
+        logger.info(
+            "采信检测 [2/5] 推断发布目的（providers: %s）: %s",
+            ",".join(p.provider_id for p in question_providers), title,
+        )
         try:
             purpose_prompt = build_purpose_prompt(title, text)
-            # P1 改用 call_deepseek_with_parse_retry：调用成功但 JSON 解析失败时
-            # 自动追加"请严格只返回 JSON"提示重调，最多 2 次解析重试
-            purpose = await asyncio.to_thread(
-                call_deepseek_with_parse_retry,
-                deepseek_key,
-                question_model,
+            purpose_raw = await asyncio.to_thread(
+                call_llm_with_parse_retry_fallback,
+                question_providers,
                 purpose_prompt,
                 parser=parse_purpose_response,
             )
+            purpose = parse_purpose_response(purpose_raw)
         except Exception as exc:
+            await _report("2/5 目的推断", "error", f"目的推断失败: {exc}", duration_ms=int((time.time() - t0) * 1000))
             raise _wrap_with_stage(2, exc) from exc
+        await _report("2/5 目的推断", "success", f"目的推断完成: {purpose.primary_purpose}", duration_ms=int((time.time() - t0) * 1000))
 
-        # Step 3: DeepSeek 生成检测问题（带解析重试）
-        logger.info("采信检测 [3/5] 生成检测问题（DeepSeek %s）: %s", question_model, title)
+        # Step 3: 生成检测问题（带 provider fallback + 解析重试）
+        await _report("3/5 问题生成", "start", f"开始生成检测问题（providers: {','.join(p.provider_id for p in question_providers)}）")
+        t0 = time.time()
+        logger.info(
+            "采信检测 [3/5] 生成检测问题（providers: %s）: %s",
+            ",".join(p.provider_id for p in question_providers), title,
+        )
         try:
-            # P1 改用 make_parse_retry_generator：包装 make_call_generator + 解析重试
-            call_generator = make_parse_retry_generator(
-                deepseek_key,
-                question_model,
+            call_generator = make_fallback_parse_retry_generator(
+                question_providers,
                 parser=parse_candidate_response,
             )
             candidates = await asyncio.to_thread(
@@ -256,12 +335,16 @@ class CitationChecker:
             if len(candidates) < 3:
                 raise ValueError(
                     f"生成的问题不足：需要至少 3 个，实际 {len(candidates)} 个。"
-                    "请检查 DeepSeek API Key 是否有效，或重试。"
+                    "请检查问题生成模型 API Key 是否有效，或重试。"
                 )
         except Exception as exc:
+            await _report("3/5 问题生成", "error", f"问题生成失败: {exc}", duration_ms=int((time.time() - t0) * 1000))
             raise _wrap_with_stage(3, exc) from exc
+        await _report("3/5 问题生成", "success", f"生成 {len(candidates)} 个候选问题", duration_ms=int((time.time() - t0) * 1000))
 
         # Step 4: 配置引用检测模型 + 探测联网能力
+        await _report("4/5 模型探测", "start", "开始配置引用检测模型并探测联网能力")
+        t0 = time.time()
         self._set_provider_env(config)
         citation_models_str = config.get("ai_citation_models", "")
         selected_ids = (
@@ -270,7 +353,6 @@ class CitationChecker:
             else None
         )
         # P1 catalog 过滤：selected_ids 含已下线 id（如 deepseek）时过滤并告警
-        # 避免因配置残留导致"未配置任何引用检测模型"报错
         if selected_ids:
             catalog_ids = {item["id"] for item in adapter_catalog()}
             valid_selected_ids = [mid for mid in selected_ids if mid in catalog_ids]
@@ -291,41 +373,57 @@ class CitationChecker:
                 )
 
             logger.info("采信检测 [4/5] 探测模型联网能力: %s", url)
+            # 阶段 1 - ③：probe 降级为标注，不再淘汰模型。
             capabilities = await asyncio.to_thread(probe_adapter_capabilities, adapters)
-            verified_ids = {
-                item["provider_id"] for item in capabilities if item["status"] == "verified"
-            }
-            verified_adapters = [a for a in adapters if a.provider_id in verified_ids]
-            if not verified_adapters:
-                failed_models = [
-                    f"{item['model']}({item['status']})"
-                    for item in capabilities
-                ]
-                raise ValueError(
-                    "所选引用检测模型均未通过联网搜索与来源 URL 返回检测。"
-                    f"模型状态：{', '.join(failed_models)}。"
-                    "请检查 API Key 是否有效，或更换支持联网搜索的模型。"
+            verified_count = sum(1 for item in capabilities if item["status"] == "verified")
+            logger.info(
+                "采信检测 [4/5] 模型探测完成: %d/%d 通过联网验证（通过仅作标注，不淘汰未通过模型）",
+                verified_count, len(adapters),
+            )
+            # 阶段 2 - ④b：按模型逐条上报 probe 结果（供 ScanPanel 展示模型状态卡片）
+            for item in capabilities:
+                model_name = item.get("model", item.get("provider_id", "?"))
+                status = item.get("status", "unknown")
+                await _report(
+                    "4/5 模型探测", "info" if status == "verified" else "error",
+                    f"{model_name}: {status}",
+                    model=model_name,
+                    detail={"provider_id": item.get("provider_id"), "status": status, "error": item.get("error")},
                 )
+            await _report(
+                "4/5 模型探测", "success",
+                f"模型探测完成: {verified_count}/{len(adapters)} 通过联网验证",
+                duration_ms=int((time.time() - t0) * 1000),
+            )
         except Exception as exc:
+            await _report("4/5 模型探测", "error", f"模型探测失败: {exc}", duration_ms=int((time.time() - t0) * 1000))
             raise _wrap_with_stage(4, exc) from exc
 
         # Step 5: 执行引用检测
         question_count = min(len(candidates), 10)
+        await _report(
+            "5/5 引用检测", "start",
+            f"开始引用检测（{question_count} 问题 × {len(adapters)} 模型）",
+        )
+        t0 = time.time()
         logger.info(
             "采信检测 [5/5] 执行引用检测: %s（%d 问题 × %d 模型）",
-            url, question_count, len(verified_adapters),
+            url, question_count, len(adapters),
         )
         try:
             result = await asyncio.to_thread(
                 run_citation_check,
                 target_urls=target_urls,
                 candidates=candidates,
-                adapters=verified_adapters,
+                adapters=adapters,
                 question_count=question_count,
-                forbidden_terms=[*target_urls, title],
+                # 阶段 1 - ⑥a：forbidden_terms 只禁目标 URL，允许标题词出现。
+                forbidden_terms=[*target_urls],
             )
         except Exception as exc:
+            await _report("5/5 引用检测", "error", f"引用检测失败: {exc}", duration_ms=int((time.time() - t0) * 1000))
             raise _wrap_with_stage(5, exc) from exc
+        await _report("5/5 引用检测", "success", "引用检测完成", duration_ms=int((time.time() - t0) * 1000))
 
         # 附加元信息
         result["purpose"] = purpose.to_dict()
@@ -341,6 +439,51 @@ class CitationChecker:
         await self._store_results(url, result)
 
         return result
+
+    def _make_default_progress(self, task_id: Optional[str], url: str) -> Callable[..., Awaitable[None]]:
+        """构造默认 progress 回调：写 scan_task_manager.add_log + 持久化 CitationCheckLog。
+
+        - 有 task_id 时同步调 ``add_log(task_id, level, message)``（供 ScanPanel 实时轮询）；
+        - 始终 ``db.add(CitationCheckLog(...))`` + commit（供历史查询与运维排查）；
+        - task_id 为 None（定时任务）时只持久化，不写内存任务日志。
+
+        回调签名：``async def progress(stage, status, message, *, detail, model, duration_ms)``。
+        """
+        db = self.db
+        # status → scan_task_manager 日志级别映射
+        level_map = {"start": "info", "success": "success", "error": "error", "info": "info"}
+
+        async def progress(stage, status, message, *, detail=None, model=None, duration_ms=None):
+            level = level_map.get(status, "info")
+            # 1. 内存任务日志（供 ScanPanel 2s 轮询）
+            if task_id:
+                try:
+                    add_log(task_id, level, message)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("add_log 失败（已忽略）: %s", exc)
+                # 阶段 4 - ⑤：stage 4 模型级上报时，结构化存储 probe 状态。
+                # detail["status"] 是真实 probe 状态（verified/error/no_search/...），
+                # 供 ScanPanel 模型状态卡片直接读取，无需从日志文本解析。
+                if stage == "4/5 模型探测" and model and detail and detail.get("status"):
+                    try:
+                        update_citation_model(
+                            task_id, model, detail["status"], detail.get("error"),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("update_citation_model 失败（已忽略）: %s", exc)
+            # 2. 持久化到 citation_check_logs（供历史查询）
+            db.add(CitationCheckLog(
+                task_id=task_id,
+                url=url,
+                stage=stage,
+                status=status,
+                model=model,
+                detail=detail,
+                duration_ms=duration_ms,
+            ))
+            await db.commit()
+
+        return progress
 
     def on_config_changed(self, provider_id: Optional[str] = None) -> None:
         """AI 配置变更后调用，清空探测缓存。
@@ -395,31 +538,88 @@ class CitationChecker:
     # 批量检测
     # ------------------------------------------------------------------
 
-    async def check_all_pending(self) -> dict:
+    async def check_all_pending(
+        self, *, task_id: Optional[str] = None, concurrency: int = 3
+    ) -> dict:
         """检测所有待检测的 URL，返回汇总信息。
 
         failures 项结构：{"url", "stage", "error"}
         - stage：从异常消息的 [N/5 阶段名] 前缀提取，无标签为 "unknown"
         - 便于运维按阶段聚合失败原因，定位瓶颈步骤
+
+        阶段 2 - ④b：task_id 透传给 check_url，使批量扫描的每条 URL 日志都能
+        写入 scan_task_manager + citation_check_logs。
+
+        阶段 3 - ②：并发化。原串行实现 N 个 URL 耗时 = N × 单条耗时；改用
+        ``asyncio.gather`` + ``Semaphore(concurrency)`` 并发，单条失败不影响其他。
+        concurrency 默认 3（平衡 API 限流与吞吐）。每条 check_url 在独立 semaphore
+        槽位内执行，异常被捕获记入 failures，不传播到 gather 导致整批取消。
+
+        Bugfix：每个 _check_one 创建独立 AsyncSession + CitationChecker。
+        原实现共享 self.db，但 SQLAlchemy AsyncSession 不是并发安全的——
+        多协程并发 commit 会导致事务状态混乱（PendingRollbackError）+
+        citation_check_logs 主键冲突 + release_scan_lock 失败（锁泄漏）。
+        独立 session 既保留并发优势，又保证事务隔离。
         """
         pending = await self.get_pending_urls()
         total = len(pending)
+        if total == 0:
+            return {"total": 0, "success": 0, "failed": 0, "failures": []}
+
+        # 修复进度 >100%：trigger_scan 用第一次查询的 pending 设 create_task(total)，
+        # 本方法重新查询 pending 可能因期间新分发同步而数量不同。用实际 pending 数
+        # 更新 task.total，确保 processed 不会超过 total（ScanPanel 进度不会 >100%）。
+        if task_id:
+            try:
+                update_progress(task_id, total=total)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("update_progress(total) 失败（已忽略）: %s", exc)
+
+        from app.core.database import async_session
+        semaphore = asyncio.Semaphore(max(1, concurrency))
         success = 0
         failures: list[dict] = []
+        # 用列表收集结果，避免闭包变量竞争
+        results: list[dict] = []
+        processed = 0
 
-        for url, client_id in pending:
-            try:
-                await self.check_url(url, client_id)
+        async def _check_one(url: str, client_id: str) -> None:
+            nonlocal success, processed
+            async with semaphore:
+                # 独立 session：AsyncSession 并发不安全，每条 URL 用自己的 session
+                async with async_session() as task_db:
+                    checker = CitationChecker(task_db)
+                    try:
+                        await checker.check_url(url, client_id, task_id=task_id)
+                        results.append({"ok": True, "url": url})
+                    except Exception as exc:
+                        error_msg = str(exc)
+                        stage = _extract_stage(error_msg)
+                        logger.error("采信检测失败 %s [%s]: %s", url, stage, exc)
+                        results.append({"ok": False, "url": url, "stage": stage, "error": error_msg})
+                # 阶段 4 - ⑤：每条完成即更新活动窗口进度计数（processed/success/failed），
+                # 供 ScanPanel 进度条实时推进。task_id 为 None（定时任务无活动窗口）时跳过。
+                processed += 1
+                if task_id:
+                    try:
+                        update_progress(
+                            task_id,
+                            processed=processed,
+                            success=sum(1 for r in results if r["ok"]),
+                            failed=sum(1 for r in results if not r["ok"]),
+                        )
+                    except Exception as exc:  # noqa: BLE001 - 进度更新失败不应中断检测
+                        logger.warning("update_progress 失败（已忽略）: %s", exc)
+
+        # 并发执行所有 URL 的检测
+        await asyncio.gather(*[_check_one(url, cid) for url, cid in pending])
+
+        # 汇总结果（gather 完成后顺序遍历，无竞争）
+        for r in results:
+            if r["ok"]:
                 success += 1
-            except Exception as exc:
-                error_msg = str(exc)
-                stage = _extract_stage(error_msg)
-                logger.error("采信检测失败 %s [%s]: %s", url, stage, exc)
-                failures.append({
-                    "url": url,
-                    "stage": stage,
-                    "error": error_msg,
-                })
+            else:
+                failures.append({"url": r["url"], "stage": r["stage"], "error": r["error"]})
 
         return {
             "total": total,

@@ -220,7 +220,7 @@ def _search_used(data) -> bool:
 
 def adapter_catalog() -> list[dict]:
     return [
-        {"id": "doubao", "name": "豆包", "model_id": os.getenv("CITATION_DOUBAO_MODEL", "doubao-seed-2-0-pro-260215"), "configured": bool(os.getenv("ARK_API_KEY", ""))},
+        {"id": "doubao", "name": "豆包", "model_id": os.getenv("CITATION_DOUBAO_MODEL", "doubao-seed-2-0-lite-260428"), "configured": bool(os.getenv("ARK_API_KEY", ""))},
         {"id": "qwen", "name": "千问", "model_id": os.getenv("CITATION_QWEN_MODEL", "qwen3.6-plus"), "configured": bool(os.getenv("DASHSCOPE_API_KEY", ""))},
         {"id": "ernie", "name": "文心", "model_id": os.getenv("CITATION_ERNIE_MODEL", "ernie-5.0"), "configured": bool(os.getenv("BAIDU_API_KEY", ""))},
         {"id": "openai", "name": "ChatGPT / OpenAI", "model_id": os.getenv("CITATION_OPENAI_MODEL", "gpt-5"), "configured": bool(os.getenv("OPENAI_API_KEY", ""))},
@@ -240,11 +240,11 @@ def default_adapters(selected_ids: list[str] | None = None) -> list:
         "doubao": RawHttpAdapter(
             "doubao",
             "豆包",
-            os.getenv("CITATION_DOUBAO_MODEL", "doubao-seed-2-0-pro-260215"),
+            os.getenv("CITATION_DOUBAO_MODEL", "doubao-seed-2-0-lite-260428"),
             ark_key,
             "https://ark.cn-beijing.volces.com/api/v3/responses",
             lambda question: {
-                "model": os.getenv("CITATION_DOUBAO_MODEL", "doubao-seed-2-0-pro-260215"),
+                "model": os.getenv("CITATION_DOUBAO_MODEL", "doubao-seed-2-0-lite-260428"),
                 "input": question,
                 "instructions": "正常回答问题。请优先联网搜索最新公开信息，并保留来源。",
                 "tools": [{"type": "web_search"}],

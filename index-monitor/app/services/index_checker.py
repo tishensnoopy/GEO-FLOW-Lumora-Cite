@@ -1,6 +1,7 @@
 # index-monitor/app/services/index_checker.py
+import logging
 from datetime import datetime, timezone
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.integration.geoflow import GeoflowRepository
@@ -10,6 +11,9 @@ from app.models.client import ClientSite
 from app.utils.validators import normalize_domain
 from app.services.spider import spider
 from app.services.article_fetcher import article_fetcher
+from app.services.scan_task_manager import add_log, update_progress
+
+logger = logging.getLogger(__name__)
 
 class IndexChecker:
     def __init__(self, db: AsyncSession):
@@ -116,7 +120,39 @@ class IndexChecker:
         ))
         await self.db.commit()
 
-    async def check_all_pending(self):
+    async def check_all_pending(self, *, task_id: Optional[str] = None):
+        """检测所有待检测 URL。
+
+        阶段 4 - ①：新增 task_id 参数，供 /scan/trigger 异步入口透传，
+        使收录扫描进度也能写入 scan_task_manager（ScanPanel 可展示）。
+        task_id 为 None（定时任务）时不写活动窗口日志。
+        单条失败不中断整体扫描，记入 failed 计数。
+        """
         pending = await self.get_pending_urls()
+        # 修复进度 >100%：用实际 pending 数更新 task.total（与 citation_checker 一致），
+        # 避免 trigger_scan 的旧 total 与实际检测数不一致导致 ScanPanel 进度 >100%。
+        if task_id:
+            try:
+                update_progress(task_id, total=len(pending))
+            except Exception:  # noqa: BLE001
+                pass
+        processed = 0
+        success = 0
+        failed = 0
         for url, client_id in pending:
-            await self.check_url(url, client_id, "official")
+            try:
+                await self.check_url(url, client_id, "official")
+                success += 1
+                if task_id:
+                    add_log(task_id, "success", f"收录检测完成: {url}")
+            except Exception as exc:  # noqa: BLE001 - 单条失败不中断整体扫描
+                failed += 1
+                logger.error("收录检测失败 %s: %s", url, exc)
+                if task_id:
+                    add_log(task_id, "error", f"收录检测失败 {url}: {exc}")
+            processed += 1
+            if task_id:
+                try:
+                    update_progress(task_id, processed=processed, success=success, failed=failed)
+                except Exception:  # noqa: BLE001 - 进度更新失败不中断扫描
+                    pass

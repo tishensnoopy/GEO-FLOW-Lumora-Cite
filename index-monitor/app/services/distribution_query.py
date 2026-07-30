@@ -12,6 +12,7 @@
 合并后按 distributed_at 降序排列。
 """
 import json
+import logging
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 
@@ -24,6 +25,8 @@ from app.models.client import ClientSite
 from app.models.index_result import IndexResult
 from app.models.manual_distribution import ManualDistribution
 from app.utils.validators import normalize_domain
+
+logger = logging.getLogger(__name__)
 
 
 def _date_from_lower_bound(d: date) -> datetime:
@@ -261,10 +264,16 @@ class DistributionQueryService:
         """
         results = []
         if source in (None, "geoflow"):
-            geoflow_records = await self._query_geoflow_distributions(
-                client_id=client_id, date_from=date_from, date_to=date_to
-            )
-            results.extend(geoflow_records)
+            try:
+                geoflow_records = await self._query_geoflow_distributions(
+                    client_id=client_id, date_from=date_from, date_to=date_to
+                )
+                results.extend(geoflow_records)
+            except Exception as exc:
+                # 优雅降级：GEOFlow 表缺失或跨 schema 查询失败时，不阻塞手动记录加载。
+                # 常见触发场景：GEOFlow migration 未跑全（article_distributions 表缺失）、
+                # GEOFlow 数据库重启后表未恢复等。
+                logger.warning("GEOFlow 分发查询失败，跳过 GEOFlow 记录: %s", exc)
         if include_manual and source in (None, "manual"):
             manual_records = await self._query_manual_distributions(
                 client_id=client_id, date_from=date_from, date_to=date_to
@@ -319,9 +328,15 @@ class DistributionQueryService:
             raise DistributionConflictError(f"URL 已存在（手动录入）：{remote_url}")
 
         # 检查 GEOFlow 表重复（精确查询，避免拉全量 url 列表）
-        repo = GeoflowRepository(self.db)
-        if await repo.get_synced_url_exists(remote_url):
-            raise DistributionConflictError(f"URL 已存在（GEOFlow 推送）：{remote_url}")
+        # 优雅降级：GEOFlow 表缺失时跳过重复检测，不阻塞手动录入
+        try:
+            repo = GeoflowRepository(self.db)
+            if await repo.get_synced_url_exists(remote_url):
+                raise DistributionConflictError(f"URL 已存在（GEOFlow 推送）：{remote_url}")
+        except DistributionConflictError:
+            raise
+        except Exception as exc:
+            logger.warning("GEOFlow 重复检测失败，跳过: %s", exc)
 
         record = ManualDistribution(
             client_id=client_id,
@@ -350,16 +365,9 @@ class DistributionQueryService:
 
         await self.db.commit()
 
-        # 异步抓取文章标题（不阻塞响应）
-        try:
-            from app.services.article_fetcher import fetch_article_title
-            import asyncio
-            asyncio.create_task(
-                self._fetch_and_update_title(remote_url, str(record.id))
-            )
-        except Exception:
-            pass  # 标题抓取失败不影响主流程
-
+        # 标题抓取由调用方（admin_routes.py create_manual_distribution）同步处理：
+        # 优先用户输入 title，否则抓取。此处不再异步触发 _fetch_and_update_title，
+        # 因为异步任务会在调用方保存用户标题后覆盖掉用户填的标题（竞态条件）。
         return {"action": "created", "client_id": client_id, "source": "manual", "id": str(record.id)}
 
     async def _fetch_and_update_title(self, url: str, distribution_id: str) -> None:

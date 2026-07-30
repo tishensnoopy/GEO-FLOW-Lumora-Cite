@@ -76,6 +76,9 @@ class ManualDistributionRequest(BaseModel):
     remote_url: str
     client_id: Optional[str] = None
     note: Optional[str] = None
+    # 用户手动输入标题：反爬页（如 lieju.com）抓取标题返回 None 时作为 fallback。
+    # 用户提供 title 时优先使用，跳过抓取，确保文章列表/分发记录能显示标题。
+    title: Optional[str] = None
 
 
 class ResetPasswordRequest(BaseModel):
@@ -365,11 +368,15 @@ async def create_manual_distribution(
         detail={"url": req.remote_url, "client_id": result.get("client_id")},
     )
 
-    # 立即抓取文章标题，填充到 ManualDistribution 和 index_results（如果记录存在）
+    # 标题填充：优先用户手动输入的 title（反爬页抓取失败时的 fallback），
+    # 否则抓取。反爬页（如 lieju.com）抓取返回 None，用户填的 title 确保标题可见。
     try:
         from app.services.article_fetcher import article_fetcher
         from app.models.index_result import IndexResult
-        title, snapshot = await article_fetcher.fetch_title_and_snapshot(req.remote_url)
+        title = req.title
+        snapshot = None
+        if not title:
+            title, snapshot = await article_fetcher.fetch_title_and_snapshot(req.remote_url)
         if title:
             # 修复：优先写入 ManualDistribution 记录本身（手动添加时 IndexResult 不存在）
             # 原逻辑只更新已存在的 IndexResult，导致标题被静默丢弃
@@ -670,7 +677,9 @@ async def _run_batch_scan(targets: list[tuple[str, str]], scan_type: str, task_i
                         delete(CitationResult).where(CitationResult.url == url)
                     )
                     await task_db.commit()
-                    await checker.check_url(url, client_id)
+                    # 阶段 4 - ⑤：透传 task_id，让 check_url 的 progress 回调把
+                    # 5 阶段进度 + 模型 probe 状态写入 scan_task_manager（ScanPanel 可见）
+                    await checker.check_url(url, client_id, task_id=task_id)
                     logger.info("批量采信检测完成: %s", url)
                     success += 1
                     if task_id:
@@ -790,3 +799,257 @@ async def get_admin_citation_stats(
     total = len(rows)
     cited = sum(1 for r in rows if r.hit_type != "none")
     return {"total": total, "cited": cited}
+
+
+# ---------- QA：数据管理（删除/编辑）----------
+# 背景：原系统管理员只能软删除客户，对采信结果、收录结果、分发记录、审计日志
+# 完全没有删减能力，数据只增不减。以下端点补齐管理员的数据管理职能。
+# 所有删除操作均记录审计日志，便于追溯。采信/收录结果硬删除（可重新扫描生成），
+# 分发记录硬删除（手动录入可重新添加），审计日志支持按日期清理（保留策略）。
+
+class BatchDeleteRequest(BaseModel):
+    """批量删除请求体。ids 用于按主键批量删（UUID 字符串），url 用于按 URL 批量删（互斥）。"""
+    ids: Optional[list[str]] = None
+    url: Optional[str] = None
+
+
+class UpdateDistributionRequest(BaseModel):
+    """编辑分发记录请求体。所有字段可选，仅更新传入字段。"""
+    note: Optional[str] = None
+    status: Optional[str] = None  # synced/pending/failed
+    client_id: Optional[str] = None
+
+
+class AuditLogCleanupRequest(BaseModel):
+    """审计日志清理请求体：删除指定日期之前的日志（保留策略）。"""
+    before_date: date  # 删除 created_at < before_date 的日志
+
+
+@router.delete("/citation-results/{result_id}")
+async def delete_citation_result(
+    result_id: str,
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """删除单条采信结果。硬删除（可重新扫描生成）。result_id 为 UUID 字符串。"""
+    result = await db.execute(select(CitationResult).where(CitationResult.id == result_id))
+    record = result.scalar_one_or_none()
+    if not record:
+        raise HTTPException(status_code=404, detail="采信结果不存在")
+    url, model, question = record.url, record.model, record.question or ""
+    await db.delete(record)
+    await db.commit()
+    await AuditLogService.log(
+        db, admin_user_id=admin["user_id"], admin_name=admin["name"],
+        action="delete_citation_result", target_type="citation_result",
+        target_id=str(result_id),
+        detail={"url": url, "model": model, "question": question[:80]},
+    )
+    return {"deleted": True, "id": result_id}
+
+
+@router.post("/citation-results/batch-delete")
+async def batch_delete_citation_results(
+    req: BatchDeleteRequest,
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """批量删除采信结果。
+    - 传 ids：按主键批量删
+    - 传 url：删除该 URL 的全部采信结果（用于清除旧记录以便重新扫描）
+    """
+    if req.ids:
+        result = await db.execute(select(CitationResult).where(CitationResult.id.in_(req.ids)))
+        records = result.scalars().all()
+    elif req.url:
+        result = await db.execute(select(CitationResult).where(CitationResult.url == req.url))
+        records = result.scalars().all()
+    else:
+        raise HTTPException(status_code=400, detail="需提供 ids 或 url")
+
+    for record in records:
+        await db.delete(record)
+    await db.commit()
+    # target_id 列为 VARCHAR(64)，URL 可能超长，截断到 60 字符避免 StringDataRightTruncation
+    audit_target_id = (req.url[:60] if req.url else f"ids:{len(req.ids or [])}")
+    await AuditLogService.log(
+        db, admin_user_id=admin["user_id"], admin_name=admin["name"],
+        action="batch_delete_citation_results", target_type="citation_result",
+        target_id=audit_target_id,
+        detail={"count": len(records), "ids": req.ids, "url": req.url},
+    )
+    return {"deleted": len(records)}
+
+
+@router.delete("/index-results/{result_id}")
+async def delete_index_result(
+    result_id: str,
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """删除单条收录结果。硬删除（可重新扫描生成）。result_id 为 UUID 字符串。"""
+    result = await db.execute(select(IndexResult).where(IndexResult.id == result_id))
+    record = result.scalar_one_or_none()
+    if not record:
+        raise HTTPException(status_code=404, detail="收录结果不存在")
+    url, client_id = record.url, record.client_id
+    await db.delete(record)
+    await db.commit()
+    await AuditLogService.log(
+        db, admin_user_id=admin["user_id"], admin_name=admin["name"],
+        action="delete_index_result", target_type="index_result",
+        target_id=str(result_id),
+        detail={"url": url, "client_id": client_id},
+    )
+    return {"deleted": True, "id": result_id}
+
+
+@router.post("/index-results/batch-delete")
+async def batch_delete_index_results(
+    req: BatchDeleteRequest,
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """批量删除收录结果。传 ids 或 url（删除该 URL 全部收录记录）。"""
+    if req.ids:
+        result = await db.execute(select(IndexResult).where(IndexResult.id.in_(req.ids)))
+        records = result.scalars().all()
+    elif req.url:
+        result = await db.execute(select(IndexResult).where(IndexResult.url == req.url))
+        records = result.scalars().all()
+    else:
+        raise HTTPException(status_code=400, detail="需提供 ids 或 url")
+
+    for record in records:
+        await db.delete(record)
+    await db.commit()
+    await AuditLogService.log(
+        db, admin_user_id=admin["user_id"], admin_name=admin["name"],
+        action="batch_delete_index_results", target_type="index_result",
+        target_id=req.url or f"ids:{len(req.ids or [])}",
+        detail={"count": len(records), "ids": req.ids, "url": req.url},
+    )
+    return {"deleted": len(records)}
+
+
+@router.put("/distributions/{distribution_id}")
+async def update_distribution(
+    distribution_id: str,
+    req: UpdateDistributionRequest,
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """编辑手动分发记录（备注/状态/客户）。distribution_id 为 UUID 字符串。"""
+    result = await db.execute(select(ManualDistribution).where(ManualDistribution.id == distribution_id))
+    record = result.scalar_one_or_none()
+    if not record:
+        raise HTTPException(status_code=404, detail="分发记录不存在")
+
+    changes = {}
+    if req.note is not None:
+        changes["note"] = req.note
+        record.note = req.note
+    if req.status is not None:
+        if req.status not in ("synced", "pending", "failed"):
+            raise HTTPException(status_code=400, detail="status 必须为 synced/pending/failed")
+        changes["status"] = req.status
+        record.status = req.status
+    if req.client_id is not None:
+        changes["client_id"] = req.client_id
+        record.client_id = req.client_id
+
+    if not changes:
+        raise HTTPException(status_code=400, detail="未提供任何更新字段")
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="数据冲突（外键约束违反）")
+
+    await AuditLogService.log(
+        db, admin_user_id=admin["user_id"], admin_name=admin["name"],
+        action="update_distribution", target_type="distribution",
+        target_id=str(distribution_id), detail=changes,
+    )
+    return {"updated": True, "id": distribution_id, "changes": changes}
+
+
+@router.delete("/distributions/{distribution_id}")
+async def delete_distribution(
+    distribution_id: str,
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """删除手动分发记录。硬删除（可重新手动添加）。distribution_id 为 UUID 字符串。"""
+    result = await db.execute(select(ManualDistribution).where(ManualDistribution.id == distribution_id))
+    record = result.scalar_one_or_none()
+    if not record:
+        raise HTTPException(status_code=404, detail="分发记录不存在")
+    url = record.remote_url
+    await db.delete(record)
+    await db.commit()
+    await AuditLogService.log(
+        db, admin_user_id=admin["user_id"], admin_name=admin["name"],
+        action="delete_distribution", target_type="distribution",
+        target_id=str(distribution_id), detail={"url": url},
+    )
+    return {"deleted": True, "id": distribution_id}
+
+
+@router.post("/distributions/batch-delete")
+async def batch_delete_distributions(
+    req: BatchDeleteRequest,
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """批量删除手动分发记录。仅按 ids 删除 monitor.manual_distributions 表中的记录。
+
+    安全设计：
+    - ManualDistribution 表只存手动录入记录（source='manual'），GEOFlow 同步记录
+      位于 public.article_distributions（跨 schema 只读），不在本表。
+    - 即便前端误传 GEOFlow 同步记录的 id，select where id in (...) 也查不到，
+      自动跳过，不会误删同步数据。前端按钮在选中含同步记录时也会禁用。
+    - 不支持按 url 删除：同一 url 可能关联多个客户的手动记录，url 模式语义模糊，
+      且与单条删除/清空采信等能力重复，故仅提供 ids 模式。
+    """
+    if not req.ids:
+        raise HTTPException(status_code=400, detail="需提供 ids")
+
+    result = await db.execute(select(ManualDistribution).where(ManualDistribution.id.in_(req.ids)))
+    records = result.scalars().all()
+    deleted_urls = [r.remote_url for r in records]
+    for record in records:
+        await db.delete(record)
+    await db.commit()
+    await AuditLogService.log(
+        db, admin_user_id=admin["user_id"], admin_name=admin["name"],
+        action="batch_delete_distributions", target_type="distribution",
+        target_id=f"ids:{len(req.ids)}",
+        detail={"count": len(records), "ids": req.ids, "urls": deleted_urls},
+    )
+    return {"deleted": len(records)}
+
+
+@router.post("/audit-logs/cleanup")
+async def cleanup_audit_logs(
+    req: AuditLogCleanupRequest,
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """清理审计日志：删除 before_date 之前的日志（保留策略）。
+    注意：本次清理操作本身会保留（清理后新写一条审计日志）。
+    """
+    result = await db.execute(
+        select(AdminAuditLog).where(AdminAuditLog.created_at < req.before_date)
+    )
+    records = result.scalars().all()
+    for record in records:
+        await db.delete(record)
+    await db.commit()
+    # 清理后记录本次操作（这条会保留）
+    await AuditLogService.log(
+        db, admin_user_id=admin["user_id"], admin_name=admin["name"],
+        action="cleanup_audit_logs", target_type="audit_log",
+        detail={"before_date": str(req.before_date), "deleted_count": len(records)},
+    )
+    return {"deleted": len(records), "before_date": str(req.before_date)}

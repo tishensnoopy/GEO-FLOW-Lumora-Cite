@@ -48,6 +48,9 @@ def create_task(scan_type: str, total: int, targets: list[tuple[str, str]]) -> s
                 "message": f"扫描任务已启动，共 {total} 条链接待检测（类型: {scan_type}）",
             }],
             "targets": [{"url": url, "client_id": cid} for url, cid in targets],
+            # 阶段 4 - ⑤：采信模型 probe 状态（结构化），供 ScanPanel 模型状态卡片展示。
+            # key: 模型名，value: {"model", "status", "error"}。get_task 转为 list 返回。
+            "citation_models": {},
             "created_at": datetime.now(timezone.utc).isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -78,8 +81,15 @@ def update_progress(
     processed: Optional[int] = None,
     success: Optional[int] = None,
     failed: Optional[int] = None,
+    total: Optional[int] = None,
 ) -> None:
-    """更新进度计数。"""
+    """更新进度计数。
+
+    total 用于 check_all_pending 在重新查询 pending 后修正 create_task 时设的旧值：
+    trigger_scan 与 check_all_pending 各查询一次 get_pending_urls，若期间有新分发
+    同步进来，两次结果数量可能不同。不更新 total 会导致 processed 累加超过旧 total，
+    ScanPanel 进度显示 >100%。
+    """
     with _lock:
         if task_id not in _tasks:
             return
@@ -89,6 +99,36 @@ def update_progress(
             _tasks[task_id]["success"] = success
         if failed is not None:
             _tasks[task_id]["failed"] = failed
+        if total is not None:
+            _tasks[task_id]["total"] = total
+        _tasks[task_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def update_citation_model(
+    task_id: str, model_name: str, status: str, error: Optional[str] = None
+) -> None:
+    """更新采信模型 probe 状态（结构化，供 ScanPanel 模型状态卡片展示）。
+
+    阶段 4 - ⑤：citation_checker stage 4 按模型逐条上报 probe 结果时调用。
+    同一模型重复上报（如重试）覆盖旧状态，不产生重复条目。
+
+    Parameters
+    ----------
+    model_name : str
+        模型显示名（如 "千问" / "豆包"）
+    status : str
+        probe 状态：verified / error / no_search / search_without_sources
+    error : str, optional
+        失败原因（status != verified 时填写）
+    """
+    with _lock:
+        if task_id not in _tasks:
+            return
+        _tasks[task_id]["citation_models"][model_name] = {
+            "model": model_name,
+            "status": status,
+            "error": error,
+        }
         _tasks[task_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
 
 
@@ -126,6 +166,8 @@ def get_task(task_id: str) -> Optional[dict]:
             "success": task["success"],
             "failed": task["failed"],
             "logs": list(task["logs"]),
+            # 阶段 4 - ⑤：采信模型 probe 状态列表（按上报顺序），供 ScanPanel 卡片展示
+            "citation_models": list(task.get("citation_models", {}).values()),
             "created_at": task["created_at"],
             "updated_at": task["updated_at"],
         }

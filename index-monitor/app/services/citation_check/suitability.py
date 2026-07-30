@@ -12,6 +12,44 @@ class SuitabilityResult:
     warnings: list[str] = field(default_factory=list)
 
 
+# 反爬虫 JS 挑战页的典型代码特征（如 lieju.com 返回的 var arg1='...' 加密页）
+# 命中任一即判定为反爬内容，避免把 JS 代码当正文传给问题生成器。
+ANTI_SCRAPING_JS_PATTERNS = (
+    "var arg1=", "var arg", "arg1='", 'arg1="',
+    "document.cookie", "document.location", "window.location",
+    "eval(function", "setTimeout(function",
+)
+
+
+def _is_anti_scraping_content(text: str) -> bool:
+    """检测是否为反爬虫 JavaScript 加密内容。
+
+    两类特征：
+    1. 典型反爬 JS 代码（var arg1=、document.cookie 等）出现在前 300 字符；
+    2. 可读文本比例极低：前 300 字符中中文/空格/标点占比 < 15%，
+       判定为 base64/hex 编码串等加密内容（如 lieju.com 反爬挑战页的负载）。
+
+    注意：可读比例不算纯英文字母，因为 base64 串含大量字母会干扰判定；
+    用中文 + 空格 + 标点作为"人类可读"信号更可靠（正常文章必有分词空格或中文）。
+    """
+    if not text:
+        return False
+    sample = text[:300]
+    for pattern in ANTI_SCRAPING_JS_PATTERNS:
+        if pattern in sample:
+            return True
+    if len(text) >= 50:
+        readable = sum(
+            1 for c in sample
+            if "\u4e00" <= c <= "\u9fff"  # 中文
+            or c.isspace()  # 空格（英文分词）
+            or c in "，。、；：！？『』「」\"\"''（）【】《》—….,;:!?()[]{}\"'-"
+        )
+        if readable / len(sample) < 0.15:
+            return True
+    return False
+
+
 def _has_complete_topic(title: str, text: str) -> bool:
     sentences = [part.strip() for part in re.split(r"[。！？.!?]+", text) if len(part.strip()) >= 6]
     factual_signal = bool(re.search(r"\d|年|月|日|%|％|研究|报告|发布|数据显示", text))
@@ -34,6 +72,15 @@ def evaluate_content_suitability(
     clean_text = re.sub(r"\s+", " ", text or "").strip()
     if access_issue:
         return SuitabilityResult(False, "access_issue", access_issue)
+    # 反爬虫检测：必须在内容长度/主题检查之前，否则反爬 JS 串（长度通常 > 200）
+    # 会骗过 insufficient_information 检查，被误判 suitable=True，进而把 JS 代码
+    # 当正文传给问题生成器，生成"网页出现 var arg1 乱码是什么意思"等无关问题。
+    if _is_anti_scraping_content(clean_text):
+        return SuitabilityResult(
+            False,
+            "anti_scraping",
+            "页面返回反爬虫加密内容，无法提取真实正文。请粘贴正文后继续检测，或更换可正常访问的链接。",
+        )
     if page_kind in {"homepage", "directory", "search", "login", "error"}:
         return SuitabilityResult(False, "not_single_content", "输入链接不是可检测的单篇公开内容")
     if not clean_text:

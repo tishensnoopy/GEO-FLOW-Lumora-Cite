@@ -5,6 +5,12 @@
 AI 采信检测：每日 03:00（修复：原缺失，导致采信数据不更新）
 导出处理：每 30 秒扫 pending 导出任务（M4 补全，闭合 M3 审查缺口 1）
 
+阶段 3 - ② / 阶段 4 - ①：定时任务接入 advisory lock + scan_task_manager。
+- advisory lock 防止定时任务与手动扫描（/scan/trigger、batch-scan）重叠，
+  拿不到锁则 warning 跳过，避免重复检测浪费 API 配额。
+- scan_task_manager 记录任务进度，便于运维排查（定时任务无前端活动窗口，
+  但 task 状态仍可在内存中查询，且日志写入 citation_check_logs 持久化）。
+
 设计文档第 21.1 节 + M3 里程碑审查结论。
 """
 import logging
@@ -17,6 +23,8 @@ from sqlalchemy import select
 from app.core.database import async_session
 from app.services.index_checker import IndexChecker
 from app.services.export_service import ExportService
+from app.services.scan_lock import acquire_scan_lock, release_scan_lock
+from app.services.scan_task_manager import create_task, complete_task
 from app.models.export_task import ExportTask
 
 logger = logging.getLogger(__name__)
@@ -24,10 +32,27 @@ scheduler = AsyncIOScheduler()
 
 
 async def scheduled_index_check():
-    """每日 02:00 收录检测。"""
+    """每日 02:00 收录检测。
+
+    阶段 3 - ②：advisory lock 互斥，拿不到锁则跳过（手动扫描可能正在运行）。
+    阶段 4 - ①：创建 scan_task_manager 任务，透传 task_id 写进度日志。
+    """
     async with async_session() as db:
-        checker = IndexChecker(db)
-        await checker.check_all_pending()
+        if not await acquire_scan_lock(db, "index"):
+            logger.warning("已有收录扫描在运行，定时任务跳过以避免重复检测")
+            return
+        try:
+            checker = IndexChecker(db)
+            pending = await checker.get_pending_urls()
+            if not pending:
+                logger.info("收录检测：无待检测 URL")
+                return
+            task_id = create_task("index", len(pending), pending)
+            logger.info("收录检测定时任务启动：共 %d 条（task_id=%s）", len(pending), task_id)
+            await checker.check_all_pending(task_id=task_id)
+            complete_task(task_id)
+        finally:
+            await release_scan_lock(db, "index")
 
 
 async def scheduled_citation_check():
@@ -37,15 +62,31 @@ async def scheduled_citation_check():
     1. citation_results 表长期无新数据，Dashboard 采信统计始终为 0
     2. batch_scan 是占位符（已在 admin_routes.py 修复），即便手动触发也不执行
     现补全定时任务，每日 03:00（在收录检测 02:00 之后）扫描所有待检测 URL。
+
+    阶段 3 - ②：advisory lock 互斥，拿不到锁则跳过。
+    阶段 4 - ①：创建 scan_task_manager 任务，透传 task_id 写 5 阶段进度 + 模型 probe 状态。
     """
     from app.services.citation_checker import CitationChecker
     async with async_session() as db:
-        checker = CitationChecker(db)
-        result = await checker.check_all_pending()
-        logger.info(
-            "采信检测完成：共 %d 条，成功 %d，失败 %d",
-            result["total"], result["success"], result["failed"],
-        )
+        if not await acquire_scan_lock(db, "citation"):
+            logger.warning("已有采信扫描在运行，定时任务跳过以避免重复检测")
+            return
+        try:
+            checker = CitationChecker(db)
+            pending = await checker.get_pending_urls()
+            if not pending:
+                logger.info("采信检测：无待检测 URL")
+                return
+            task_id = create_task("citation", len(pending), pending)
+            logger.info("采信检测定时任务启动：共 %d 条（task_id=%s）", len(pending), task_id)
+            result = await checker.check_all_pending(task_id=task_id)
+            complete_task(task_id)
+            logger.info(
+                "采信检测完成：共 %d 条，成功 %d，失败 %d",
+                result["total"], result["success"], result["failed"],
+            )
+        finally:
+            await release_scan_lock(db, "citation")
 
 
 async def scheduled_export_processor():
