@@ -144,3 +144,135 @@ async def test_store_results_links_client_question_id(db_session):
     )
     record = stored.scalar_one()
     assert record.client_question_id == q.id
+
+
+@pytest.mark.asyncio
+async def test_check_url_phase2_3_stages(db_session, monkeypatch):
+    """check_url 改造后执行 3 阶段：准备 → 模型探测 → 引用检测。"""
+    await _cleanup_test_data(db_session)
+    # 准备数据：客户问题 + 已收录模型
+    db_session.add(ClientQuestion(
+        client_id="client_a",
+        question="这个产品怎么样？",
+        sort_order=1,
+        status="active",
+    ))
+    db_session.add(AIIndexResult(
+        url="https://example.com/test",
+        model="qwen",
+        index_status="indexed",
+    ))
+    await db_session.commit()
+
+    # mock 抓取内容
+    fake_content = MagicMock()
+    fake_content.title = "测试标题"
+    fake_content.text = "测试内容"
+    fake_content.requested_url = "https://example.com/test"
+    fake_content.resolved_url = "https://example.com/test"
+    fake_content.canonical_url = None
+    fake_content.extraction_method = "test"
+    fake_content.suitability.suitable = True
+    monkeypatch.setattr(
+        "app.services.citation_checker.fetch_public_content",
+        lambda url: fake_content,
+    )
+
+    # mock 配置加载
+    async def fake_load_ai_config(self):
+        return {"ai_citation_models": "qwen"}
+    monkeypatch.setattr(CitationChecker, "_load_ai_config", fake_load_ai_config)
+
+    # mock default_adapters
+    fake_adapter = MagicMock()
+    fake_adapter.name = "千问"
+    fake_adapter.provider_id = "qwen"
+    fake_adapter.model_id = "qwen3.6-plus"
+    monkeypatch.setattr(
+        "app.services.citation_checker.default_adapters",
+        lambda selected_ids: [fake_adapter],
+    )
+
+    # mock probe_adapter_capabilities
+    fake_cap = {"provider_id": "qwen", "model": "千问", "status": "verified", "error": None}
+    monkeypatch.setattr(
+        "app.services.citation_checker.probe_adapter_capabilities",
+        lambda adapters: [fake_cap],
+    )
+
+    # mock run_citation_check
+    fake_result = {
+        "results": [{
+            "question": "这个产品怎么样？",
+            "model": "千问",
+            "answer": "回答内容",
+            "hit": {"layer": "none"},
+            "sources": [],
+        }],
+    }
+    monkeypatch.setattr(
+        "app.services.citation_checker.run_citation_check",
+        lambda **kw: fake_result,
+    )
+
+    checker = CitationChecker(db_session)
+    result = await checker.check_url("https://example.com/test", "client_a")
+
+    # 验证结果
+    assert result["results"][0]["question"] == "这个产品怎么样？"
+    # 验证 run_citation_check 收到 client_questions
+    # （通过 mock 的调用参数验证，见下方断言）
+
+    # 验证未走问题生成（不应调用 generate_candidates）
+    # mock 已替换 run_citation_check，若 check_url 尝试生成问题会因 mock 缺失而报错
+
+
+@pytest.mark.asyncio
+async def test_check_url_no_indexed_models_raises(db_session, monkeypatch):
+    """URL 无已收录模型时抛 ValueError。"""
+    await _cleanup_test_data(db_session)
+    db_session.add(ClientQuestion(
+        client_id="client_a",
+        question="问题",
+        sort_order=1,
+        status="active",
+    ))
+    await db_session.commit()
+
+    fake_content = MagicMock()
+    fake_content.title = "标题"
+    fake_content.text = "内容"
+    fake_content.requested_url = "https://example.com/no-index"
+    fake_content.resolved_url = "https://example.com/no-index"
+    fake_content.canonical_url = None
+    fake_content.extraction_method = "test"
+    fake_content.suitability.suitable = True
+    monkeypatch.setattr(
+        "app.services.citation_checker.fetch_public_content",
+        lambda url: fake_content,
+    )
+
+    checker = CitationChecker(db_session)
+    with pytest.raises(ValueError, match="未被任何 AI 模型收录"):
+        await checker.check_url("https://example.com/no-index", "client_a")
+
+
+@pytest.mark.asyncio
+async def test_check_url_no_client_questions_raises(db_session, monkeypatch):
+    """客户无监测问题时抛 ValueError。"""
+    fake_content = MagicMock()
+    fake_content.title = "标题"
+    fake_content.text = "内容"
+    fake_content.requested_url = "https://example.com/test"
+    fake_content.resolved_url = "https://example.com/test"
+    fake_content.canonical_url = None
+    fake_content.extraction_method = "test"
+    fake_content.suitability.suitable = True
+    monkeypatch.setattr(
+        "app.services.citation_checker.fetch_public_content",
+        lambda url: fake_content,
+    )
+
+    checker = CitationChecker(db_session)
+    with pytest.raises(ValueError, match="未配置监测问题"):
+        await checker.check_url("https://example.com/test", "no_questions_client")

@@ -91,28 +91,26 @@ _PROVIDER_ENV_MAP = {
     "ai_anthropic_api_key": "ANTHROPIC_API_KEY",
 }
 
-# 阶段标签正则：[1/5 抓取] [2/5 目的推断] 等
+# 阶段标签正则：[1/3 准备] [2/3 模型探测] [3/3 引用检测]
 _STAGE_LABEL_RE = re.compile(r"^\[(\d+/\d+\s+[^\]]+)\]")
 
-# 5 个阶段名（与 check_url 步骤对应）
+# 3 个阶段名（与 check_url 步骤对应）
 _STAGES = {
-    1: "1/5 抓取",
-    2: "2/5 目的推断",
-    3: "3/5 问题生成",
-    4: "4/5 模型探测",
-    5: "5/5 引用检测",
+    1: "1/3 准备",
+    2: "2/3 模型探测",
+    3: "3/3 引用检测",
 }
 
 
 def _extract_stage(message: str) -> str:
-    """从异常消息中提取 [N/5 阶段名] 前缀，无标签返回 'unknown'。"""
+    """从异常消息中提取 [N/3 阶段名] 前缀，无标签返回 'unknown'。"""
     match = _STAGE_LABEL_RE.match(str(message or ""))
     return match.group(1) if match else "unknown"
 
 
 def _wrap_with_stage(stage_num: int, exc: Exception) -> ValueError:
     """把异常包装成带阶段标签的 ValueError。"""
-    stage = _STAGES.get(stage_num, f"{stage_num}/5 未知阶段")
+    stage = _STAGES.get(stage_num, f"{stage_num}/3 未知阶段")
     original = str(exc)
     # 避免重复包装（异常本身已含阶段标签时不再叠加）
     if _STAGE_LABEL_RE.match(original):
@@ -264,46 +262,31 @@ class CitationChecker:
         task_id: Optional[str] = None,
         progress: Optional[Callable[..., Awaitable[None]]] = None,
     ) -> dict:
-        """对单个 URL 执行完整 AI 采信检测。
+        """对单个 URL 执行 AI 采信检测（3 阶段）。
 
-        返回 lumora-cite run_citation_check 的完整结果 dict，
-        并附带 purpose/questions 元信息供 API 响应使用。
+        阶段：
+        1/3 准备：抓取内容 + 加载客户问题 + 筛选已收录模型
+        2/3 模型探测：对已收录模型探测联网能力
+        3/3 引用检测：用客户问题对已收录模型执行引用检测
 
-        每步骤失败时抛带阶段标签 [N/5 阶段名] 的 ValueError，便于
-        check_all_pending 汇总失败诊断。
-
-        阶段 2 - ④b：新增 task_id + progress 回调，解决"采信检测黑盒"问题。
-        - progress(stage, status, message, *, detail, model, duration_ms) 是 async 回调；
-        - 不传 progress 时用默认回调：写 scan_task_manager.add_log（供 ScanPanel 实时
-          轮询）+ 持久化 CitationCheckLog（供历史查询）；
-        - task_id 为 None（定时任务）时只写 CitationCheckLog，不写内存任务日志。
+        每步骤失败时抛带阶段标签 [N/3 阶段名] 的 ValueError。
         """
         if progress is None:
             progress = self._make_default_progress(task_id, url)
 
         async def _report(stage: str, status: str, message: str, **kw) -> None:
-            """progress 回调的薄封装，忽略回调自身异常不影响主流程。"""
             try:
                 await progress(stage, status, message, **kw)
-            except Exception as cb_exc:  # noqa: BLE001 - 回调失败不应中断检测
+            except Exception as cb_exc:  # noqa: BLE001
                 logger.warning("progress 回调异常（已忽略）: %s", cb_exc)
 
         config = await self._load_ai_config()
-        question_model = config.get("ai_question_model", DEFAULT_QUESTION_MODEL)
 
-        # 阶段 2 - ⑥b：构建问题生成 provider 列表（DeepSeek→千问→豆包 fallback）。
-        question_providers = build_question_providers(config)
-        if not question_providers:
-            await _report("2/5 目的推断", "error", "未配置任何可用于问题生成的 chat 模型 API Key")
-            raise ValueError(
-                "未配置任何可用于问题生成的 chat 模型 API Key。"
-                "请在系统设置 → AI API Key 管理中配置 DeepSeek / DashScope(千问) / ARK(豆包) 任一 Key。"
-            )
-
-        # Step 1: 抓取公开内容
-        await _report("1/5 抓取", "start", f"开始抓取内容: {url}")
+        # ──────── 1/3 准备 ────────
+        # 1a. 抓取内容
+        await _report("1/3 准备", "start", f"开始抓取内容: {url}")
         t0 = time.time()
-        logger.info("采信检测 [1/5] 抓取内容: %s", url)
+        logger.info("采信检测 [1/3] 抓取内容: %s", url)
         try:
             content = await asyncio.to_thread(fetch_public_content, url)
             if not content.suitability.suitable:
@@ -312,156 +295,116 @@ class CitationChecker:
                     f"（code={content.suitability.rejection_code}）"
                 )
         except Exception as exc:
-            await _report("1/5 抓取", "error", f"抓取失败: {exc}", duration_ms=int((time.time() - t0) * 1000))
+            await _report("1/3 准备", "error", f"抓取失败: {exc}", duration_ms=int((time.time() - t0) * 1000))
             raise _wrap_with_stage(1, exc) from exc
-        await _report(
-            "1/5 抓取", "success", f"抓取完成: {content.title}",
-            detail={"extraction_method": content.extraction_method},
-            duration_ms=int((time.time() - t0) * 1000),
-        )
 
         title = content.title
-        text = content.text
         target_urls = [
             u for u in (content.requested_url, content.resolved_url, content.canonical_url)
             if u
         ]
 
-        # Step 2: 推断发布目的（带 provider fallback + 解析重试）
-        await _report("2/5 目的推断", "start", f"开始推断发布目的（providers: {','.join(p.provider_id for p in question_providers)}）")
-        t0 = time.time()
-        logger.info(
-            "采信检测 [2/5] 推断发布目的（providers: %s）: %s",
-            ",".join(p.provider_id for p in question_providers), title,
-        )
-        try:
-            purpose_prompt = build_purpose_prompt(title, text)
-            purpose_raw = await asyncio.to_thread(
-                call_llm_with_parse_retry_fallback,
-                question_providers,
-                purpose_prompt,
-                parser=parse_purpose_response,
+        # 1b. 加载客户问题（替代 LLM 自动生成）
+        questions = await self._get_client_questions(client_id)
+        if not questions:
+            await _report("1/3 准备", "error", f"客户 {client_id} 未配置监测问题")
+            raise ValueError(
+                f"客户 {client_id} 未配置监测问题。"
+                "请在客户管理 → 监测问题中添加问题后重试。"
             )
-            purpose = parse_purpose_response(purpose_raw)
-        except Exception as exc:
-            await _report("2/5 目的推断", "error", f"目的推断失败: {exc}", duration_ms=int((time.time() - t0) * 1000))
-            raise _wrap_with_stage(2, exc) from exc
-        await _report("2/5 目的推断", "success", f"目的推断完成: {purpose.primary_purpose}", duration_ms=int((time.time() - t0) * 1000))
 
-        # Step 3: 生成检测问题（带 provider fallback + 解析重试）
-        await _report("3/5 问题生成", "start", f"开始生成检测问题（providers: {','.join(p.provider_id for p in question_providers)}）")
-        t0 = time.time()
-        logger.info(
-            "采信检测 [3/5] 生成检测问题（providers: %s）: %s",
-            ",".join(p.provider_id for p in question_providers), title,
-        )
-        try:
-            call_generator = make_fallback_parse_retry_generator(
-                question_providers,
-                parser=parse_candidate_response,
-            )
-            candidates = await asyncio.to_thread(
-                generate_candidates,
-                title=title,
-                text=text,
-                purpose=purpose,
-                call_generator=call_generator,
-            )
-            if len(candidates) < 3:
-                raise ValueError(
-                    f"生成的问题不足：需要至少 3 个，实际 {len(candidates)} 个。"
-                    "请检查问题生成模型 API Key 是否有效，或重试。"
-                )
-        except Exception as exc:
-            await _report("3/5 问题生成", "error", f"问题生成失败: {exc}", duration_ms=int((time.time() - t0) * 1000))
-            raise _wrap_with_stage(3, exc) from exc
-        await _report("3/5 问题生成", "success", f"生成 {len(candidates)} 个候选问题", duration_ms=int((time.time() - t0) * 1000))
+        # 1c. 筛选已收录模型
+        indexed_models = await self._get_indexed_models(url)
+        if not indexed_models:
+            await _report("1/3 准备", "error", "该 URL 未被任何 AI 模型收录")
+            raise ValueError("该 URL 未被任何 AI 模型收录，跳过问题监测")
 
-        # Step 4: 配置引用检测模型 + 探测联网能力
-        await _report("4/5 模型探测", "start", "开始配置引用检测模型并探测联网能力")
+        await _report(
+            "1/3 准备", "success",
+            f"准备完成: {len(questions)} 问题, {len(indexed_models)} 已收录模型",
+            detail={"title": title, "question_count": len(questions), "indexed_models": indexed_models},
+            duration_ms=int((time.time() - t0) * 1000),
+        )
+
+        # ──────── 2/3 模型探测 ────────
+        await _report("2/3 模型探测", "start", f"开始探测 {len(indexed_models)} 个模型的联网能力")
         t0 = time.time()
         self._set_provider_env(config)
+        # 与配置的 citation_models 取交集
         citation_models_str = config.get("ai_citation_models", "")
-        selected_ids = (
+        configured_ids = (
             [m.strip() for m in citation_models_str.split(",") if m.strip()]
-            if citation_models_str
-            else None
+            if citation_models_str else None
         )
-        # P1 catalog 过滤：selected_ids 含已下线 id（如 deepseek）时过滤并告警
-        if selected_ids:
-            catalog_ids = {item["id"] for item in adapter_catalog()}
-            valid_selected_ids = [mid for mid in selected_ids if mid in catalog_ids]
-            dropped = set(selected_ids) - catalog_ids
-            if dropped:
-                logger.warning(
-                    "引用检测模型列表含已下线项，已过滤: %s",
-                    ", ".join(sorted(dropped)),
-                )
-            selected_ids = valid_selected_ids if valid_selected_ids else None
+        # catalog 过滤
+        catalog_ids = {item["id"] for item in adapter_catalog()}
+        selected_ids = [
+            mid for mid in indexed_models
+            if mid in catalog_ids and (configured_ids is None or mid in configured_ids)
+        ]
+        if not selected_ids:
+            await _report("2/3 模型探测", "error", "已收录模型均未配置 API Key 或不在配置列表中")
+            raise ValueError(
+                "已收录模型均未配置 API Key 或不在配置列表中。"
+                "请在系统设置中配置对应模型的 API Key。"
+            )
 
         try:
             adapters = await asyncio.to_thread(default_adapters, selected_ids)
             if not adapters:
-                raise ValueError(
-                    "未配置任何引用检测模型。请在系统设置中配置 DashScope/ARK/OpenAI 等 API Key，"
-                    "使引用检测模型（千问/豆包/ChatGPT 等）可用。"
-                )
+                raise ValueError("未配置任何引用检测模型。")
 
-            logger.info("采信检测 [4/5] 探测模型联网能力: %s", url)
-            # 阶段 1 - ③：probe 降级为标注，不再淘汰模型。
             capabilities = await asyncio.to_thread(probe_adapter_capabilities, adapters)
             verified_count = sum(1 for item in capabilities if item["status"] == "verified")
             logger.info(
-                "采信检测 [4/5] 模型探测完成: %d/%d 通过联网验证（通过仅作标注，不淘汰未通过模型）",
+                "采信检测 [2/3] 模型探测完成: %d/%d 通过联网验证",
                 verified_count, len(adapters),
             )
-            # 阶段 2 - ④b：按模型逐条上报 probe 结果（供 ScanPanel 展示模型状态卡片）
             for item in capabilities:
                 model_name = item.get("model", item.get("provider_id", "?"))
                 status = item.get("status", "unknown")
                 await _report(
-                    "4/5 模型探测", "info" if status == "verified" else "error",
+                    "2/3 模型探测", "info" if status == "verified" else "error",
                     f"{model_name}: {status}",
                     model=model_name,
                     detail={"provider_id": item.get("provider_id"), "status": status, "error": item.get("error")},
                 )
             await _report(
-                "4/5 模型探测", "success",
+                "2/3 模型探测", "success",
                 f"模型探测完成: {verified_count}/{len(adapters)} 通过联网验证",
                 duration_ms=int((time.time() - t0) * 1000),
             )
         except Exception as exc:
-            await _report("4/5 模型探测", "error", f"模型探测失败: {exc}", duration_ms=int((time.time() - t0) * 1000))
-            raise _wrap_with_stage(4, exc) from exc
+            await _report("2/3 模型探测", "error", f"模型探测失败: {exc}", duration_ms=int((time.time() - t0) * 1000))
+            raise _wrap_with_stage(2, exc) from exc
 
-        # Step 5: 执行引用检测
-        question_count = min(len(candidates), 10)
+        # ──────── 3/3 引用检测 ────────
+        question_count = min(len(questions), 20)
         await _report(
-            "5/5 引用检测", "start",
+            "3/3 引用检测", "start",
             f"开始引用检测（{question_count} 问题 × {len(adapters)} 模型）",
         )
         t0 = time.time()
         logger.info(
-            "采信检测 [5/5] 执行引用检测: %s（%d 问题 × %d 模型）",
+            "采信检测 [3/3] 引用检测: %s（%d 问题 × %d 模型）",
             url, question_count, len(adapters),
         )
         try:
             result = await asyncio.to_thread(
                 run_citation_check,
                 target_urls=target_urls,
-                candidates=candidates,
+                candidates=[],  # 不再用生成的问题
                 adapters=adapters,
                 question_count=question_count,
-                # 阶段 1 - ⑥a：forbidden_terms 只禁目标 URL，允许标题词出现。
                 forbidden_terms=[*target_urls],
+                client_questions=questions[:question_count],  # 客户问题直通
             )
         except Exception as exc:
-            await _report("5/5 引用检测", "error", f"引用检测失败: {exc}", duration_ms=int((time.time() - t0) * 1000))
-            raise _wrap_with_stage(5, exc) from exc
-        await _report("5/5 引用检测", "success", "引用检测完成", duration_ms=int((time.time() - t0) * 1000))
+            await _report("3/3 引用检测", "error", f"引用检测失败: {exc}", duration_ms=int((time.time() - t0) * 1000))
+            raise _wrap_with_stage(3, exc) from exc
+        await _report("3/3 引用检测", "success", "引用检测完成", duration_ms=int((time.time() - t0) * 1000))
 
-        # 附加元信息
-        result["purpose"] = purpose.to_dict()
+        # 附加元信息（不再有 purpose）
         result["target"] = {
             "requested_url": url,
             "resolved_url": target_urls[-1] if target_urls else url,
@@ -471,7 +414,7 @@ class CitationChecker:
         result["provider_capabilities"] = capabilities
 
         # 存储结果
-        await self._store_results(url, result)
+        await self._store_results(url, result, questions, client_id)
 
         return result
 
