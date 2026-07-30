@@ -40,10 +40,11 @@
           {{ row.last_login_at ? formatTime(row.last_login_at) : '—' }}
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="240" fixed="right">
+      <el-table-column label="操作" width="340" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="openEditDialog(row)">编辑</el-button>
           <el-button size="small" type="warning" @click="openPasswordDialog(row)">改密码</el-button>
+          <el-button size="small" type="primary" plain @click="openQuestionDrawer(row)">问题管理</el-button>
           <el-button
             v-if="row.status !== 'deleted'"
             size="small" type="danger" @click="handleDelete(row)"
@@ -185,6 +186,9 @@
         <el-button type="primary" :loading="submitting" @click="handleResetPassword">重置</el-button>
       </template>
     </el-dialog>
+
+    <!-- 客户问题管理抽屉 -->
+    <QuestionDrawer v-model="questionDrawerVisible" :client-id="currentQuestionClientId" />
   </div>
 </template>
 
@@ -193,6 +197,7 @@ import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import api from '@/api'
+import QuestionDrawer from '@/components/QuestionDrawer.vue'
 
 // ---------- 列表状态 ----------
 const clients = ref([])
@@ -238,6 +243,15 @@ const editForm = reactive({
 // ---------- 重置密码 ----------
 const passwordVisible = ref(false)
 const passwordForm = reactive({ client_id: '', new_password: '' })
+
+// ---------- 客户问题管理抽屉 ----------
+const questionDrawerVisible = ref(false)
+const currentQuestionClientId = ref('')
+
+function openQuestionDrawer(row) {
+  currentQuestionClientId.value = row.client_id
+  questionDrawerVisible.value = true
+}
 
 // ---------- 生命周期 ----------
 onMounted(() => fetchClients())
