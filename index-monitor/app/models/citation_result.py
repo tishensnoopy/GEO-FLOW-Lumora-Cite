@@ -22,4 +22,6 @@ class CitationResult(Base):
     hit_type = Column(String(32), nullable=False, index=True)
     sources = Column(JSONB)
     checked_at = Column(DateTime(timezone=True), server_default=func.now())
+    # AI 监测重构：关联客户问题（null 表示旧数据，由自动生成问题产生）
+    client_question_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
