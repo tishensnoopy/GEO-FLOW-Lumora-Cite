@@ -1,11 +1,17 @@
-"""citation_checker.py 单元测试：catalog 过滤 + 阶段标签 + 失败汇总。
+# index-monitor/tests/unit/test_citation_checker_stages.py
+"""citation_checker.py 单元测试：catalog 过滤 + 阶段标签 + 失败汇总（3 阶段）。
 
 设计规格第 4 节。覆盖目标：
 - selected_ids 含已下线 id（如 deepseek）时过滤并告警，不直接报错
-- 单条 URL 检测失败时异常带阶段标签 [N/5 阶段名]
+- 单条 URL 检测失败时异常带阶段标签 [N/3 阶段名]
 - check_all_pending 的 failures 项含 {url, stage, error} 结构
 - _extract_stage 能从异常消息中提取阶段标签
 - on_config_changed 调用 invalidate_probe_cache
+
+Phase 2 改造：5 阶段（抓取→目的推断→问题生成→模型探测→引用检测）
+→ 3 阶段（准备→模型探测→引用检测）。问题来源从 LLM 生成改为客户指定。
+原 5 阶段中涉及目的推断/问题生成的测试（deepseek key fallback、无 chat provider
+抛错）已删除——3 阶段流程不再有这两个步骤。
 """
 import asyncio
 from unittest.mock import MagicMock, patch, AsyncMock
@@ -21,9 +27,9 @@ from app.services.citation_checker import _extract_stage
 # --------------------------------------------------------------------------- #
 
 def test_extract_stage_normal():
-    """应从异常消息中提取 [N/5 阶段名] 前缀。"""
-    msg = "[2/5 目的推断] DeepSeek API 调用失败：401 Unauthorized"
-    assert _extract_stage(msg) == "2/5 目的推断"
+    """应从异常消息中提取 [N/3 阶段名] 前缀。"""
+    msg = "[2/3 模型探测] 联网验证失败：401 Unauthorized"
+    assert _extract_stage(msg) == "2/3 模型探测"
 
 
 def test_extract_stage_no_label():
@@ -33,41 +39,38 @@ def test_extract_stage_no_label():
 
 
 def test_extract_stage_all_stages():
-    """应支持所有 5 个阶段标签格式。"""
+    """应支持所有 3 个阶段标签格式。"""
     cases = [
-        ("[1/5 抓取] 内容不可访问", "1/5 抓取"),
-        ("[2/5 目的推断] JSON 解析失败", "2/5 目的推断"),
-        ("[3/5 问题生成] 候选不足", "3/5 问题生成"),
-        ("[4/5 模型探测] 全部失败", "4/5 模型探测"),
-        ("[5/5 引用检测] 超时", "5/5 引用检测"),
+        ("[1/3 准备] 内容不可访问", "1/3 准备"),
+        ("[2/3 模型探测] 全部失败", "2/3 模型探测"),
+        ("[3/3 引用检测] 超时", "3/3 引用检测"),
     ]
     for msg, expected in cases:
         assert _extract_stage(msg) == expected
 
 
 # --------------------------------------------------------------------------- #
-# catalog 过滤（步骤 4）                                                       #
+# catalog 过滤（阶段 2 模型探测）                                              #
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
 async def test_check_url_filters_dropped_model_ids(monkeypatch):
     """selected_ids 含已下线 id 时应过滤并告警，不直接报错。
 
-    策略：mock check_url 的前 3 步让流程快速走到步骤 4 的 catalog 过滤。
-    关键断言：传给 default_adapters 的 selected_ids 应已过滤掉 deepseek。
+    策略：mock check_url 的阶段 1（准备）让流程快速走到阶段 2 的 catalog 过滤。
+    关键断言：传给 default_adapters 的 selected_ids 应已过滤掉 deepseek
+    （deepseek 不在 adapter_catalog 中）。
     """
     checker = CitationChecker(db=MagicMock())
 
     async def mock_load_ai_config():
         return {
-            "ai_deepseek_api_key": "fake-key",
-            "ai_question_model": "deepseek-chat",
-            "ai_citation_models": "qwen,deepseek",  # deepseek 已下线
+            "ai_citation_models": "qwen,deepseek",  # deepseek 已下线（不在 catalog）
         }
     checker._load_ai_config = mock_load_ai_config
     checker._set_provider_env = MagicMock()
 
-    # mock 步骤 1：fetch_public_content 返回可用内容
+    # mock 阶段 1a：fetch_public_content 返回可用内容
     mock_content = MagicMock()
     mock_content.suitability.suitable = True
     mock_content.title = "标题"
@@ -81,42 +84,11 @@ async def test_check_url_filters_dropped_model_ids(monkeypatch):
         lambda url: mock_content,
     )
 
-    # mock 步骤 2：call_llm_with_parse_retry_fallback 返回 raw text，parse_purpose_response 返回 fake purpose
-    # （阶段 2 - ⑥b：stage 2 改用 fallback 入口，不再走 call_deepseek_with_parse_retry）
-    from app.services.citation_check.question_generation import ArticlePurpose
-    fake_purpose = ArticlePurpose(
-        content_type="x", primary_purpose="y", secondary_purposes=[],
-        target_audience="z", desired_takeaway="a", desired_action="b",
-        query_territories=[], evidence_assets=[],
-    )
-    monkeypatch.setattr(
-        "app.services.citation_checker.call_llm_with_parse_retry_fallback",
-        lambda providers, prompt, *, parser, **kw: "raw purpose text",
-    )
-    monkeypatch.setattr(
-        "app.services.citation_checker.parse_purpose_response",
-        lambda text: fake_purpose,
-    )
+    # mock 阶段 1b：客户问题（替代 LLM 自动生成）
+    checker._get_client_questions = AsyncMock(return_value=["测试问题"])
 
-    # mock 步骤 3：generate_candidates 返回足够候选
-    from app.services.citation_check.questions import QuestionCandidate
-    fake_candidates = [
-        QuestionCandidate(
-            question=f"Q{i}", selection_reason="r",
-            content_support=0.9, natural_intent=0.8, citation_need=0.7,
-            distinctiveness=0.6, freshness=0.5,
-            metadata={},
-        )
-        for i in range(5)
-    ]
-    monkeypatch.setattr(
-        "app.services.citation_checker.generate_candidates",
-        lambda **kw: fake_candidates,
-    )
-    monkeypatch.setattr(
-        "app.services.citation_checker.make_fallback_parse_retry_generator",
-        lambda providers, *, parser, **kw: (lambda prompt: ""),
-    )
+    # mock 阶段 1c：已收录模型含 deepseek（应被 catalog 过滤）
+    checker._get_indexed_models = AsyncMock(return_value=["qwen", "deepseek"])
 
     # 关键：捕获传给 default_adapters 的 selected_ids
     captured_selected_ids = []
@@ -131,7 +103,7 @@ async def test_check_url_filters_dropped_model_ids(monkeypatch):
         fake_default_adapters,
     )
 
-    # mock 步骤 4 后续 + 步骤 5，让流程完成
+    # mock 阶段 2 后续 + 阶段 3，让流程完成
     monkeypatch.setattr(
         "app.services.citation_checker.probe_adapter_capabilities",
         lambda adapters: [{"provider_id": "qwen", "model": "千问", "model_id": "qwen3.6-plus", "status": "verified", "web_search": True, "sources_returned": True, "sample_sources": [], "error": None}],
@@ -159,11 +131,11 @@ async def test_check_url_filters_dropped_model_ids(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_check_url_failure_includes_stage_label(monkeypatch):
-    """步骤 1 抓取失败时异常应带 [1/5 抓取] 标签。"""
+    """阶段 1 抓取失败时异常应带 [1/3 准备] 标签。"""
     checker = CitationChecker(db=MagicMock())
 
     async def mock_load_ai_config():
-        return {"ai_deepseek_api_key": "fake-key", "ai_question_model": "deepseek-chat"}
+        return {"ai_citation_models": "qwen"}
     checker._load_ai_config = mock_load_ai_config
 
     # mock fetch_public_content 抛错
@@ -176,12 +148,28 @@ async def test_check_url_failure_includes_stage_label(monkeypatch):
 
     with pytest.raises(ValueError) as exc_info:
         await checker.check_url("https://example.com/a", "client-1")
-    assert "[1/5 抓取]" in str(exc_info.value), "步骤 1 失败应带阶段标签"
+    assert "[1/3 准备]" in str(exc_info.value), "阶段 1 失败应带阶段标签"
 
 
 @pytest.mark.asyncio
 async def test_check_all_pending_failure_has_stage(monkeypatch):
-    """check_all_pending 的 failures 项应含 {url, stage, error} 结构。"""
+    """check_all_pending 的 failures 项应含 {url, stage, error} 结构。
+
+    check_all_pending 内部为每个 URL 创建独立 CitationChecker 实例（AsyncSession
+    并发安全 bugfix），实例方法 patch 不会被新实例使用，必须 patch 类方法 +
+    mock async_session 避免连真实 DB。
+    """
+    import app.core.database as db_mod
+
+    class _FakeSessionCM:
+        async def __aenter__(self):
+            return MagicMock()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(db_mod, "async_session", lambda: _FakeSessionCM())
+
     checker = CitationChecker(db=MagicMock())
 
     # mock get_pending_urls 返回 1 条
@@ -189,10 +177,10 @@ async def test_check_all_pending_failure_has_stage(monkeypatch):
         return [("https://example.com/fail", "client-1")]
     checker.get_pending_urls = fake_get_pending
 
-    # mock check_url 抛带阶段标签的错
-    async def fake_check_url(url, client_id, *, task_id=None, progress=None):
-        raise ValueError("[2/5 目的推断] DeepSeek API 调用失败：401")
-    checker.check_url = fake_check_url
+    # mock check_url 抛带阶段标签的错（patch 类方法，让新实例也用 mock）
+    async def fake_check_url(self, url, client_id, *, task_id=None, progress=None):
+        raise ValueError("[2/3 模型探测] DeepSeek API 调用失败：401")
+    monkeypatch.setattr(CitationChecker, "check_url", fake_check_url)
 
     result = await checker.check_all_pending()
 
@@ -202,7 +190,7 @@ async def test_check_all_pending_failure_has_stage(monkeypatch):
     assert len(result["failures"]) == 1
     failure = result["failures"][0]
     assert failure["url"] == "https://example.com/fail"
-    assert failure["stage"] == "2/5 目的推断", "failure 项应含 stage 字段"
+    assert failure["stage"] == "2/3 模型探测", "failure 项应含 stage 字段"
     assert "401" in failure["error"]
 
 
@@ -246,7 +234,7 @@ def test_on_config_changed_invalidates_by_provider_id(monkeypatch):
 # 阶段 1 - ③：去 probe 淘汰（保留标注不淘汰）                                   #
 # --------------------------------------------------------------------------- #
 # 规格：probe_adapter_capabilities 仍调用（结果上报日志展示），但不再用作
-# 淘汰门槛。即使所有模型 probe 失败，stage 5 也用全量 adapters 执行引用检测，
+# 淘汰门槛。即使所有模型 probe 失败，stage 3 也用全量 adapters 执行引用检测，
 # 由 _is_verifiable + classify_citation_hit 在 answer 级判定 unverifiable。
 # 仅当 adapters 为空（零模型）时保留硬错误。
 
@@ -258,7 +246,7 @@ def _make_fake_adapter(provider_id: str):
 
 @pytest.mark.asyncio
 async def test_check_url_probe_all_failed_does_not_eliminate(monkeypatch):
-    """probe 全部失败时不应在 stage 4 抛错，应继续到 stage 5 用全量 adapters。
+    """probe 全部失败时不应在 stage 2 抛错，应继续到 stage 3 用全量 adapters。
 
     阶段 1 - ③ 核心：probe 降级为标注，不再淘汰模型。
     """
@@ -266,14 +254,12 @@ async def test_check_url_probe_all_failed_does_not_eliminate(monkeypatch):
 
     async def mock_load_ai_config():
         return {
-            "ai_deepseek_api_key": "fake-key",
-            "ai_question_model": "deepseek-chat",
             "ai_citation_models": "qwen,doubao",
         }
     checker._load_ai_config = mock_load_ai_config
     checker._set_provider_env = MagicMock()
 
-    # mock 步骤 1：可用内容
+    # mock 阶段 1a：可用内容
     mock_content = MagicMock()
     mock_content.suitability.suitable = True
     mock_content.title = "标题"
@@ -287,40 +273,11 @@ async def test_check_url_probe_all_failed_does_not_eliminate(monkeypatch):
         lambda url: mock_content,
     )
 
-    # mock 步骤 2：purpose
-    from app.services.citation_check.question_generation import ArticlePurpose
-    fake_purpose = ArticlePurpose(
-        content_type="x", primary_purpose="y", secondary_purposes=[],
-        target_audience="z", desired_takeaway="a", desired_action="b",
-        query_territories=[], evidence_assets=[],
-    )
-    monkeypatch.setattr(
-        "app.services.citation_checker.call_llm_with_parse_retry_fallback",
-        lambda providers, prompt, *, parser, **kw: "raw purpose text",
-    )
-    monkeypatch.setattr(
-        "app.services.citation_checker.parse_purpose_response",
-        lambda text: fake_purpose,
-    )
+    # mock 阶段 1b：客户问题（替代 LLM 自动生成）
+    checker._get_client_questions = AsyncMock(return_value=["测试问题"])
 
-    # mock 步骤 3：候选问题
-    from app.services.citation_check.questions import QuestionCandidate
-    fake_candidates = [
-        QuestionCandidate(
-            question=f"Q{i}", selection_reason="r",
-            content_support=0.9, natural_intent=0.8, citation_need=0.7,
-            distinctiveness=0.6, freshness=0.5, metadata={},
-        )
-        for i in range(5)
-    ]
-    monkeypatch.setattr(
-        "app.services.citation_checker.generate_candidates",
-        lambda **kw: fake_candidates,
-    )
-    monkeypatch.setattr(
-        "app.services.citation_checker.make_fallback_parse_retry_generator",
-        lambda providers, *, parser, **kw: (lambda prompt: ""),
-    )
+    # mock 阶段 1c：已收录模型
+    checker._get_indexed_models = AsyncMock(return_value=["qwen", "doubao"])
 
     # 关键 mock：default_adapters 返回 2 个 fake adapter（不走真实网络）
     fake_adapters = [_make_fake_adapter("qwen"), _make_fake_adapter("doubao")]
@@ -350,114 +307,30 @@ async def test_check_url_probe_all_failed_does_not_eliminate(monkeypatch):
     )
     checker._store_results = AsyncMock(return_value=None)
 
-    # 执行：不应抛错（旧实现会在此抛 [4/5 模型探测] 错）
+    # 执行：不应抛错（旧 5 阶段实现会在此抛 [4/5 模型探测] 错）
     await checker.check_url("https://example.com/a", "client-1")
 
-    # 关键断言：stage 5 收到的是全量 adapters（2 个），而非空列表
+    # 关键断言：stage 3 收到的是全量 adapters（2 个），而非空列表
     passed_adapters = captured_kwargs.get("adapters", [])
     assert len(passed_adapters) == 2, (
-        f"probe 全失败时 stage 5 应使用全量 adapters（期望 2，实际 {len(passed_adapters)}）"
+        f"probe 全失败时 stage 3 应使用全量 adapters（期望 2，实际 {len(passed_adapters)}）"
     )
     passed_ids = {a.provider_id for a in passed_adapters}
     assert passed_ids == {"qwen", "doubao"}
 
 
 @pytest.mark.asyncio
-async def test_check_url_zero_adapters_still_raises_stage4(monkeypatch):
-    """adapters 为空（零模型）时仍应在 stage 4 抛硬错误。
+async def test_check_url_zero_adapters_still_raises_stage2_model_probe(monkeypatch):
+    """adapters 为空（零模型）时仍应在 stage 2 抛硬错误。
 
     阶段 1 - ③ 保留：if not adapters: raise（零模型是配置错误，不可降级）。
+    原 5 阶段测试名 test_check_url_zero_adapters_still_raises_stage4 →
+    3 阶段重命名为 stage2_model_probe。
     """
     checker = CitationChecker(db=MagicMock())
 
     async def mock_load_ai_config():
         return {
-            "ai_deepseek_api_key": "fake-key",
-            "ai_question_model": "deepseek-chat",
-            "ai_citation_models": "",
-        }
-    checker._load_ai_config = mock_load_ai_config
-    checker._set_provider_env = MagicMock()
-
-    mock_content = MagicMock()
-    mock_content.suitability.suitable = True
-    mock_content.title = "标题"
-    mock_content.text = "正文"
-    mock_content.requested_url = "https://example.com/a"
-    mock_content.resolved_url = None
-    mock_content.canonical_url = None
-    mock_content.extraction_method = "test"
-    monkeypatch.setattr(
-        "app.services.citation_checker.fetch_public_content",
-        lambda url: mock_content,
-    )
-
-    from app.services.citation_check.question_generation import ArticlePurpose
-    fake_purpose = ArticlePurpose(
-        content_type="x", primary_purpose="y", secondary_purposes=[],
-        target_audience="z", desired_takeaway="a", desired_action="b",
-        query_territories=[], evidence_assets=[],
-    )
-    monkeypatch.setattr(
-        "app.services.citation_checker.call_llm_with_parse_retry_fallback",
-        lambda providers, prompt, *, parser, **kw: "raw purpose text",
-    )
-    monkeypatch.setattr(
-        "app.services.citation_checker.parse_purpose_response",
-        lambda text: fake_purpose,
-    )
-
-    from app.services.citation_check.questions import QuestionCandidate
-    fake_candidates = [
-        QuestionCandidate(
-            question=f"Q{i}", selection_reason="r",
-            content_support=0.9, natural_intent=0.8, citation_need=0.7,
-            distinctiveness=0.6, freshness=0.5, metadata={},
-        )
-        for i in range(5)
-    ]
-    monkeypatch.setattr(
-        "app.services.citation_checker.generate_candidates",
-        lambda **kw: fake_candidates,
-    )
-    monkeypatch.setattr(
-        "app.services.citation_checker.make_fallback_parse_retry_generator",
-        lambda providers, *, parser, **kw: (lambda prompt: ""),
-    )
-
-    # 关键 mock：default_adapters 返回空列表（无任何可用模型）
-    monkeypatch.setattr(
-        "app.services.citation_checker.default_adapters",
-        lambda selected_ids: [],
-    )
-
-    with pytest.raises(ValueError) as exc_info:
-        await checker.check_url("https://example.com/a", "client-1")
-    assert "[4/5 模型探测]" in str(exc_info.value), (
-        "零模型硬错误应带 [4/5 模型探测] 标签"
-    )
-
-
-# --------------------------------------------------------------------------- #
-# 阶段 2 - ⑥b：Stage 2/3 接入 provider fallback                               #
-# --------------------------------------------------------------------------- #
-# 规格：DeepSeek Key 缺失但千问/豆包 Key 可用时，stage 2/3 不再因"DeepSeek 未配置"
-# 全盘失败，而是 fallback 到千问/豆包完成目的推断和问题生成。
-
-
-@pytest.mark.asyncio
-async def test_check_url_fallback_when_deepseek_key_missing(monkeypatch):
-    """DeepSeek Key 缺失但有千问 Key 时，stage 2/3 应 fallback 到千问，不抛错。
-
-    阶段 2 - ⑥b 核心：解除 Stage 2/3 对 DeepSeek 的强依赖。
-    """
-    checker = CitationChecker(db=MagicMock())
-
-    async def mock_load_ai_config():
-        return {
-            # DeepSeek Key 缺失
-            "ai_dashscope_api_key": "qwen-key",  # 千问可用
-            "ai_question_model": "deepseek-chat",
             "ai_citation_models": "qwen",
         }
     checker._load_ai_config = mock_load_ai_config
@@ -476,105 +349,18 @@ async def test_check_url_fallback_when_deepseek_key_missing(monkeypatch):
         lambda url: mock_content,
     )
 
-    from app.services.citation_check.question_generation import ArticlePurpose
-    fake_purpose = ArticlePurpose(
-        content_type="x", primary_purpose="y", secondary_purposes=[],
-        target_audience="z", desired_takeaway="a", desired_action="b",
-        query_territories=[], evidence_assets=[],
-    )
+    # mock 阶段 1b/1c：客户问题 + 已收录模型
+    checker._get_client_questions = AsyncMock(return_value=["测试问题"])
+    checker._get_indexed_models = AsyncMock(return_value=["qwen"])
 
-    # 关键：捕获 fallback 入口收到的 providers
-    captured = {}
-
-    def fake_call_fallback(providers, prompt, *, parser, **kw):
-        captured["providers"] = providers
-        captured["parser"] = parser
-        return "raw text"
-
-    monkeypatch.setattr(
-        "app.services.citation_checker.call_llm_with_parse_retry_fallback",
-        fake_call_fallback,
-    )
-    monkeypatch.setattr(
-        "app.services.citation_checker.call_deepseek_with_parse_retry",
-        lambda *a, **kw: fake_purpose,  # 不应被调用（DeepSeek Key 缺失）
-    )
-
-    from app.services.citation_check.questions import QuestionCandidate
-    fake_candidates = [
-        QuestionCandidate(
-            question=f"Q{i}", selection_reason="r",
-            content_support=0.9, natural_intent=0.8, citation_need=0.7,
-            distinctiveness=0.6, freshness=0.5, metadata={},
-        )
-        for i in range(5)
-    ]
-
-    def fake_fallback_generator(providers, *, parser, **kw):
-        captured["gen_providers"] = providers
-        return lambda prompt: "raw text"
-
-    monkeypatch.setattr(
-        "app.services.citation_checker.make_fallback_parse_retry_generator",
-        fake_fallback_generator,
-    )
-    monkeypatch.setattr(
-        "app.services.citation_checker.make_parse_retry_generator",
-        lambda *a, **kw: (lambda prompt: ""),  # 不应被调用
-    )
-    monkeypatch.setattr(
-        "app.services.citation_checker.generate_candidates",
-        lambda **kw: fake_candidates,
-    )
-    monkeypatch.setattr(
-        "app.services.citation_checker.parse_purpose_response",
-        lambda text: fake_purpose,  # 让 fallback 的 parser 能用
-    )
-
-    # mock stage 4/5
+    # 关键 mock：default_adapters 返回空列表（无任何可用模型）
     monkeypatch.setattr(
         "app.services.citation_checker.default_adapters",
-        lambda selected_ids: [_make_fake_adapter("qwen")],
+        lambda selected_ids: [],
     )
-    monkeypatch.setattr(
-        "app.services.citation_checker.probe_adapter_capabilities",
-        lambda adapters: [{"provider_id": "qwen", "model": "千问", "model_id": "qwen3", "status": "verified"}],
-    )
-    monkeypatch.setattr(
-        "app.services.citation_checker.run_citation_check",
-        lambda **kw: {"results": [], "summary": {}, "questions": []},
-    )
-    checker._store_results = AsyncMock(return_value=None)
-
-    # 执行：不应抛"DeepSeek API Key 未配置"错
-    await checker.check_url("https://example.com/a", "client-1")
-
-    # 关键断言：stage 2 用了 fallback 入口，且 providers 含千问（无 DeepSeek）
-    assert "providers" in captured, "stage 2 应调用 call_llm_with_parse_retry_fallback"
-    provider_ids = [p.provider_id for p in captured["providers"]]
-    assert "qwen" in provider_ids, "fallback providers 应含千问"
-    assert "deepseek" not in provider_ids, "DeepSeek Key 缺失应不在 providers 中"
-
-
-@pytest.mark.asyncio
-async def test_check_url_no_chat_providers_raises(monkeypatch):
-    """无任何 chat 模型 Key（DeepSeek+千问+豆包都缺）时应在 stage 2 前抛错。
-
-    阶段 2 - ⑥b：零 chat provider 是配置硬错误。
-    """
-    checker = CitationChecker(db=MagicMock())
-
-    async def mock_load_ai_config():
-        return {
-            # 所有 chat 模型 Key 都缺失
-            "ai_question_model": "deepseek-chat",
-            "ai_citation_models": "",
-        }
-    checker._load_ai_config = mock_load_ai_config
-    checker._set_provider_env = MagicMock()
 
     with pytest.raises(ValueError) as exc_info:
         await checker.check_url("https://example.com/a", "client-1")
-    msg = str(exc_info.value)
-    # 应提示未配置 chat 模型（不再单独提 DeepSeek）
-    assert "未配置" in msg or "无可用" in msg, f"应提示未配置 chat 模型，实际: {msg}"
+    assert "[2/3 模型探测]" in str(exc_info.value), (
+        "零模型硬错误应带 [2/3 模型探测] 标签"
+    )
