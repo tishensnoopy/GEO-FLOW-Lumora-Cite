@@ -118,9 +118,11 @@ class CitationChecker:
         已收录文章更可能被 AI 引用，优先做采信检测；未收录文章（无 IndexResult，
         created_at 为 NULL）排末尾。
         """
-        repo = GeoflowRepository(self.db)
-        geoflow_urls = set(await repo.get_synced_distribution_urls())
-
+        # Phase 3 修复（I3）：GEOFlow 查询加 try/except 降级，与
+        # AIIndexChecker.get_pending_urls 对齐。GEOFlow schema 表缺失或短暂不可用时
+        # 降级为仅返回手动录入 URL，而非抛异常导致 citation 检测完全瘫痪。
+        # 注意：asyncpg 查询失败会把事务置为 aborted 状态，后续 SQL 全报
+        # "current transaction is aborted"，必须 rollback 才能继续用此 session。
         manual_result = await self.db.execute(
             select(ManualDistribution.remote_url, ManualDistribution.client_id)
             .where(ManualDistribution.status == "synced")
@@ -129,18 +131,26 @@ class CitationChecker:
         for url, client_id in manual_result.fetchall():
             distributed[url] = client_id
 
-        sites_result = await self.db.execute(
-            select(ClientSite).where(ClientSite.status == "active")
-        )
-        domain_map = {
-            normalize_domain(s.domain): s.client_id
-            for s in sites_result.scalars().all()
-        }
-        for url in geoflow_urls:
-            domain = normalize_domain(url)
-            client_id = domain_map.get(domain)
-            if client_id:
-                distributed.setdefault(url, client_id)
+        try:
+            repo = GeoflowRepository(self.db)
+            geoflow_urls = await repo.get_synced_distribution_urls()
+            sites_result = await self.db.execute(
+                select(ClientSite).where(ClientSite.status == "active")
+            )
+            domain_map = {
+                normalize_domain(s.domain): s.client_id
+                for s in sites_result.scalars().all()
+            }
+            for url in geoflow_urls:
+                domain = normalize_domain(url)
+                client_id = domain_map.get(domain)
+                if client_id:
+                    distributed.setdefault(url, client_id)
+        except Exception as exc:
+            # asyncpg 在查询失败后会把当前事务置为 aborted 状态，后续 SQL 全部报
+            # "current transaction is aborted" —— 必须 rollback 才能继续用此 session。
+            await self.db.rollback()
+            logger.warning("GEOFlow 分发查询失败（降级为仅手动录入）: %s", exc)
 
         if not distributed:
             return []

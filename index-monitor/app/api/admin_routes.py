@@ -533,7 +533,7 @@ async def list_distributions(
 
 class BatchScanRequest(BaseModel):
     distribution_ids: list[str]
-    scan_type: str  # 'index' | 'citation' | 'both'
+    scan_type: str  # 'index' | 'citation' | 'both' | 'ai_index'
 
 
 @router.post("/distributions/batch-scan")
@@ -547,12 +547,17 @@ async def batch_scan(
     修复：原为占位符（只返回入队数，不执行实际检测），导致 AI 采信监测失灵。
     现改为：解析 distribution_ids → 查 (url, client_id) → asyncio.create_task
     异步执行检测（不阻塞 HTTP 响应），结果异步写入 index_results / citation_results。
+
+    Phase 3 修复（C2/I5）：不再支持 ``all`` 类型。``all`` 类型需顺序执行
+    index → ai_index → citation 三阶段，违反 batch_scan 的"选定记录并发检测"语义，
+    且并发启动会导致 citation 阶段删除旧记录后 ai_index 未写入而数据丢失。
+    如需全量顺序扫描请用统一入口 ``POST /admin/scan/trigger``（scan_type=all）。
     """
-    # Phase 3：扩展支持 ai_index / all
-    if req.scan_type not in ("index", "citation", "both", "ai_index", "all"):
+    # Phase 3 修复（C2）：移除 all 类型支持
+    if req.scan_type not in ("index", "citation", "both", "ai_index"):
         raise HTTPException(
             status_code=400,
-            detail="scan_type 必须是 index/citation/both/ai_index/all",
+            detail="scan_type 必须是 index/citation/both/ai_index（如需全量顺序扫描请用 /admin/scan/trigger）",
         )
 
     if not req.distribution_ids:
@@ -570,30 +575,24 @@ async def batch_scan(
     if not targets:
         raise HTTPException(status_code=404, detail="未找到对应的分发记录")
 
-    # Phase 3：ai_index / all 类型处理
-    if req.scan_type in ("ai_index", "all"):
-        from app.services.ai_index_checker import AIIndexChecker
-        from app.services.scan_lock import acquire_scan_lock
-        # 对选定的 URL 执行 AI 收录检测
-        asyncio.create_task(_run_batch_ai_index(targets))
-        if req.scan_type == "ai_index":
-            return {
-                "task_id": None,
-                "queued": len(targets),
-                "scan_type": "ai_index",
-                "message": f"已开始 AI 收录检测 {len(targets)} 条链接",
-            }
-        # all 类型：ai_index 由 _run_batch_ai_index 处理，index+citation 由 _run_batch_scan(scan_type="both") 处理
+    # Phase 3 修复（I4）：ai_index 类型创建独立 task_id 跟踪进度
+    if req.scan_type == "ai_index":
+        from app.services.scan_task_manager import create_task
+        ai_task_id = create_task("ai_index", len(targets), targets)
+        asyncio.create_task(_run_batch_ai_index(targets, ai_task_id))
+        return {
+            "task_id": ai_task_id,
+            "queued": len(targets),
+            "scan_type": "ai_index",
+            "message": f"已开始 AI 收录检测 {len(targets)} 条链接",
+        }
 
     # 创建扫描任务（活动窗口）
     from app.services.scan_task_manager import create_task
     task_id = create_task(req.scan_type, len(targets), targets)
 
     # 异步执行检测（不阻塞响应；检测可能耗时数分钟，避免 HTTP 超时）
-    # "all" 类型已由上方 _run_batch_ai_index 处理 ai_index 部分，
-    # 这里 _run_batch_scan 只需处理 index+citation，映射为 "both"
-    batch_scan_type = "both" if req.scan_type == "all" else req.scan_type
-    asyncio.create_task(_run_batch_scan(targets, batch_scan_type, task_id))
+    asyncio.create_task(_run_batch_scan(targets, req.scan_type, task_id))
 
     return {
         "task_id": task_id,
@@ -1104,6 +1103,10 @@ async def unified_scan_trigger(
 
     scan_type='all' 时按顺序执行：index → ai_index → citation。
     每个阶段创建独立 scan_task。
+
+    Phase 3 修复（C1）：``all`` 类型改为单一 background task 内顺序 await 三阶段，
+    而非并发启动三个 task。确保 citation 阶段能看到 ai_index 阶段本次新写入的
+    indexed 记录（双阶段管道设计约束 #2）。
     """
     # 局部导入：与现有 _run_batch_scan 风格一致，避免顶部循环导入风险
     from app.services.index_checker import IndexChecker
@@ -1119,6 +1122,8 @@ async def unified_scan_trigger(
 
     types_to_run = ["index", "ai_index", "citation"] if req.scan_type == "all" else [req.scan_type]
     task_ids: dict[str, str | None] = {}
+    # all 类型：收集有待执行阶段的 (scan_type, task_id)，交给单一 background task 顺序执行
+    sequential_stages: list[tuple[str, str]] = []
 
     for scan_type in types_to_run:
         # 检查锁
@@ -1146,7 +1151,17 @@ async def unified_scan_trigger(
 
         task_id = create_task(scan_type, len(pending), pending)
         task_ids[scan_type] = task_id
-        asyncio.create_task(_run_unified_scan_background(scan_type, task_id))
+
+        if req.scan_type == "all":
+            # all 类型：收集到 sequential_stages，后续统一顺序执行
+            sequential_stages.append((scan_type, task_id))
+        else:
+            # 单类型：直接启动 background task
+            asyncio.create_task(_run_unified_scan_background(scan_type, task_id))
+
+    # all 类型：单一 background task 内顺序 await 各阶段，确保 citation 在 ai_index 完成后执行
+    if sequential_stages:
+        asyncio.create_task(_run_sequential_all_background(sequential_stages))
 
     return {
         "task_ids": task_ids,
@@ -1154,16 +1169,33 @@ async def unified_scan_trigger(
     }
 
 
+async def _run_sequential_all_background(stages: list[tuple[str, str]]) -> None:
+    """顺序执行 all 类型的多个阶段（C1 修复）。
+
+    每阶段完成后才启动下一阶段，确保 citation 阶段的 ``get_pending_urls`` /
+    ``check_all_pending`` 能看到 ai_index 阶段本次新写入的 indexed 记录。
+    每阶段的锁获取失败 / 异常不影响后续阶段（各阶段独立 lock + 独立 try/except）。
+    """
+    for scan_type, task_id in stages:
+        await _run_unified_scan_background(scan_type, task_id)
+
+
 async def _run_unified_scan_background(scan_type: str, task_id: str) -> None:
-    """后台执行统一扫描的单一阶段。"""
+    """后台执行统一扫描的单一阶段。
+
+    Phase 3 修复（C3）：用 try/finally 保证 ``complete_task`` 被调用，
+    避免 task 卡在 "running" 状态（锁失败 / 异常时也要标记完成）。
+    """
     # 局部导入：与现有 _run_batch_scan 风格一致
     from app.core.database import async_session as _async_session
     from app.services.index_checker import IndexChecker
     from app.services.scan_lock import acquire_scan_lock, release_scan_lock
-    from app.services.scan_task_manager import complete_task
+    from app.services.scan_task_manager import add_log, complete_task
     async with _async_session() as task_db:
         if not await acquire_scan_lock(task_db, scan_type):
             logger.warning("统一扫描后台：%s 获取锁失败，跳过", scan_type)
+            add_log(task_id, "warning", f"已有 {scan_type} 扫描在运行，本次跳过")
+            complete_task(task_id, status="completed")
             return
         try:
             if scan_type == "index":
@@ -1178,6 +1210,8 @@ async def _run_unified_scan_background(scan_type: str, task_id: str) -> None:
             complete_task(task_id)
         except Exception as exc:
             logger.error("统一扫描后台 %s 失败: %s", scan_type, exc)
+            add_log(task_id, "error", f"扫描失败: {exc}")
+            complete_task(task_id, status="failed")
         finally:
             await release_scan_lock(task_db, scan_type)
 
@@ -1214,15 +1248,21 @@ async def trigger_citation_scan(
 
 
 async def _run_citation_scan_background(task_id: str) -> None:
-    """后台执行问题监测。"""
+    """后台执行问题监测。
+
+    Phase 3 修复（C3）：用 try/finally 保证 ``complete_task`` 被调用，
+    避免 task 卡在 "running" 状态。
+    """
     # 局部导入：与现有 _run_batch_scan 风格一致
     from app.core.database import async_session as _async_session
     from app.services.citation_checker import CitationChecker
     from app.services.scan_lock import acquire_scan_lock, release_scan_lock
-    from app.services.scan_task_manager import complete_task
+    from app.services.scan_task_manager import add_log, complete_task
     async with _async_session() as db:
         if not await acquire_scan_lock(db, "citation"):
             logger.warning("问题监测后台任务：获取锁失败，跳过")
+            add_log(task_id, "warning", "已有问题监测扫描在运行，本次跳过")
+            complete_task(task_id, status="completed")
             return
         try:
             checker = CitationChecker(db)
@@ -1230,6 +1270,8 @@ async def _run_citation_scan_background(task_id: str) -> None:
             complete_task(task_id)
         except Exception as exc:
             logger.error("问题监测后台任务失败: %s", exc)
+            add_log(task_id, "error", f"扫描失败: {exc}")
+            complete_task(task_id, status="failed")
         finally:
             await release_scan_lock(db, "citation")
 
@@ -1247,10 +1289,12 @@ async def list_citation_results(
 ):
     """查询问题监测结果（全状态，可过滤）。
 
-    client_id 过滤经 client_questions 关联：CitationResult 无 client_id 字段，
-    通过 client_question_id 关联到 client_questions.id，再按 client_questions.client_id 筛选。
-    旧记录（client_question_id 为 NULL）在按 client_id 过滤时被排除，语义合理
-    （旧记录无法归属到客户）。
+    client_id 过滤（Phase 3 修复 I10）：CitationResult 无 client_id 字段，原实现
+    仅通过 client_question_id 关联，导致 client_question_id 为 NULL 的旧记录被排除。
+    现改为 OR 双路径：
+    1. URL 反查 manual_distributions.remote_url（旧记录也能按 URL 归属到客户）
+    2. client_question_id 关联 client_questions.client_id（Phase 2+ 精确关联）
+    任一路径匹配即纳入结果，避免历史数据"消失"。
     """
     from app.models.citation_result import CitationResult
     stmt = select(CitationResult)
@@ -1262,10 +1306,17 @@ async def list_citation_results(
         stmt = stmt.where(CitationResult.hit_type == hit_type)
     if client_id:
         from app.models.client_question import ClientQuestion
+        # URL 反查：该客户的 manual_distributions 记录的 remote_url
+        url_subquery = select(ManualDistribution.remote_url).where(
+            ManualDistribution.client_id == client_id
+        )
+        # client_question_id 反查：该客户的 client_questions 记录的 id
+        cq_subquery = select(ClientQuestion.id).where(
+            ClientQuestion.client_id == client_id
+        )
         stmt = stmt.where(
-            CitationResult.client_question_id.in_(
-                select(ClientQuestion.id).where(ClientQuestion.client_id == client_id)
-            )
+            CitationResult.url.in_(url_subquery)
+            | CitationResult.client_question_id.in_(cq_subquery)
         )
 
     count_stmt = select(func.count()).select_from(stmt.subquery())
@@ -1292,19 +1343,33 @@ async def list_citation_results(
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
-async def _run_batch_ai_index(targets: list[tuple[str, str]]) -> None:
+async def _run_batch_ai_index(targets: list[tuple[str, str]], task_id: str = None) -> None:
     """后台批量执行 AI 收录检测（选定记录）。
 
-    Phase 3：batch-scan 的 ai_index / all 类型调用。与 ``_run_batch_scan`` 风格
+    Phase 3：batch-scan 的 ai_index 类型调用。与 ``_run_batch_scan`` 风格
     一致——独立 session（避免与请求级 session 生命周期耦合）、加锁防并发、
     单条失败不影响其他 URL。
+
+    Phase 3 修复（I4）：接受 task_id 参数，通过 add_log / update_progress /
+    complete_task 写入进度，前端 ScanPanel 可见。
+
+    Phase 3 修复（C3）：try/finally 保证 complete_task 被调用。
     """
     from app.core.database import async_session as _async_session
     from app.services.ai_index_checker import AIIndexChecker
     from app.services.scan_lock import acquire_scan_lock, release_scan_lock
+    from app.services.scan_task_manager import add_log, update_progress, complete_task
+
+    processed = 0
+    success = 0
+    failed = 0
+
     async with _async_session() as db:
         if not await acquire_scan_lock(db, "ai_index"):
             logger.warning("批量 AI 收录检测：获取锁失败，跳过")
+            if task_id:
+                add_log(task_id, "warning", "已有 AI 收录扫描在运行，本次跳过")
+                complete_task(task_id, status="completed")
             return
         try:
             checker = AIIndexChecker(db)
@@ -1312,8 +1377,27 @@ async def _run_batch_ai_index(targets: list[tuple[str, str]]) -> None:
             for url, _client_id in targets:
                 for model in models:
                     try:
-                        await checker.check_url(url, model)
+                        if task_id:
+                            add_log(task_id, "info", f"[AI收录检测] 开始: {url} [{model}]")
+                        await checker.check_url(url, model, task_id=task_id)
+                        success += 1
+                        if task_id:
+                            add_log(task_id, "success", f"[AI收录检测] 完成: {url} [{model}]")
                     except Exception as exc:
                         logger.error("批量 AI 收录检测失败 %s [%s]: %s", url, model, exc)
+                        failed += 1
+                        if task_id:
+                            add_log(task_id, "error", f"[AI收录检测] 失败: {url} [{model}] - {exc}")
+                    finally:
+                        processed += 1
+                        if task_id:
+                            update_progress(task_id, processed=processed, success=success, failed=failed)
+            if task_id:
+                complete_task(task_id)
+        except Exception as exc:
+            logger.error("批量 AI 收录检测整体失败: %s", exc)
+            if task_id:
+                add_log(task_id, "error", f"扫描失败: {exc}")
+                complete_task(task_id, status="failed")
         finally:
             await release_scan_lock(db, "ai_index")

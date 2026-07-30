@@ -76,15 +76,26 @@ async def ai_index_overview(
     all_records = result.scalars().all()
 
     indexed_urls = {r.url for r in all_records if r.index_status == "indexed"}
-    not_indexed_count = sum(1 for r in all_records if r.index_status == "not_indexed")
     total_indexed = len(indexed_urls)
     total_not_indexed = len({r.url for r in all_records if r.index_status == "not_indexed"})
     index_rate = total_indexed / (total_indexed + total_not_indexed) if (total_indexed + total_not_indexed) > 0 else 0
+
+    # 获取 URL → title 映射（I2 修复：与 citation_evidence 对齐，补全 title 字段）
+    indexed_url_set = {r.url for r in all_records if r.index_status == "indexed"}
+    title_map: dict[str, str] = {}
+    if indexed_url_set:
+        title_result = await db.execute(
+            select(IndexResult.url, IndexResult.content_title).where(
+                IndexResult.url.in_(indexed_url_set)
+            )
+        )
+        title_map = {row[0]: row[1] or "" for row in title_result.fetchall()}
 
     # 仅返回 indexed 的文章（隐藏 pending/not_indexed 详情）
     articles = [
         {
             "url": r.url,
+            "title": title_map.get(r.url) or "",
             "model": r.model,
             "index_status": r.index_status,
             "checked_at": r.checked_at.isoformat() if r.checked_at else None,

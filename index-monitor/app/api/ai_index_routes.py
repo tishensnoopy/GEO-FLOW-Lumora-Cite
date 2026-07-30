@@ -46,10 +46,17 @@ async def trigger_ai_index_scan(
 
 
 async def _run_ai_index_scan_background(task_id: str) -> None:
-    """后台执行 AI 收录检测。"""
+    """后台执行 AI 收录检测。
+
+    Phase 3 修复（C3）：用 try/finally 保证 ``complete_task`` 被调用，
+    避免 task 卡在 "running" 状态（锁失败 / 异常时也要标记完成）。
+    """
+    from app.services.scan_task_manager import add_log
     async with async_session() as db:
         if not await acquire_scan_lock(db, "ai_index"):
             logger.warning("AI 收录扫描后台任务：获取锁失败，跳过")
+            add_log(task_id, "warning", "已有 AI 收录扫描在运行，本次跳过")
+            complete_task(task_id, status="completed")
             return
         try:
             checker = AIIndexChecker(db)
@@ -57,6 +64,8 @@ async def _run_ai_index_scan_background(task_id: str) -> None:
             complete_task(task_id)
         except Exception as exc:
             logger.error("AI 收录扫描后台任务失败: %s", exc)
+            add_log(task_id, "error", f"扫描失败: {exc}")
+            complete_task(task_id, status="failed")
         finally:
             await release_scan_lock(db, "ai_index")
 
@@ -84,15 +93,26 @@ async def trigger_ai_index_rescan(
 
 
 async def _run_ai_index_rescan_background(task_id: str, url: str, models: list[str]) -> None:
-    """后台执行单 URL 重检。"""
+    """后台执行单 URL 重检。
+
+    Phase 3 修复（C3）：用 try/finally 保证 ``complete_task`` 被调用，
+    避免 task 卡在 "running" 状态（异常时也要标记完成）。
+    """
+    from app.services.scan_task_manager import add_log
     async with async_session() as db:
-        checker = AIIndexChecker(db)
-        for model in models:
-            try:
-                await checker.check_url(url, model, task_id=task_id)
-            except Exception as exc:
-                logger.error("单 URL 重检失败 %s [%s]: %s", url, model, exc)
-        complete_task(task_id)
+        try:
+            checker = AIIndexChecker(db)
+            for model in models:
+                try:
+                    await checker.check_url(url, model, task_id=task_id)
+                except Exception as exc:
+                    logger.error("单 URL 重检失败 %s [%s]: %s", url, model, exc)
+                    add_log(task_id, "error", f"重检失败: {url} [{model}] - {exc}")
+            complete_task(task_id)
+        except Exception as exc:
+            logger.error("单 URL 重检整体失败 %s: %s", url, exc)
+            add_log(task_id, "error", f"扫描失败: {exc}")
+            complete_task(task_id, status="failed")
 
 
 @router.get("/admin/ai-index/results")
@@ -143,15 +163,31 @@ async def ai_index_stats(
     admin: dict = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """收录统计（按模型/客户维度）。"""
-    # 总体统计
-    stmt = select(
+    """收录统计（按模型/客户维度）。
+
+    Phase 3 修复（I1）：补全 ``by_client`` 维度 + ``client_id`` 过滤生效。
+    ``AIIndexResult`` 无 client_id 字段，通过 LEFT JOIN ``manual_distributions``
+    ON url = remote_url 反查 client_id。
+    """
+    from app.models.manual_distribution import ManualDistribution
+
+    # 该客户的 URL 集合（用于 client_id 过滤）
+    client_urls_subquery = None
+    if client_id:
+        client_urls_subquery = select(ManualDistribution.remote_url).where(
+            ManualDistribution.client_id == client_id
+        )
+
+    # 总体统计（按 client_id 过滤）
+    total_stmt = select(
         func.count(AIIndexResult.id).label("total"),
         func.sum(case((AIIndexResult.index_status == "indexed", 1), else_=0)).label("indexed"),
         func.sum(case((AIIndexResult.index_status == "not_indexed", 1), else_=0)).label("not_indexed"),
         func.sum(case((AIIndexResult.index_status == "pending", 1), else_=0)).label("pending"),
     )
-    row = (await db.execute(stmt)).one()
+    if client_urls_subquery is not None:
+        total_stmt = total_stmt.where(AIIndexResult.url.in_(client_urls_subquery))
+    row = (await db.execute(total_stmt)).one()
     indexed = int(row.indexed or 0)
     not_indexed = int(row.not_indexed or 0)
     pending = int(row.pending or 0)
@@ -164,7 +200,10 @@ async def ai_index_stats(
         func.sum(case((AIIndexResult.index_status == "indexed", 1), else_=0)).label("indexed"),
         func.sum(case((AIIndexResult.index_status == "not_indexed", 1), else_=0)).label("not_indexed"),
         func.sum(case((AIIndexResult.index_status == "pending", 1), else_=0)).label("pending"),
-    ).group_by(AIIndexResult.model)
+    )
+    if client_urls_subquery is not None:
+        model_stmt = model_stmt.where(AIIndexResult.url.in_(client_urls_subquery))
+    model_stmt = model_stmt.group_by(AIIndexResult.model)
     model_rows = (await db.execute(model_stmt)).all()
     by_model = []
     for m, idx, nidx, pend in model_rows:
@@ -175,6 +214,33 @@ async def ai_index_stats(
             "pending": int(pend or 0), "rate": rate,
         })
 
+    # 按客户维度（I1 修复）：LEFT JOIN manual_distributions ON url = remote_url
+    # 聚合 client_id 维度。未匹配到 manual_distributions 的记录 client_id 为 NULL
+    # （归属未知，单独归到 "unknown" 桶）。
+    client_stmt = select(
+        ManualDistribution.client_id,
+        func.sum(case((AIIndexResult.index_status == "indexed", 1), else_=0)).label("indexed"),
+        func.sum(case((AIIndexResult.index_status == "not_indexed", 1), else_=0)).label("not_indexed"),
+        func.sum(case((AIIndexResult.index_status == "pending", 1), else_=0)).label("pending"),
+    ).select_from(
+        AIIndexResult.__table__.outerjoin(
+            ManualDistribution.__table__,
+            AIIndexResult.url == ManualDistribution.remote_url,
+        )
+    ).group_by(ManualDistribution.client_id)
+    client_rows = (await db.execute(client_stmt)).all()
+    by_client = []
+    for cid, idx, nidx, pend in client_rows:
+        idx, nidx = int(idx or 0), int(nidx or 0)
+        rate = idx / (idx + nidx) if (idx + nidx) > 0 else 0
+        by_client.append({
+            "client_id": cid or "unknown",
+            "indexed": idx,
+            "not_indexed": nidx,
+            "pending": int(pend or 0),
+            "rate": rate,
+        })
+
     return {
         "total_combinations": total,
         "indexed": indexed,
@@ -182,4 +248,5 @@ async def ai_index_stats(
         "pending": pending,
         "index_rate": index_rate,
         "by_model": by_model,
+        "by_client": by_client,
     }
