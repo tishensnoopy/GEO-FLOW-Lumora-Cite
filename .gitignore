@@ -38,6 +38,10 @@ db_backup/
 # 运行时导出产物（PDF/Excel 测试文件，由 ExportService 生成）
 index-monitor/exports/
 
+# 运行时 PID 文件
+*.pid
+.dev-vite.pid
+
 # 外部项目源码（云端单独上传/克隆，不入本仓库）
 GEOFlow-main/
 lumora-cite-main/
