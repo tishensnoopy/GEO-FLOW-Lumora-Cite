@@ -81,6 +81,15 @@ app.include_router(client_question_router, prefix="/api/v1")
 from app.api.ai_index_routes import router as ai_index_router
 app.include_router(ai_index_router, prefix="/api/v1")
 
+# 客户端只读 API 路由（设计文档 Phase 3 任务 7）：
+# - GET /ai-index/overview：客户自己的收录概览（仅 indexed）
+# - GET /citations/evidence：客户自己的引用证据（hit_type != 'none'）
+# - GET /stats：客户统计卡片（AI 收录数 / 提及数 / 提及率）
+# 鉴权用 get_current_client_id，client_id 强制从 JWT 取（admin JWT 拒绝 403），
+# 数据范围限制：仅返回该客户自己的 URL（手动录入 + GEOFlow 分发匹配 ClientSite）。
+from app.api.client_routes import router as client_router
+app.include_router(client_router, prefix="/api/v1")
+
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "version": settings.APP_VERSION}

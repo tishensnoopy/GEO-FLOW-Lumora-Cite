@@ -58,6 +58,42 @@ async def client_auth_headers() -> dict:
     }
 
 
+@pytest_asyncio.fixture
+async def client_a_headers() -> dict:
+    """构造 client JWT 请求头（用 SECRET_KEY 签发，sub=DEMO001）。
+
+    Task 7 客户端只读 API 数据隔离测试需要同时持有两个客户的鉴权头，
+    本 fixture 与 ``client_auth_headers`` 等价（DEMO001），命名上加 ``_a``
+    后缀与 ``client_b_headers``（DEMO002）对齐，便于测试中直观区分。
+    """
+    payload = {
+        "sub": "DEMO001",
+        "type": "client",
+        "role": "client",
+        "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+    }
+    return {
+        "Authorization": f"Bearer {jwt.encode(payload, settings.SECRET_KEY, algorithm='HS256')}"
+    }
+
+
+@pytest_asyncio.fixture
+async def client_b_headers() -> dict:
+    """构造 client JWT 请求头（用 SECRET_KEY 签发，sub=DEMO002）。
+
+    用于 Task 7 数据隔离测试：验证 DEMO001 客户无法看到 DEMO002 的数据。
+    """
+    payload = {
+        "sub": "DEMO002",
+        "type": "client",
+        "role": "client",
+        "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+    }
+    return {
+        "Authorization": f"Bearer {jwt.encode(payload, settings.SECRET_KEY, algorithm='HS256')}"
+    }
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def _clean_client_questions(db_session):
     """每个测试前清理 ``monitor.client_questions`` 表，避免数据污染。
