@@ -79,6 +79,20 @@
           <StatusDot :status="getStatusType(row)" />
         </template>
       </el-table-column>
+      <!-- AI 收录联动徽章：仅对 useAutoPipeline 追踪过的 URL（如刚手动添加的文章）展示。
+           未追踪的行（如已存在的 GEOFlow 同步记录）显示占位符，避免误导用户。 -->
+      <el-table-column label="AI 收录" width="110">
+        <template #default="{ row }">
+          <el-tag
+            v-if="pipelineTracked(row.remote_url)"
+            :type="pipelineTagType(row.remote_url)"
+            size="small"
+          >
+            {{ pipelineTagLabel(row.remote_url) }}
+          </el-tag>
+          <span v-else class="text-muted">—</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="note" label="备注" min-width="120" show-overflow-tooltip />
       <el-table-column prop="created_at" label="创建时间" width="160">
         <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
@@ -252,8 +266,13 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, View, Edit, Delete, InfoFilled } from '@element-plus/icons-vue'
 import api from '@/api'
 import StatusDot from '@/components/StatusDot.vue'
+import { useAutoPipeline } from '@/composables/useAutoPipeline'
 
 const store = useStore()
+
+// 自动联动反馈：手动添加文章后追踪其收录检测进度，驱动列表行徽章。
+// useAutoPipeline 为模块级单例，多组件共享同一份状态。
+const { trackUrl: pipelineTrack, getStatus: pipelineStatus, isTracked: pipelineTracked } = useAutoPipeline()
 // 全局扫描面板触发（由 App.vue 通过 provide('openScanPanel') 提供）
 const openScanPanel = inject('openScanPanel', null)
 // 修复：改用 Vuex store 的 role（响应式），原 localStorage 读取非响应式，
@@ -410,7 +429,10 @@ async function handleAdd() {
       title: addForm.title || null,
       note: addForm.note || null,
     })
-    ElMessage.success('链接已添加，系统将开始监测')
+    // 触发自动联动追踪：注册 URL 后 useAutoPipeline 开始轮询 aiIndexApi.listResults，
+    // 列表行徽章会从「收录检测中」逐步过渡到「已收录/未收录/检测失败」。
+    pipelineTrack(addForm.remote_url)
+    ElMessage.success('文章已添加，正在自动触发 AI 收录检测...')
     addVisible.value = false
     fetchList()
   } catch (err) {
@@ -603,6 +625,17 @@ function getStatusType(row) {
   if (indexed.length === 0) return 'pending'
   if (indexed.length < engines.length) return 'partial'
   return 'indexed'
+}
+
+// === AI 收录联动徽章映射 ===
+// pending(黄,检测中) / indexed(绿,已收录) / not_indexed(灰,未收录) / failed(红,检测失败)
+function pipelineTagType(url) {
+  const s = pipelineStatus(url)
+  return { pending: 'warning', indexed: 'success', not_indexed: 'info', failed: 'danger' }[s] || 'info'
+}
+function pipelineTagLabel(url) {
+  const s = pipelineStatus(url)
+  return { pending: '收录检测中', indexed: '已收录', not_indexed: '未收录', failed: '检测失败' }[s] || s
 }
 
 function formatTime(iso) {
