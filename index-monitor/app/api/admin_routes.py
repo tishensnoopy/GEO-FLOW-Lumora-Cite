@@ -438,6 +438,17 @@ async def create_manual_distribution(
         import logging
         logging.getLogger(__name__).warning("抓取文章标题失败: %s", exc)
 
+    # Phase 3：自动联动——新文章入库后触发 AI 收录检测 → 问题监测
+    # asyncio.create_task 不阻塞 HTTP 响应，后台链式执行
+    try:
+        from app.services.auto_pipeline import trigger_for_url
+        asyncio.create_task(
+            trigger_for_url(req.remote_url, result.get("client_id"))
+        )
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("触发自动联动失败（已忽略）: %s", exc)
+
     return result
 
 
@@ -537,8 +548,12 @@ async def batch_scan(
     现改为：解析 distribution_ids → 查 (url, client_id) → asyncio.create_task
     异步执行检测（不阻塞 HTTP 响应），结果异步写入 index_results / citation_results。
     """
-    if req.scan_type not in ("index", "citation", "both"):
-        raise HTTPException(status_code=400, detail="scan_type 必须是 index/citation/both")
+    # Phase 3：扩展支持 ai_index / all
+    if req.scan_type not in ("index", "citation", "both", "ai_index", "all"):
+        raise HTTPException(
+            status_code=400,
+            detail="scan_type 必须是 index/citation/both/ai_index/all",
+        )
 
     if not req.distribution_ids:
         raise HTTPException(status_code=400, detail="distribution_ids 不能为空")
@@ -554,6 +569,21 @@ async def batch_scan(
     targets = await _resolve_scan_targets(db, req.distribution_ids)
     if not targets:
         raise HTTPException(status_code=404, detail="未找到对应的分发记录")
+
+    # Phase 3：ai_index / all 类型处理
+    if req.scan_type in ("ai_index", "all"):
+        from app.services.ai_index_checker import AIIndexChecker
+        from app.services.scan_lock import acquire_scan_lock
+        # 对选定的 URL 执行 AI 收录检测
+        asyncio.create_task(_run_batch_ai_index(targets))
+        if req.scan_type == "ai_index":
+            return {
+                "task_id": None,
+                "queued": len(targets),
+                "scan_type": "ai_index",
+                "message": f"已开始 AI 收录检测 {len(targets)} 条链接",
+            }
+        # all 类型：ai_index 后继续 citation（由 _run_batch_scan 处理）
 
     # 创建扫描任务（活动窗口）
     from app.services.scan_task_manager import create_task
@@ -1257,3 +1287,30 @@ async def list_citation_results(
         for r in result.scalars().all()
     ]
     return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+async def _run_batch_ai_index(targets: list[tuple[str, str]]) -> None:
+    """后台批量执行 AI 收录检测（选定记录）。
+
+    Phase 3：batch-scan 的 ai_index / all 类型调用。与 ``_run_batch_scan`` 风格
+    一致——独立 session（避免与请求级 session 生命周期耦合）、加锁防并发、
+    单条失败不影响其他 URL。
+    """
+    from app.core.database import async_session as _async_session
+    from app.services.ai_index_checker import AIIndexChecker
+    from app.services.scan_lock import acquire_scan_lock, release_scan_lock
+    async with _async_session() as db:
+        if not await acquire_scan_lock(db, "ai_index"):
+            logger.warning("批量 AI 收录检测：获取锁失败，跳过")
+            return
+        try:
+            checker = AIIndexChecker(db)
+            models = checker._get_configured_models()
+            for url, _client_id in targets:
+                for model in models:
+                    try:
+                        await checker.check_url(url, model)
+                    except Exception as exc:
+                        logger.error("批量 AI 收录检测失败 %s [%s]: %s", url, model, exc)
+        finally:
+            await release_scan_lock(db, "ai_index")
