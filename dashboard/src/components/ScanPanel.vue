@@ -42,6 +42,19 @@
           </div>
         </div>
 
+        <!-- 三阶段进度环（all 类型：index → ai_index → citation 顺序执行） -->
+        <div class="phase-rings" v-if="taskIds">
+          <div
+            class="phase-ring"
+            v-for="(tid, phase) in taskIds"
+            :key="phase"
+            :class="phaseStatus(phase)"
+          >
+            <div class="phase-icon">{{ phaseIcon(phase) }}</div>
+            <div class="phase-label">{{ phaseLabel(phase) }}</div>
+          </div>
+        </div>
+
         <!-- 引擎状态卡片（仅收录扫描显示） -->
         <div class="engine-status" v-if="task.scan_type === 'index' || task.scan_type === 'both'">
           <div class="section-title">搜索引擎收录状态</div>
@@ -104,6 +117,7 @@ import api from '@/api'
 const props = defineProps({
   modelValue: Boolean,
   taskId: String,
+  taskIds: { type: Object, default: null }, // all 类型: {index, ai_index, citation} | null
 })
 const emit = defineEmits(['update:modelValue'])
 
@@ -113,6 +127,8 @@ const visible = computed({
 })
 const terminalRef = ref(null)
 let pollTimer = null
+// 各阶段独立轮询 timer（key 为 phase 名称）
+let phasePollTimers = {}
 
 const task = reactive({
   task_id: '', scan_type: '', status: 'running',
@@ -120,9 +136,36 @@ const task = reactive({
   logs: [], citation_models: [], created_at: null, updated_at: null,
 })
 
+// all 类型三阶段状态：index → ai_index → citation 顺序执行
+// 每阶段独立轮询 status，更新 phaseStatuses 用于进度环高亮
+const phaseStatuses = reactive({
+  index: 'pending',
+  ai_index: 'pending',
+  citation: 'pending',
+})
+
 const scanTypeText = computed(() => ({
   index: '收录检测', citation: 'AI采信检测', both: '收录+采信',
+  ai_index: 'AI 收录检测', all: '全量扫描',
 }[task.scan_type] || task.scan_type))
+
+// 阶段进度环辅助：phaseStatus 由 phaseStatuses 实时驱动
+function phaseStatus(phase) {
+  return phaseStatuses[phase] || 'pending'
+}
+function phaseIcon(phase) {
+  const s = phaseStatuses[phase]
+  if (s === 'completed') return '✓'
+  if (s === 'active') return '⏳'
+  return '○'
+}
+function phaseLabel(phase) {
+  return {
+    index: '收录',
+    ai_index: 'AI 收录',
+    citation: '采信',
+  }[phase] || phase
+}
 
 const progressPercent = computed(() => {
   if (task.total === 0) return 0
@@ -229,6 +272,57 @@ function stopPolling() {
 function close() {
   visible.value = false
   stopPolling()
+  stopPhasePolling()
+}
+
+// 阶段轮询：taskIds 存在时，为每个 phase 独立轮询 status，更新 phaseStatuses
+async function fetchPhaseStatus(phase, tid) {
+  if (!tid) return
+  try {
+    const res = await api.get(`/admin/scan/status/${tid}`)
+    const status = res.data?.status
+    if (status === 'completed') {
+      phaseStatuses[phase] = 'completed'
+      // 该阶段完成，停止其独立轮询
+      if (phasePollTimers[phase]) {
+        clearInterval(phasePollTimers[phase])
+        delete phasePollTimers[phase]
+      }
+    } else if (status === 'running') {
+      phaseStatuses[phase] = 'active'
+    } else if (status === 'failed') {
+      // 失败也视为本阶段结束，停止轮询（保留 active 高亮由父组件决定）
+      phaseStatuses[phase] = 'completed'
+      if (phasePollTimers[phase]) {
+        clearInterval(phasePollTimers[phase])
+        delete phasePollTimers[phase]
+      }
+    }
+  } catch (err) {
+    console.error(`获取阶段 ${phase} 状态失败:`, err)
+  }
+}
+function startPhasePolling() {
+  stopPhasePolling()
+  if (!props.taskIds) return
+  Object.keys(props.taskIds).forEach((phase) => {
+    const tid = props.taskIds[phase]
+    if (!tid) return
+    // 初始为 pending，立即拉取一次以同步状态
+    fetchPhaseStatus(phase, tid)
+    phasePollTimers[phase] = setInterval(() => fetchPhaseStatus(phase, tid), 2000)
+  })
+}
+function stopPhasePolling() {
+  Object.keys(phasePollTimers).forEach((phase) => {
+    clearInterval(phasePollTimers[phase])
+    delete phasePollTimers[phase]
+  })
+}
+function resetPhaseStatuses() {
+  phaseStatuses.index = 'pending'
+  phaseStatuses.ai_index = 'pending'
+  phaseStatuses.citation = 'pending'
 }
 
 watch(() => props.taskId, (newId) => {
@@ -244,8 +338,18 @@ watch(() => props.taskId, (newId) => {
 watch(() => props.modelValue, (v) => {
   if (v && props.taskId) startPolling()
   else if (!v) stopPolling()
+  if (v && props.taskIds) startPhasePolling()
+  else if (!v) stopPhasePolling()
 })
-onUnmounted(() => stopPolling())
+watch(() => props.taskIds, (newVal) => {
+  resetPhaseStatuses()
+  if (newVal && props.modelValue) startPhasePolling()
+  else stopPhasePolling()
+}, { deep: true })
+onUnmounted(() => {
+  stopPolling()
+  stopPhasePolling()
+})
 </script>
 
 <style scoped>
@@ -370,6 +474,47 @@ onUnmounted(() => stopPolling())
   padding: var(--space-md);
   border-bottom: 1px solid var(--ink-line);
   flex-shrink: 0;
+}
+
+/* 三阶段进度环（all 类型） */
+.phase-rings {
+  display: flex;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  border-bottom: 1px solid var(--ink-line);
+  flex-shrink: 0;
+}
+.phase-ring {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: var(--space-xs);
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--ink-line);
+  opacity: 0.5;
+  transition: opacity var(--transition-fast), border-color var(--transition-fast);
+}
+.phase-ring.completed {
+  opacity: 1;
+  border-color: var(--status-indexed);
+}
+.phase-ring.active {
+  opacity: 1;
+  border-color: var(--signal);
+}
+.phase-icon {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--mute);
+}
+.phase-ring.completed .phase-icon { color: var(--status-indexed); }
+.phase-ring.active .phase-icon { color: var(--signal); }
+.phase-label {
+  font-size: var(--fs-small);
+  color: var(--ink);
 }
 .section-title {
   font-size: var(--fs-small);
