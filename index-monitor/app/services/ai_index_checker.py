@@ -8,7 +8,11 @@
 
 仅对 index_status='indexed' 的组合执行问题监测（Phase 2 改造）。
 """
+import asyncio
 import logging
+import time
+from datetime import datetime, timezone
+from typing import Awaitable, Callable, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -136,3 +140,111 @@ class AIIndexChecker:
                     pending.append((url, client_id, model))
 
         return pending
+
+    def _build_adapter(self, model: str):
+        """构建单个模型的 adapter（复用现有 providers.default_adapters）。
+
+        收录检测禁用 web_search：测的是训练数据是否收录，非实时检索能力。
+        """
+        from app.services.citation_check.providers import default_adapters
+        adapters = default_adapters([model])
+        if not adapters:
+            raise ValueError(f"模型 {model} 未配置 API Key 或不支持")
+        return adapters[0]
+
+    async def check_url(
+        self,
+        url: str,
+        model: str,
+        *,
+        task_id: Optional[str] = None,
+        progress: Optional[Callable[..., Awaitable[None]]] = None,
+    ) -> dict:
+        """检测单个 URL 在单个模型上的收录状态。
+
+        Returns:
+            {"url", "model", "index_status", "ai_response", "error"}
+            - index_status: 'indexed' / 'not_indexed' / 'pending'（API 失败时）
+        """
+        prompt = build_index_prompt(url)
+
+        async def _report(stage, status, message, **kw):
+            if progress:
+                try:
+                    await progress(stage, status, message, **kw)
+                except Exception:
+                    pass
+
+        await _report("收录检测", "start", f"开始检测 {model} 是否收录: {url}")
+        t0 = time.time()
+
+        try:
+            adapter = self._build_adapter(model)
+            # adapter.ask 是同步调用，用 to_thread 包装
+            answer = await asyncio.to_thread(adapter.ask, prompt)
+            response_text = getattr(answer, "text", "") or ""
+
+            index_status = parse_index_response(response_text)
+
+            # 存储结果（幂等：UNIQUE(url, model)）
+            await self._store_result(url, model, index_status, response_text)
+
+            await _report(
+                "收录检测", "success",
+                f"{model} → {index_status}",
+                model=model,
+                duration_ms=int((time.time() - t0) * 1000),
+            )
+
+            return {
+                "url": url,
+                "model": model,
+                "index_status": index_status,
+                "ai_response": response_text,
+                "error": None,
+            }
+
+        except Exception as exc:
+            logger.error("收录检测失败 %s [%s]: %s", url, model, exc)
+            # API 失败时存储 pending 状态（可重试），区分于 not_indexed
+            await self._store_result(url, model, "pending", str(exc))
+
+            await _report(
+                "收录检测", "error",
+                f"{model} 检测失败: {exc}",
+                model=model,
+                duration_ms=int((time.time() - t0) * 1000),
+            )
+
+            return {
+                "url": url,
+                "model": model,
+                "index_status": "pending",
+                "ai_response": None,
+                "error": str(exc),
+            }
+
+    async def _store_result(
+        self, url: str, model: str, index_status: str, ai_response: str
+    ) -> None:
+        """存储收录检测结果（幂等：UNIQUE(url, model)）。"""
+        existing = await self.db.execute(
+            select(AIIndexResult).where(
+                AIIndexResult.url == url,
+                AIIndexResult.model == model,
+            )
+        )
+        record = existing.scalar_one_or_none()
+        if record:
+            record.index_status = index_status
+            record.ai_response = ai_response
+            record.checked_at = datetime.now(timezone.utc)
+        else:
+            self.db.add(AIIndexResult(
+                url=url,
+                model=model,
+                index_status=index_status,
+                ai_response=ai_response,
+                checked_at=datetime.now(timezone.utc),
+            ))
+        await self.db.commit()
