@@ -1,6 +1,6 @@
 <template>
   <AppLayout
-    v-if="showLayout"
+    v-if="showLayout && !isClientRoute"
     :signal-events="signalEvents"
     :scan-task-id="scanTaskId"
     v-model:scan-panel-visible="scanPanelVisible"
@@ -10,6 +10,9 @@
   >
     <router-view />
   </AppLayout>
+  <ClientLayout v-else-if="showLayout && isClientRoute" @logout="logout">
+    <router-view />
+  </ClientLayout>
   <router-view v-else />
 </template>
 
@@ -19,6 +22,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useStore } from 'vuex'
 import { ElMessage } from 'element-plus'
 import AppLayout from '@/components/AppLayout.vue'
+import ClientLayout from '@/components/ClientLayout.vue'
 import { api } from '@/api'
 
 const route = useRoute()
@@ -27,6 +31,9 @@ const store = useStore()
 
 const showLayout = computed(() => route.path !== '/login')
 const isAdmin = computed(() => store.state.role === 'admin')
+// 客户端路由：/client/* 使用 ClientLayout，与管理员视图隔离
+// 注：startsWith('/client/') 带尾斜杠，避免误匹配 /clients（admin 路由）
+const isClientRoute = computed(() => route.path.startsWith('/client/'))
 
 // 扫描面板状态（全局，由 Distributions.vue 触发）
 const scanTaskId = ref('')
