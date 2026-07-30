@@ -48,6 +48,40 @@
       />
     </div>
 
+    <!-- AI 监测指标（成功标准7：AI 收录率 / AI 提及率 / 待检测数） -->
+    <div class="ai-section-header">
+      <span class="ai-badge">AI</span>
+      <h4>AI 监测指标</h4>
+      <span class="ai-hint" v-if="aiStats.pending > 0">有 {{ aiStats.pending }} 个 URL×模型组合待检测</span>
+    </div>
+    <div class="ai-stats-grid">
+      <StatCard
+        :value="aiIndexRate + '%'"
+        label="AI 收录率"
+        color="depth"
+        index-label="A1 / 03"
+        :change="aiStats.index_rate_change"
+        change-direction="up"
+        :submetrics="aiStats.index_rate_sub"
+      />
+      <StatCard
+        :value="aiCitationRate + '%'"
+        label="AI 提及率"
+        color="signal"
+        index-label="A2 / 03"
+        :change="aiStats.citation_rate_change"
+        change-direction="up"
+        :submetrics="aiStats.citation_rate_sub"
+      />
+      <StatCard
+        :value="aiStats.pending"
+        label="待检测数"
+        color="alert"
+        index-label="A3 / 03"
+        :submetrics="aiStats.pending_sub"
+      />
+    </div>
+
     <!-- 图表数据说明 -->
     <div class="data-notice">
       <el-icon><InfoFilled /></el-icon>
@@ -143,6 +177,32 @@ const stats = ref({
 const indexRate = computed(() => (stats.value.avg_index_rate * 100).toFixed(1))
 const isAdmin = computed(() => store.state.role === 'admin')
 
+// === AI 监测指标（成功标准7）===
+// 数据源：/admin/ai-index/stats（indexed/not_indexed/pending/index_rate）
+//        + /stats/citation（cited 数量，用于计算 AI 提及率 = cited / indexed）
+const aiStats = ref({
+  indexed: 0,
+  not_indexed: 0,
+  pending: 0,
+  index_rate: 0,          // 0~1
+  cited: 0,
+  index_rate_change: '',
+  index_rate_sub: [],
+  citation_rate_change: '',
+  citation_rate_sub: [],
+  pending_sub: [],
+})
+const aiIndexRate = computed(() => {
+  if (aiStats.value.index_rate == null) return '0.0'
+  return (aiStats.value.index_rate * 100).toFixed(1)
+})
+// AI 提及率 = cited / indexed × 100%
+const aiCitationRate = computed(() => {
+  const indexed = aiStats.value.indexed || 0
+  if (indexed === 0) return '0.0'
+  return ((aiStats.value.cited / indexed) * 100).toFixed(1)
+})
+
 // 信号条事件已由 App.vue 统一拉取并经 AppLayout 传给 SignalBar，本页不再维护。
 
 // === ECharts "SaaS Spectrum" 多彩调色板 ===
@@ -193,6 +253,27 @@ async function fetchStats() {
       citation_count: 15,
       avg_index_rate: 0.533,
     }
+    // AI 指标 mock（成功标准7）
+    aiStats.value = {
+      ...aiStats.value,
+      indexed: 18,
+      not_indexed: 6,
+      pending: 4,
+      index_rate: 0.75,
+      cited: 11,
+      index_rate_sub: [
+        { label: '已收录', value: '18' },
+        { label: '未收录', value: '6' },
+      ],
+      citation_rate_sub: [
+        { label: '被引用', value: '11' },
+        { label: '已收录', value: '18' },
+      ],
+      pending_sub: [
+        { label: '豆包', value: '2' },
+        { label: '千问', value: '2' },
+      ],
+    }
     return
   }
 
@@ -222,8 +303,55 @@ async function fetchStats() {
       citation_count: citationCount,
       avg_index_rate: totalSlots > 0 ? indexedSlots / totalSlots : 0,
     }
+
+    // 成功标准7：并行获取 AI 监测指标（失败不阻塞主统计）
+    fetchAiStats(citationCount)
   } catch (err) {
     console.error('获取统计失败', err)
+  }
+}
+
+// AI 监测指标获取（成功标准7）
+// 数据源：/admin/ai-index/stats → indexed/not_indexed/pending/index_rate/by_model
+// cited 从主统计的 citationCount 传入，计算 AI 提及率 = cited / indexed
+async function fetchAiStats(citedCount = 0) {
+  // 客户端无 admin 权限调用 /admin/ai-index/stats，跳过（客户端 Dashboard 见自己的概览）
+  if (!isAdmin.value) return
+  try {
+    const res = await api.get('/admin/ai-index/stats')
+    const data = res.data || {}
+    const indexed = data.indexed || 0
+    const notIndexed = data.not_indexed || 0
+    const pending = data.pending || 0
+    // by_model 子指标：取 top 2 模型的 pending 数
+    const byModel = data.by_model || []
+    const pendingByModel = byModel
+      .filter(m => m.pending > 0)
+      .sort((a, b) => b.pending - a.pending)
+      .slice(0, 2)
+      .map(m => ({ label: m.model, value: String(m.pending) }))
+
+    aiStats.value = {
+      ...aiStats.value,
+      indexed,
+      not_indexed: notIndexed,
+      pending,
+      index_rate: data.index_rate || 0,
+      cited: citedCount,
+      index_rate_sub: [
+        { label: '已收录', value: String(indexed) },
+        { label: '未收录', value: String(notIndexed) },
+      ],
+      citation_rate_sub: [
+        { label: '被引用', value: String(citedCount) },
+        { label: '已收录', value: String(indexed) },
+      ],
+      pending_sub: pendingByModel.length > 0 ? pendingByModel : [
+        { label: '暂无', value: '0' },
+      ],
+    }
+  } catch (err) {
+    console.error('获取 AI 监测指标失败', err)
   }
 }
 
@@ -399,6 +527,47 @@ function onExportCreated(taskId) {
   margin-bottom: var(--space-lg);
 }
 
+/* === AI 监测指标区（成功标准7）=== */
+.ai-section-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+  margin-top: var(--space-xs);
+}
+.ai-section-header h4 {
+  margin: 0;
+  font-size: var(--fs-base);
+  font-weight: 600;
+  color: var(--ink);
+}
+.ai-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, #6366F1, #8B5CF6);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+}
+.ai-hint {
+  margin-left: auto;
+  font-size: var(--fs-small);
+  color: var(--c-amber);
+  font-weight: 500;
+}
+.ai-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-md);
+  margin-bottom: var(--space-lg);
+}
+
 /* === 数据提示 === */
 .data-notice {
   display: flex;
@@ -478,6 +647,7 @@ function onExportCreated(taskId) {
 @media (max-width: 1199px) {
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
   .stats-grid > :first-child { grid-column: span 2; }
+  .ai-stats-grid { grid-template-columns: repeat(3, 1fr); }
   .charts-grid { grid-template-columns: repeat(2, 1fr); }
   .chart-trend { grid-column: span 2; }
 }
@@ -485,6 +655,7 @@ function onExportCreated(taskId) {
   .dashboard-container { padding: var(--space-sm); }
   .stats-grid { grid-template-columns: 1fr; }
   .stats-grid > :first-child { grid-column: span 1; }
+  .ai-stats-grid { grid-template-columns: 1fr; }
   .charts-grid { grid-template-columns: 1fr; }
   .chart-trend { grid-column: span 1; }
 }

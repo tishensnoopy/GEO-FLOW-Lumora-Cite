@@ -273,6 +273,9 @@ class DistributionQueryService:
                 # 优雅降级：GEOFlow 表缺失或跨 schema 查询失败时，不阻塞手动记录加载。
                 # 常见触发场景：GEOFlow migration 未跑全（article_distributions 表缺失）、
                 # GEOFlow 数据库重启后表未恢复等。
+                # asyncpg 查询失败后事务进入 aborted 状态，必须 rollback 才能继续
+                # 用此 session 查询手动记录（与 ai_index_checker/citation_checker 对齐）。
+                await self.db.rollback()
                 logger.warning("GEOFlow 分发查询失败，跳过 GEOFlow 记录: %s", exc)
         if include_manual and source in (None, "manual"):
             manual_records = await self._query_manual_distributions(
@@ -336,6 +339,11 @@ class DistributionQueryService:
         except DistributionConflictError:
             raise
         except Exception as exc:
+            # asyncpg 在查询失败后会把当前事务置为 aborted 状态，后续 SQL 全报
+            # "current transaction is aborted" —— 必须 rollback 才能继续用此 session。
+            # 与 ai_index_checker.py / citation_checker.py 的 GEOFlow 降级对齐，
+            # 确保 GEOFlow schema 短暂不可用时手动录入仍能正常工作。
+            await self.db.rollback()
             logger.warning("GEOFlow 重复检测失败，跳过: %s", exc)
 
         record = ManualDistribution(

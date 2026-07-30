@@ -124,6 +124,11 @@ class AIIndexChecker:
                 if client_id:
                     distributed.setdefault(url, client_id)
         except Exception as exc:
+            # asyncpg 在查询失败后会把当前事务置为 aborted 状态，后续 SQL 全报
+            # "current transaction is aborted" —— 必须 rollback 才能继续用此 session。
+            # 与 CitationChecker.get_pending_urls 对齐，确保 GEOFlow 短暂不可用时
+            # 降级为仅手动录入而非整个 get_pending_urls 瘫痪。
+            await self.db.rollback()
             logger.warning("GEOFlow 分发查询失败（降级为仅手动录入）: %s", exc)
 
         if not distributed:
