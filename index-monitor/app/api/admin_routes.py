@@ -1212,7 +1212,13 @@ async def list_citation_results(
     admin: dict = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """查询问题监测结果（全状态，可过滤）。"""
+    """查询问题监测结果（全状态，可过滤）。
+
+    client_id 过滤经 client_questions 关联：CitationResult 无 client_id 字段，
+    通过 client_question_id 关联到 client_questions.id，再按 client_questions.client_id 筛选。
+    旧记录（client_question_id 为 NULL）在按 client_id 过滤时被排除，语义合理
+    （旧记录无法归属到客户）。
+    """
     from app.models.citation_result import CitationResult
     stmt = select(CitationResult)
     if url:
@@ -1221,6 +1227,13 @@ async def list_citation_results(
         stmt = stmt.where(CitationResult.model == model)
     if hit_type:
         stmt = stmt.where(CitationResult.hit_type == hit_type)
+    if client_id:
+        from app.models.client_question import ClientQuestion
+        stmt = stmt.where(
+            CitationResult.client_question_id.in_(
+                select(ClientQuestion.id).where(ClientQuestion.client_id == client_id)
+            )
+        )
 
     count_stmt = select(func.count()).select_from(stmt.subquery())
     total = (await db.execute(count_stmt)).scalar() or 0
