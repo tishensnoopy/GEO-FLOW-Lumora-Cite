@@ -39,41 +39,6 @@ import pytest_asyncio
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _override_app_db():
-    """为每个测试 override ``get_db`` 依赖，使用当前事件循环的全新 engine。
-
-    pytest-asyncio strict 模式为每个测试创建独立事件循环。``app.core.database.engine``
-    是模块级单例，其连接池里的 asyncpg 连接绑定到首次 import 时的事件循环，
-    跨测试复用会触发 "Future attached to a different loop" /
-    "another operation is in progress"。
-
-    用 FastAPI ``app.dependency_overrides`` 把 ``get_db`` 替换为闭包，
-    闭包内用本测试事件循环新建的 engine → session_factory → session。
-    测试结束 dispose 这个临时 engine，不污染模块级 engine。
-    """
-    from app.main import app
-    from app.core.database import get_db
-    from app.core.config import settings
-    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-
-    engine = create_async_engine(settings.DATABASE_URL, echo=False)
-    session_factory = async_sessionmaker(
-        engine, class_=AsyncSession, expire_on_commit=False
-    )
-
-    async def _get_db_override():
-        async with session_factory() as session:
-            yield session
-
-    app.dependency_overrides[get_db] = _get_db_override
-    try:
-        yield
-    finally:
-        app.dependency_overrides.pop(get_db, None)
-        await engine.dispose()
-
-
-@pytest_asyncio.fixture(autouse=True)
 async def _clean_client_api_tables(db_session):
     """每个测试前后清理本文件涉及的表，保证数据隔离。
 
@@ -89,11 +54,13 @@ async def _clean_client_api_tables(db_session):
     await db_session.execute(text("DELETE FROM monitor.citation_results"))
     await db_session.execute(text("DELETE FROM monitor.ai_index_results"))
     await db_session.execute(text("DELETE FROM monitor.manual_distributions"))
+    await db_session.execute(text("DELETE FROM monitor.index_results"))
     await db_session.commit()
     yield
     await db_session.execute(text("DELETE FROM monitor.citation_results"))
     await db_session.execute(text("DELETE FROM monitor.ai_index_results"))
     await db_session.execute(text("DELETE FROM monitor.manual_distributions"))
+    await db_session.execute(text("DELETE FROM monitor.index_results"))
     await db_session.commit()
 
 
@@ -104,6 +71,7 @@ async def test_client_ai_index_overview_only_own(
     """客户只能看到自己的收录概览。"""
     from app.models.ai_index_result import AIIndexResult
     from app.models.manual_distribution import ManualDistribution
+    from app.models.index_result import IndexResult
 
     # 客户 A 的文章
     db_session.add(ManualDistribution(
@@ -112,6 +80,11 @@ async def test_client_ai_index_overview_only_own(
     ))
     db_session.add(AIIndexResult(
         url="https://a.example.com/article", model="qwen", index_status="indexed",
+    ))
+    # I2 修复验证：IndexResult.content_title 作为 title 返回
+    db_session.add(IndexResult(
+        url="https://a.example.com/article", client_id="DEMO001",
+        site_type="official", content_title="客户A的文章标题",
     ))
     # 客户 B 的文章
     db_session.add(ManualDistribution(
@@ -132,6 +105,12 @@ async def test_client_ai_index_overview_only_own(
     urls_a = {item["url"] for item in data_a["articles"]}
     assert "https://a.example.com/article" in urls_a
     assert "https://b.example.com/article" not in urls_a
+    # I2 修复验证：articles 项含 title 字段，值来自 IndexResult.content_title
+    articles_a = [item for item in data_a["articles"]
+                  if item["url"] == "https://a.example.com/article"]
+    assert len(articles_a) == 1
+    assert "title" in articles_a[0], "articles 项应含 title 字段（I2 修复）"
+    assert articles_a[0]["title"] == "客户A的文章标题"
 
 
 @pytest.mark.asyncio

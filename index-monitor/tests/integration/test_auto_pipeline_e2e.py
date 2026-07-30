@@ -100,43 +100,6 @@ def geoflow_mock_tables():
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _override_app_db():
-    """为每个测试 override ``get_db`` 依赖，使用当前事件循环的全新 engine。
-
-    pytest-asyncio strict 模式为每个测试创建独立事件循环。``app.core.database.engine``
-    是模块级单例，其连接池里的 asyncpg 连接绑定到首次 import 时的事件循环，
-    跨测试复用会触发 "Future attached to a different loop" /
-    "another operation is in progress"。
-
-    用 FastAPI ``app.dependency_overrides`` 把 ``get_db`` 替换为闭包，
-    闭包内用本测试事件循环新建的 engine → session_factory → session。
-    测试结束 dispose 这个临时 engine，不污染模块级 engine。
-    """
-    from app.main import app
-    from app.core.database import get_db
-    from app.core.config import settings
-    from sqlalchemy.ext.asyncio import (
-        create_async_engine, async_sessionmaker, AsyncSession,
-    )
-
-    engine = create_async_engine(settings.DATABASE_URL, echo=False)
-    session_factory = async_sessionmaker(
-        engine, class_=AsyncSession, expire_on_commit=False,
-    )
-
-    async def _get_db_override():
-        async with session_factory() as session:
-            yield session
-
-    app.dependency_overrides[get_db] = _get_db_override
-    try:
-        yield
-    finally:
-        app.dependency_overrides.pop(get_db, None)
-        await engine.dispose()
-
-
-@pytest_asyncio.fixture(autouse=True)
 async def _clean_auto_pipelineTestData(db_session):
     """每个测试前后清理本文件涉及的测试数据，保证数据隔离。
 
@@ -149,25 +112,30 @@ async def _clean_auto_pipelineTestData(db_session):
     """
     from sqlalchemy import text
 
-    test_url = "https://example.com/auto-pipeline-test"
-    await db_session.execute(
-        text("DELETE FROM monitor.manual_distributions WHERE remote_url = :u"),
-        {"u": test_url},
-    )
-    await db_session.execute(
-        text("DELETE FROM monitor.index_results WHERE url = :u"),
-        {"u": test_url},
-    )
+    test_urls = [
+        "https://example.com/auto-pipeline-test",
+        "https://example.com/batch-ai-index-test",
+    ]
+    for test_url in test_urls:
+        await db_session.execute(
+            text("DELETE FROM monitor.manual_distributions WHERE remote_url = :u"),
+            {"u": test_url},
+        )
+        await db_session.execute(
+            text("DELETE FROM monitor.index_results WHERE url = :u"),
+            {"u": test_url},
+        )
     await db_session.commit()
     yield
-    await db_session.execute(
-        text("DELETE FROM monitor.manual_distributions WHERE remote_url = :u"),
-        {"u": test_url},
-    )
-    await db_session.execute(
-        text("DELETE FROM monitor.index_results WHERE url = :u"),
-        {"u": test_url},
-    )
+    for test_url in test_urls:
+        await db_session.execute(
+            text("DELETE FROM monitor.manual_distributions WHERE remote_url = :u"),
+            {"u": test_url},
+        )
+        await db_session.execute(
+            text("DELETE FROM monitor.index_results WHERE url = :u"),
+            {"u": test_url},
+        )
     await db_session.commit()
 
 
@@ -214,35 +182,76 @@ async def test_manual_distribution_triggers_auto_pipeline(
 
 
 @pytest.mark.asyncio
-async def test_batch_scan_supports_ai_index(client, admin_auth_headers):
-    """batch-scan 支持 ai_index 类型。
+async def test_batch_scan_supports_ai_index(client, db_session, admin_auth_headers):
+    """batch-scan 支持 ai_index 类型（I9 加强：验证实际行为而非弱断言）。
 
-    修复前：scan_type=ai_index → 400 "scan_type 必须是 index/citation/both"
-    修复后：scan_type=ai_index 被接受（distribution_ids 为空时仍 400，
-    但 detail 不含"必须是"）。
-
-    断言：响应状态码不是 400，或者是 400 但 detail 不含"必须是"
-    （即 ai_index 已被 scan_type 校验接受，错误只能来自 distribution_ids 空）。
+    Phase 3 修复（I4）：ai_index 类型创建独立 task_id 跟踪进度。
+    断言：
+    1. 响应 200（而非弱断言"不是 400 或 detail 不含'必须是'"）
+    2. 响应含 task_id 且非 None（I4 修复前 task_id 为 None）
+    3. _run_batch_ai_index 被触发（mock 后检查 call_count）
     """
+    import asyncio
     from unittest.mock import AsyncMock, patch
 
-    # mock get_pending_urls 返回空（避免触发实际 AI 检测）
+    from app.models.manual_distribution import ManualDistribution
+
+    # 插入一条 ManualDistribution 记录取其 id 作为 distribution_ids
+    dist = ManualDistribution(
+        client_id="DEMO001",
+        remote_url="https://example.com/batch-ai-index-test",
+        status="synced",
+    )
+    db_session.add(dist)
+    await db_session.commit()
+    distribution_id = str(dist.id)
+
     with patch(
-        "app.services.ai_index_checker.AIIndexChecker.get_pending_urls",
+        "app.api.admin_routes._run_batch_ai_index",
         new_callable=AsyncMock,
-        return_value=[],
-    ):
+    ) as mock_batch_ai_index:
         response = await client.post(
             "/api/v1/admin/distributions/batch-scan",
-            json={"distribution_ids": [], "scan_type": "ai_index"},
+            json={"distribution_ids": [distribution_id], "scan_type": "ai_index"},
             headers=admin_auth_headers,
         )
-    # distribution_ids 为空时返回 400，或无 pending 时返回成功
-    # 这里验证 scan_type=ai_index 不再返回 400 "必须是 index/citation/both"
-    assert (
-        response.status_code != 400
-        or "必须是" not in response.json().get("detail", "")
-    ), (
-        f"scan_type=ai_index 应被接受，但被拒绝: {response.status_code} "
-        f"{response.text}"
+        # 让事件循环调度 background task
+        await asyncio.sleep(0.05)
+
+    assert response.status_code == 200, (
+        f"scan_type=ai_index 应返回 200，实际: {response.status_code} {response.text}"
+    )
+    data = response.json()
+    assert data["task_id"] is not None, (
+        "ai_index 类型应返回 task_id（I4 修复前为 None）"
+    )
+    assert data["scan_type"] == "ai_index"
+    # _run_batch_ai_index 被触发
+    assert mock_batch_ai_index.called, "_run_batch_ai_index 未被触发"
+    # 验证调用参数：第一个位置参数是 targets 列表
+    call_args = mock_batch_ai_index.call_args
+    targets = call_args.args[0]
+    assert len(targets) == 1, f"targets 应含 1 条记录，实际: {len(targets)}"
+    assert targets[0][0] == "https://example.com/batch-ai-index-test"
+
+
+@pytest.mark.asyncio
+async def test_batch_scan_all_returns_400(client, admin_auth_headers):
+    """batch-scan 不再支持 all 类型（C2 修复：返回 400）。
+
+    all 类型需顺序执行三阶段，违反 batch_scan 语义且并发启动有数据丢失风险。
+    用户应改用 /admin/scan/trigger（scan_type=all）。
+    """
+    response = await client.post(
+        "/api/v1/admin/distributions/batch-scan",
+        json={"distribution_ids": ["dummy-id"], "scan_type": "all"},
+        headers=admin_auth_headers,
+    )
+    assert response.status_code == 400, (
+        f"scan_type=all 应返回 400，实际: {response.status_code}"
+    )
+    detail = response.json().get("detail", "")
+    # 提示用户用 /admin/scan/trigger
+    assert "scan/trigger" in detail or "ai_index" in detail, (
+        f"400 detail 应提示用 /admin/scan/trigger，实际: {detail}"
     )

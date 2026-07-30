@@ -4,6 +4,9 @@
 后续任务 3/4/6/7 的集成测试可直接依赖。同时提供 ``_clean_client_questions``
 autouse fixture 清理 ``monitor.client_questions`` 表，保证测试间数据隔离。
 
+Phase 3 修复（I7）：``_override_app_db`` autouse fixture 从 5 个 Phase 3 测试文件
+提取到本 conftest，消除 DRY 违反。已自定义同名 fixture 的模块会 shadow 本 fixture。
+
 JWT 双轨制（参考 ``app/api/deps.py``）：
 - admin JWT：用 ``SSO_JWT_SECRET`` 签发，payload ``type='admin'``，对应
   ``get_current_admin`` 鉴权依赖；
@@ -17,6 +20,44 @@ import jwt
 import pytest_asyncio
 
 from app.core.config import settings
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _override_app_db():
+    """为每个测试 override ``get_db`` 依赖，使用当前事件循环的全新 engine。
+
+    pytest-asyncio strict 模式为每个测试创建独立事件循环。``app.core.database.engine``
+    是模块级单例，其连接池里的 asyncpg 连接绑定到首次 import 时的事件循环，
+    跨测试复用会触发 "Future attached to a different loop" /
+    "another operation is in progress"。
+
+    用 FastAPI ``app.dependency_overrides`` 把 ``get_db`` 替换为闭包，
+    闭包内用本测试事件循环新建的 engine → session_factory → session。
+    测试结束 dispose 这个临时 engine，不污染模块级 engine。
+
+    Phase 3 修复（I7）：从 5 个 Phase 3 测试文件提取到本 conftest 作为 autouse。
+    已自定义同名 ``_override_app_db`` fixture 的模块会 shadow 本 fixture
+    （pytest 同名 fixture 就近覆盖原则），不影响既有测试。
+    """
+    from app.main import app
+    from app.core.database import get_db
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    engine = create_async_engine(settings.DATABASE_URL, echo=False)
+    session_factory = async_sessionmaker(
+        engine, class_=AsyncSession, expire_on_commit=False
+    )
+
+    async def _get_db_override():
+        async with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = _get_db_override
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        await engine.dispose()
 
 
 @pytest_asyncio.fixture

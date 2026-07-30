@@ -30,41 +30,6 @@ import pytest_asyncio
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _override_app_db():
-    """为每个测试 override ``get_db`` 依赖，使用当前事件循环的全新 engine。
-
-    pytest-asyncio strict 模式为每个测试创建独立事件循环。``app.core.database.engine``
-    是模块级单例，其连接池里的 asyncpg 连接绑定到首次 import 时的事件循环，
-    跨测试复用会触发 "Future attached to a different loop" /
-    "another operation is in progress"。
-
-    用 FastAPI ``app.dependency_overrides`` 把 ``get_db`` 替换为闭包，
-    闭包内用本测试事件循环新建的 engine → session_factory → session。
-    测试结束 dispose 这个临时 engine，不污染模块级 engine。
-    """
-    from app.main import app
-    from app.core.database import get_db
-    from app.core.config import settings
-    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-
-    engine = create_async_engine(settings.DATABASE_URL, echo=False)
-    session_factory = async_sessionmaker(
-        engine, class_=AsyncSession, expire_on_commit=False
-    )
-
-    async def _get_db_override():
-        async with session_factory() as session:
-            yield session
-
-    app.dependency_overrides[get_db] = _get_db_override
-    try:
-        yield
-    finally:
-        app.dependency_overrides.pop(get_db, None)
-        await engine.dispose()
-
-
-@pytest_asyncio.fixture(autouse=True)
 async def _clean_ai_index_results(db_session):
     """每个测试前后清理 ``monitor.ai_index_results`` 表，保证数据隔离。
 
@@ -126,6 +91,9 @@ async def test_ai_index_stats(client, db_session, admin_auth_headers):
     assert data["indexed"] >= 1
     assert data["not_indexed"] >= 1
     assert "by_model" in data
+    # I1 修复验证：by_client 维度应存在（LEFT JOIN manual_distributions 反查 client_id）
+    assert "by_client" in data, "ai_index_stats 应返回 by_client 维度（I1 修复）"
+    assert isinstance(data["by_client"], list)
 
 
 @pytest.mark.asyncio

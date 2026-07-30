@@ -30,41 +30,6 @@ import pytest_asyncio
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _override_app_db():
-    """为每个测试 override ``get_db`` 依赖，使用当前事件循环的全新 engine。
-
-    pytest-asyncio strict 模式为每个测试创建独立事件循环。``app.core.database.engine``
-    是模块级单例，其连接池里的 asyncpg 连接绑定到首次 import 时的事件循环，
-    跨测试复用会触发 "Future attached to a different loop" /
-    "another operation is in progress"。
-
-    用 FastAPI ``app.dependency_overrides`` 把 ``get_db`` 替换为闭包，
-    闭包内用本测试事件循环新建的 engine → session_factory → session。
-    测试结束 dispose 这个临时 engine，不污染模块级 engine。
-    """
-    from app.main import app
-    from app.core.database import get_db
-    from app.core.config import settings
-    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-
-    engine = create_async_engine(settings.DATABASE_URL, echo=False)
-    session_factory = async_sessionmaker(
-        engine, class_=AsyncSession, expire_on_commit=False
-    )
-
-    async def _get_db_override():
-        async with session_factory() as session:
-            yield session
-
-    app.dependency_overrides[get_db] = _get_db_override
-    try:
-        yield
-    finally:
-        app.dependency_overrides.pop(get_db, None)
-        await engine.dispose()
-
-
-@pytest_asyncio.fixture(autouse=True)
 async def _clean_citation_results(db_session):
     """每个测试前后清理 ``monitor.citation_results`` 表，保证数据隔离。
 
@@ -177,6 +142,77 @@ async def test_unified_scan_invalid_type(client, admin_auth_headers):
         headers=admin_auth_headers,
     )
     assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_unified_scan_all_executes_sequentially(client, admin_auth_headers):
+    """all 类型顺序执行三阶段（C1 修复验证，I8 新增测试）。
+
+    设计约束：scan_type='all' 时按顺序执行 index → ai_index → citation，
+    确保 citation 阶段能看到 ai_index 阶段本次新写入的 indexed 记录。
+
+    RED→GREEN 验证：
+    - 修复前（并发 create_task 三阶段）：max_concurrent == 3 → 断言失败
+    - 修复后（单一 background task 顺序 await）：max_concurrent == 1 → 断言通过
+    """
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+
+    # 记录调用顺序和并发度
+    call_log: list[tuple[str, str]] = []
+    active = {"count": 0}
+    max_concurrent = {"value": 0}
+
+    async def mock_background(scan_type: str, task_id: str) -> None:
+        call_log.append((scan_type, "start"))
+        active["count"] += 1
+        max_concurrent["value"] = max(max_concurrent["value"], active["count"])
+        # 让事件循环有机会调度其他 task（若并发，此时其他阶段会进入）
+        await asyncio.sleep(0.05)
+        active["count"] -= 1
+        call_log.append((scan_type, "end"))
+
+    with patch(
+        "app.services.index_checker.IndexChecker.get_pending_urls",
+        new_callable=AsyncMock,
+        return_value=[("https://example.com/seq-test", "DEMO001")],
+    ), patch(
+        "app.services.ai_index_checker.AIIndexChecker.get_pending_urls",
+        new_callable=AsyncMock,
+        return_value=[("https://example.com/seq-test", "DEMO001", "deepseek")],
+    ), patch(
+        "app.services.citation_checker.CitationChecker.get_pending_urls",
+        new_callable=AsyncMock,
+        return_value=[("https://example.com/seq-test", "DEMO001")],
+    ), patch(
+        "app.api.admin_routes._run_unified_scan_background",
+        new=mock_background,
+    ):
+        response = await client.post(
+            "/api/v1/admin/scan/trigger",
+            json={"scan_type": "all"},
+            headers=admin_auth_headers,
+        )
+        # 等待 background task 完成（三阶段 × 0.05s + 余量）
+        await asyncio.sleep(0.3)
+
+    assert response.status_code == 200
+    data = response.json()
+    # 三个阶段都创建了 task_id（pending 非空）
+    assert data["task_ids"]["index"] is not None, "index 阶段应有 task_id"
+    assert data["task_ids"]["ai_index"] is not None, "ai_index 阶段应有 task_id"
+    assert data["task_ids"]["citation"] is not None, "citation 阶段应有 task_id"
+
+    # 核心断言：任一时刻最多 1 个阶段在执行（顺序，非并发）
+    assert max_concurrent["value"] == 1, (
+        f"all 类型应顺序执行（max_concurrent=1），"
+        f"实际 max_concurrent={max_concurrent['value']}，call_log={call_log}"
+    )
+    # 验证执行顺序：index → ai_index → citation
+    start_order = [scan_type for scan_type, event in call_log if event == "start"]
+    assert start_order == ["index", "ai_index", "citation"], (
+        f"阶段执行顺序应为 index → ai_index → citation，实际: {start_order}"
+    )
 
 
 @pytest.mark.asyncio
