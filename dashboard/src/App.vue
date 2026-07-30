@@ -31,9 +31,14 @@ const store = useStore()
 
 const showLayout = computed(() => route.path !== '/login')
 const isAdmin = computed(() => store.state.role === 'admin')
-// 客户端路由：/client/* 使用 ClientLayout，与管理员视图隔离
+// 客户端路由分流：role === 'client' 且路径 /client/* → ClientLayout
+// - guard.js 已确保 admin 不会停留在 /client/*（重定向到 /）
+// - guard.js 已确保 client 不会停留在 admin 路由（重定向到 /client/overview）
+// - 此处同时检查 role + path 作为双保险：即便角色与路径不一致，也不会错误套用 Layout
 // 注：startsWith('/client/') 带尾斜杠，避免误匹配 /clients（admin 路由）
-const isClientRoute = computed(() => route.path.startsWith('/client/'))
+const isClientRoute = computed(() =>
+  route.path.startsWith('/client/') && store.state.role === 'client'
+)
 
 // 扫描面板状态（全局，由 Distributions.vue 触发）
 const scanTaskId = ref('')

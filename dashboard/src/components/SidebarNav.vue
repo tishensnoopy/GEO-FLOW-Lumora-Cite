@@ -1,5 +1,6 @@
 <template>
-  <aside class="sidebar-nav" :class="{ collapsed: !expanded }">
+  <!-- SidebarNav 仅管理员使用；客户端走 ClientLayout 的独立侧栏 -->
+  <aside v-if="isAdmin" class="sidebar-nav" :class="{ collapsed: !expanded }">
     <!-- 菜单项 -->
     <nav class="nav-list">
       <router-link
@@ -16,7 +17,7 @@
     </nav>
 
     <!-- 外部链接（GEOFlow 后台） -->
-    <a v-if="isAdmin"
+    <a
        href="https://zkeeeai.com/geo_admin"
        target="_blank"
        rel="noopener"
@@ -52,7 +53,7 @@ import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useStore } from 'vuex'
 import {
-  DataLine, Document, Share, Download, List, Setting, Link, SwitchButton, User
+  DataLine, Document, Share, Download, List, Setting, Link, SwitchButton, User, TrendCharts
 } from '@element-plus/icons-vue'
 
 const props = defineProps({
@@ -66,13 +67,18 @@ const route = useRoute()
 const store = useStore()
 const isAdmin = computed(() => store.state.role === 'admin')
 
+// 管理员菜单：仪表盘/分发记录/文章列表/AI 收录检测/导出报告/客户管理/审计日志/系统设置
+// 注：SidebarNav 整体仅 admin 渲染（见 template v-if="isAdmin"），故 menuItems 全为 admin 视角
 const menuItems = computed(() => {
   const items = [
     { path: '/', label: '仪表盘', icon: DataLine },
     { path: '/distributions', label: '分发记录', icon: Share },
     { path: '/articles', label: '文章列表', icon: Document },
-    { path: '/exports', label: '导出报告', icon: Download },
   ]
+  if (isAdmin.value) {
+    items.push({ path: '/ai-index', label: 'AI 收录检测', icon: TrendCharts })
+  }
+  items.push({ path: '/exports', label: '导出报告', icon: Download })
   if (isAdmin.value) {
     items.push({ path: '/clients', label: '客户管理', icon: User })
     items.push({ path: '/audit-logs', label: '审计日志', icon: List })

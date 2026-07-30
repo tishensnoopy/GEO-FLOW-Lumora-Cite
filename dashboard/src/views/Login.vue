@@ -136,13 +136,15 @@ function enterPreview(mode = 'client') {
     localStorage.setItem('user_name', 'admin')
     store.commit('SET_TOKEN', ADMIN_DEV_TOKEN)
     store.commit('SET_ROLE', 'admin')
+    router.push('/')
   } else {
     localStorage.setItem('token', 'dev-preview-token')
     localStorage.setItem('role', 'client')
     store.commit('SET_TOKEN', 'dev-preview-token')
     store.commit('SET_ROLE', 'client')
+    // 客户端预览直接进入客户端主页（guard 也会把 / 重定向到 /client/overview）
+    router.push('/client/overview')
   }
-  router.push('/')
 }
 
 // 客户登录：用 username（或 client_id）登录，后端返回 client_id 供后续 API 筛选使用
@@ -161,7 +163,10 @@ async function handleClientLogin() {
     if (data.client_id) {
       localStorage.setItem('client_id', data.client_id)
     }
-    router.push('/')
+    // 登录后按 role 分流：admin → 管理后台首页，client → 客户端概览
+    // （guard.js 也会兜底重定向，此处显式跳转避免一次中间跳转闪烁）
+    const redirectPath = data.role === 'admin' ? '/' : '/client/overview'
+    router.push(redirectPath)
   } catch (err) {
     ElMessage.error(err.response?.data?.detail || '登录失败')
   } finally {

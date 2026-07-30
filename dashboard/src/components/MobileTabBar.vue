@@ -17,23 +17,33 @@
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useStore } from 'vuex'
-import { DataLine, Share, TrendCharts, ChatDotRound, Setting } from '@element-plus/icons-vue'
+import { DataLine, Share, TrendCharts, ChatDotRound, Setting, Document } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const store = useStore()
-const isAdmin = computed(() => store.state.role === 'admin')
+const role = computed(() => store.state.role)
 
-// 5 个主入口（移动端精简导航）
+// 按角色渲染不同 tab：
+// - admin：仪表/分发/收录/采信/设置（5 个，对应 AppLayout 管理后台）
+// - client：概览/证据/文章/设置（4 个，对应 ClientLayout 客户端视图）
+// 注：MobileTabBar 仅在 AppLayout 中使用；ClientLayout 有自己的内嵌 tabbar。
+//     此处按 role 分流是双保险，避免 client 误入 AppLayout 时看到管理员入口。
 const tabs = computed(() => {
-  const list = [
+  if (role.value === 'client') {
+    return [
+      { path: '/client/overview', label: '概览', icon: DataLine },
+      { path: '/client/evidence', label: '证据', icon: ChatDotRound },
+      { path: '/client/articles', label: '文章', icon: Document },
+      { path: '/client/settings', label: '设置', icon: Setting },
+    ]
+  }
+  return [
     { path: '/', label: '仪表', icon: DataLine },
     { path: '/distributions', label: '分发', icon: Share },
     { path: '/articles', label: '收录', icon: TrendCharts },
     { path: '/exports', label: '采信', icon: ChatDotRound },
+    { path: '/settings', label: '设置', icon: Setting },
   ]
-  // 第 5 个：admin 用设置，client 也用设置
-  list.push({ path: '/settings', label: '设置', icon: Setting })
-  return list
 })
 
 function isActive(path) {

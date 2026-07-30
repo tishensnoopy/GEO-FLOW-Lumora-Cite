@@ -7,7 +7,18 @@ export default createStore({
     token: localStorage.getItem('token') || null,
     role: localStorage.getItem('role') || null,
     indexStats: { total: 0, indexed: 0, rate: 0 },
-    citationStats: { total: 0, cited: 0, rate: 0 }
+    citationStats: { total: 0, cited: 0, rate: 0 },
+    // Phase 4 任务 8：AI 收录检测统计（管理员视图 AiIndex 消费）
+    // 形状对齐后端 GET /admin/ai-index/stats 真实响应
+    aiIndexStats: {
+      total_combinations: 0,
+      indexed: 0,
+      not_indexed: 0,
+      pending: 0,
+      index_rate: 0,
+      by_model: [],
+      by_client: []
+    }
   },
   mutations: {
     SET_TOKEN(state, token) {
@@ -21,7 +32,8 @@ export default createStore({
       else localStorage.removeItem('role')
     },
     SET_INDEX_STATS(state, stats) { state.indexStats = stats },
-    SET_CITATION_STATS(state, stats) { state.citationStats = stats }
+    SET_CITATION_STATS(state, stats) { state.citationStats = stats },
+    SET_AI_INDEX_STATS(state, stats) { state.aiIndexStats = stats }
   },
   actions: {
     // D12 修复：保留 store login action，credentials 透传（Login.vue 传 client_id）
@@ -43,6 +55,12 @@ export default createStore({
     async fetchCitationStats({ commit }) {
       const res = await api.get('/stats/citation')
       commit('SET_CITATION_STATS', res.data)
+    },
+    // Phase 4 任务 8：拉取 AI 收录检测统计；失败时抛错给调用方处理（不静默吞，
+    // 由 AiIndex 视图决定是否回退到本地缓存或显示错误态）
+    async fetchAiIndexStats({ commit }) {
+      const res = await api.get('/admin/ai-index/stats')
+      commit('SET_AI_INDEX_STATS', res.data)
     }
   },
   getters: {
