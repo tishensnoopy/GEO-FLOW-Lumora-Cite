@@ -76,9 +76,10 @@ async def test_get_pending_urls_returns_unchecked_combinations(db_session, monke
     checker = AIIndexChecker(db_session)
     pending = await checker.get_pending_urls()
 
-    # 4. 应返回 2 个组合：URL × qwen, URL × doubao
-    assert len(pending) == 2
-    urls_models = {(url, model) for url, _, model in pending}
+    # 4. 过滤出本测试创建的 URL，避免其他用例残留污染断言
+    my_pending = [p for p in pending if p[0].startswith("https://example.com/")]
+    assert len(my_pending) == 2
+    urls_models = {(url, model) for url, _, model in my_pending}
     assert ("https://example.com/article-1", "qwen") in urls_models
     assert ("https://example.com/article-1", "doubao") in urls_models
 
@@ -109,9 +110,49 @@ async def test_get_pending_urls_excludes_checked(db_session, monkeypatch):
     checker = AIIndexChecker(db_session)
     pending = await checker.get_pending_urls()
 
-    # qwen 已检测过，只返回 doubao
-    assert len(pending) == 1
-    assert pending[0][2] == "doubao"
+    # 过滤出本测试创建的 URL，避免其他用例残留污染断言
+    my_pending = [p for p in pending if p[0].startswith("https://example.com/")]
+    # qwen 已检测过（indexed 终态，被排除），只返回 doubao
+    assert len(my_pending) == 1
+    assert my_pending[0][2] == "doubao"
+
+
+@pytest.mark.asyncio
+async def test_get_pending_urls_allows_pending_retry(db_session, monkeypatch):
+    """pending 状态的记录可被批量重试（不排除）。
+
+    API 失败留下 pending 记录后，再次调用 get_pending_urls 应重新返回该组合，
+    使批量重试成为可能（区别于 indexed/not_indexed 终态被排除）。
+    """
+    await _cleanup_example_urls(db_session)
+    db_session.add(ManualDistribution(
+        client_id="test_client",
+        remote_url="https://example.com/article-pending",
+        status="synced",
+    ))
+    # qwen 有 pending 记录（API 失败留下）→ 应可重试，不被排除
+    db_session.add(AIIndexResult(
+        url="https://example.com/article-pending",
+        model="qwen",
+        index_status="pending",
+        ai_response=None,
+    ))
+    await db_session.commit()
+
+    monkeypatch.setattr(
+        "app.services.ai_index_checker.AIIndexChecker._get_configured_models",
+        staticmethod(lambda: ["qwen", "doubao"]),
+    )
+
+    checker = AIIndexChecker(db_session)
+    pending = await checker.get_pending_urls()
+
+    my_pending = [p for p in pending if p[0].startswith("https://example.com/")]
+    # qwen（pending，可重试）+ doubao（无记录）= 2 个组合
+    assert len(my_pending) == 2
+    urls_models = {(url, model) for url, _, model in my_pending}
+    assert ("https://example.com/article-pending", "qwen") in urls_models
+    assert ("https://example.com/article-pending", "doubao") in urls_models
 
 
 @pytest.mark.asyncio
@@ -238,6 +279,17 @@ async def test_check_all_pending_concurrent(db_session, monkeypatch):
         return {"url": url, "model": model, "index_status": "indexed", "error": None}
 
     monkeypatch.setattr(AIIndexChecker, "check_url", fake_check_url)
+
+    # mock get_pending_urls 返回固定列表，彻底脱离 DB 状态（避免其他用例残留污染）
+    fixed_pending = [
+        ("https://example.com/batch-1", "test_client", "qwen"),
+        ("https://example.com/batch-2", "test_client", "qwen"),
+    ]
+
+    async def fake_get_pending_urls(self):
+        return fixed_pending
+
+    monkeypatch.setattr(AIIndexChecker, "get_pending_urls", fake_get_pending_urls)
     _patch_async_session_to_test_loop(monkeypatch)
 
     checker = AIIndexChecker(db_session)
@@ -279,6 +331,17 @@ async def test_check_all_pending_with_failure(db_session, monkeypatch):
         return {"url": url, "model": model, "index_status": "indexed", "error": None}
 
     monkeypatch.setattr(AIIndexChecker, "check_url", fake_check_url)
+
+    # mock get_pending_urls 返回固定列表，彻底脱离 DB 状态（避免其他用例残留污染）
+    fixed_pending = [
+        ("https://example.com/ok-url", "test_client", "qwen"),
+        ("https://example.com/fail-url", "test_client", "qwen"),
+    ]
+
+    async def fake_get_pending_urls(self):
+        return fixed_pending
+
+    monkeypatch.setattr(AIIndexChecker, "get_pending_urls", fake_get_pending_urls)
     _patch_async_session_to_test_loop(monkeypatch)
 
     checker = AIIndexChecker(db_session)

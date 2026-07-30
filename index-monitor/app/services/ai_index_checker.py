@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Awaitable, Callable, Optional
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.integration.geoflow import GeoflowRepository
@@ -88,7 +89,8 @@ class AIIndexChecker:
 
         筛选条件：
         1. URL 已分发（manual_distributions status='synced' 或 GEOFlow 分发）
-        2. ai_index_results 中无该 URL×model 记录（增量）
+        2. ai_index_results 中无该 URL×model 的终态记录（indexed/not_indexed）；
+           pending 状态记录保留以便批量重试（API 失败可重检测）
         """
         models = self._get_configured_models()
         if not models:
@@ -127,9 +129,12 @@ class AIIndexChecker:
         if not distributed:
             return []
 
-        # 2. 查已有收录检测记录，排除已检测的 URL×model 组合
+        # 2. 查已有收录检测记录，排除已终态（indexed/not_indexed）的组合；
+        #    pending 状态保留以便批量重试（API 失败可重检测）
         existing_result = await self.db.execute(
-            select(AIIndexResult.url, AIIndexResult.model)
+            select(AIIndexResult.url, AIIndexResult.model).where(
+                AIIndexResult.index_status.in_(["indexed", "not_indexed"])
+            )
         )
         existing = {(row[0], row[1]) for row in existing_result.fetchall()}
 
@@ -228,26 +233,27 @@ class AIIndexChecker:
     async def _store_result(
         self, url: str, model: str, index_status: str, ai_response: str
     ) -> None:
-        """存储收录检测结果（幂等：UNIQUE(url, model)）。"""
-        existing = await self.db.execute(
-            select(AIIndexResult).where(
-                AIIndexResult.url == url,
-                AIIndexResult.model == model,
-            )
+        """存储收录检测结果（幂等：UNIQUE(url, model)）。
+
+        使用 PostgreSQL ``INSERT ... ON CONFLICT (url, model) DO UPDATE`` 原子
+        upsert，避免并发下 select-then-insert 导致 UNIQUE 约束冲突。
+        """
+        stmt = pg_insert(AIIndexResult).values(
+            url=url,
+            model=model,
+            index_status=index_status,
+            ai_response=ai_response,
+            checked_at=datetime.now(timezone.utc),
         )
-        record = existing.scalar_one_or_none()
-        if record:
-            record.index_status = index_status
-            record.ai_response = ai_response
-            record.checked_at = datetime.now(timezone.utc)
-        else:
-            self.db.add(AIIndexResult(
-                url=url,
-                model=model,
-                index_status=index_status,
-                ai_response=ai_response,
-                checked_at=datetime.now(timezone.utc),
-            ))
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["url", "model"],
+            set_={
+                "index_status": stmt.excluded.index_status,
+                "ai_response": stmt.excluded.ai_response,
+                "checked_at": stmt.excluded.checked_at,
+            },
+        )
+        await self.db.execute(stmt)
         await self.db.commit()
 
     async def check_all_pending(
