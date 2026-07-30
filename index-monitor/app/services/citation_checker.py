@@ -466,7 +466,7 @@ class CitationChecker:
                 # 阶段 4 - ⑤：stage 4 模型级上报时，结构化存储 probe 状态。
                 # detail["status"] 是真实 probe 状态（verified/error/no_search/...），
                 # 供 ScanPanel 模型状态卡片直接读取，无需从日志文本解析。
-                if stage == "4/5 模型探测" and model and detail and detail.get("status"):
+                if stage == "2/3 模型探测" and model and detail and detail.get("status"):
                     try:
                         update_citation_model(
                             task_id, model, detail["status"], detail.get("error"),

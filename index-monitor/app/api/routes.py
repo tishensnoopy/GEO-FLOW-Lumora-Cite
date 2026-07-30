@@ -549,7 +549,6 @@ async def check_single_citation(
     return {
         "url": req.url,
         "summary": result.get("summary"),
-        "purpose": result.get("purpose"),
         "questions": result.get("questions"),
         "provider_capabilities": result.get("provider_capabilities"),
         "results_count": len(result.get("results", [])),
