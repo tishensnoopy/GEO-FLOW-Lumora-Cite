@@ -1053,3 +1053,194 @@ async def cleanup_audit_logs(
         detail={"before_date": str(req.before_date), "deleted_count": len(records)},
     )
     return {"deleted": len(records), "before_date": str(req.before_date)}
+
+
+# ---------- Phase 3: 统一扫描触发 + 问题监测 API ----------
+
+class ScanTriggerRequest(BaseModel):
+    scan_type: str  # 'index' | 'ai_index' | 'citation' | 'all'
+
+
+@router.post("/scan/trigger")
+async def unified_scan_trigger(
+    req: ScanTriggerRequest,
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """统一扫描触发入口。
+
+    scan_type='all' 时按顺序执行：index → ai_index → citation。
+    每个阶段创建独立 scan_task。
+    """
+    # 局部导入：与现有 _run_batch_scan 风格一致，避免顶部循环导入风险
+    from app.services.index_checker import IndexChecker
+    from app.services.scan_lock import is_scan_locked
+    from app.services.scan_task_manager import create_task
+
+    valid_types = {"index", "ai_index", "citation", "all"}
+    if req.scan_type not in valid_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"scan_type 必须是 {valid_types} 之一",
+        )
+
+    types_to_run = ["index", "ai_index", "citation"] if req.scan_type == "all" else [req.scan_type]
+    task_ids: dict[str, str | None] = {}
+
+    for scan_type in types_to_run:
+        # 检查锁
+        if await is_scan_locked(db, scan_type):
+            logger.warning("统一扫描：%s 类型已有扫描在运行，跳过", scan_type)
+            task_ids[scan_type] = None
+            continue
+
+        # 获取 pending
+        if scan_type == "index":
+            checker = IndexChecker(db)
+            pending = await checker.get_pending_urls()
+        elif scan_type == "ai_index":
+            from app.services.ai_index_checker import AIIndexChecker
+            checker = AIIndexChecker(db)
+            pending = await checker.get_pending_urls()
+        else:  # citation
+            from app.services.citation_checker import CitationChecker
+            checker = CitationChecker(db)
+            pending = await checker.get_pending_urls()
+
+        if not pending:
+            task_ids[scan_type] = None
+            continue
+
+        task_id = create_task(scan_type, len(pending), pending)
+        task_ids[scan_type] = task_id
+        asyncio.create_task(_run_unified_scan_background(scan_type, task_id))
+
+    return {
+        "task_ids": task_ids,
+        "message": f"已触发 {req.scan_type} 扫描",
+    }
+
+
+async def _run_unified_scan_background(scan_type: str, task_id: str) -> None:
+    """后台执行统一扫描的单一阶段。"""
+    # 局部导入：与现有 _run_batch_scan 风格一致
+    from app.core.database import async_session as _async_session
+    from app.services.index_checker import IndexChecker
+    from app.services.scan_lock import acquire_scan_lock, release_scan_lock
+    from app.services.scan_task_manager import complete_task
+    async with _async_session() as task_db:
+        if not await acquire_scan_lock(task_db, scan_type):
+            logger.warning("统一扫描后台：%s 获取锁失败，跳过", scan_type)
+            return
+        try:
+            if scan_type == "index":
+                checker = IndexChecker(task_db)
+            elif scan_type == "ai_index":
+                from app.services.ai_index_checker import AIIndexChecker
+                checker = AIIndexChecker(task_db)
+            else:  # citation
+                from app.services.citation_checker import CitationChecker
+                checker = CitationChecker(task_db)
+            await checker.check_all_pending(task_id=task_id)
+            complete_task(task_id)
+        except Exception as exc:
+            logger.error("统一扫描后台 %s 失败: %s", scan_type, exc)
+        finally:
+            await release_scan_lock(task_db, scan_type)
+
+
+# ---------- 问题监测 API ----------
+
+@router.post("/citation/scan")
+async def trigger_citation_scan(
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """批量增量问题监测（仅 pending URL，4 条件过滤）。"""
+    # 局部导入：避免顶部循环导入风险
+    from app.services.citation_checker import CitationChecker
+    from app.services.scan_lock import is_scan_locked
+    from app.services.scan_task_manager import create_task
+
+    if await is_scan_locked(db, "citation"):
+        raise HTTPException(status_code=409, detail="已有问题监测扫描在运行，请等待完成")
+
+    checker = CitationChecker(db)
+    pending = await checker.get_pending_urls()
+    if not pending:
+        return {"task_id": None, "queued": 0, "message": "无待监测的 URL"}
+
+    task_id = create_task("citation", len(pending), pending)
+    asyncio.create_task(_run_citation_scan_background(task_id))
+
+    return {
+        "task_id": task_id,
+        "queued": len(pending),
+        "message": f"已开始监测 {len(pending)} 条链接",
+    }
+
+
+async def _run_citation_scan_background(task_id: str) -> None:
+    """后台执行问题监测。"""
+    # 局部导入：与现有 _run_batch_scan 风格一致
+    from app.core.database import async_session as _async_session
+    from app.services.citation_checker import CitationChecker
+    from app.services.scan_lock import acquire_scan_lock, release_scan_lock
+    from app.services.scan_task_manager import complete_task
+    async with _async_session() as db:
+        if not await acquire_scan_lock(db, "citation"):
+            logger.warning("问题监测后台任务：获取锁失败，跳过")
+            return
+        try:
+            checker = CitationChecker(db)
+            await checker.check_all_pending(task_id=task_id)
+            complete_task(task_id)
+        except Exception as exc:
+            logger.error("问题监测后台任务失败: %s", exc)
+        finally:
+            await release_scan_lock(db, "citation")
+
+
+@router.get("/citation/results")
+async def list_citation_results(
+    url: str | None = None,
+    model: str | None = None,
+    hit_type: str | None = None,
+    client_id: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """查询问题监测结果（全状态，可过滤）。"""
+    from app.models.citation_result import CitationResult
+    stmt = select(CitationResult)
+    if url:
+        stmt = stmt.where(CitationResult.url == url)
+    if model:
+        stmt = stmt.where(CitationResult.model == model)
+    if hit_type:
+        stmt = stmt.where(CitationResult.hit_type == hit_type)
+
+    count_stmt = select(func.count()).select_from(stmt.subquery())
+    total = (await db.execute(count_stmt)).scalar() or 0
+
+    stmt = stmt.order_by(CitationResult.created_at.desc()).offset(
+        (page - 1) * page_size
+    ).limit(page_size)
+    result = await db.execute(stmt)
+    items = [
+        {
+            "id": str(r.id),
+            "url": r.url,
+            "model": r.model,
+            "question": r.question,
+            "answer": r.answer,
+            "hit_type": r.hit_type,
+            "sources": r.sources,
+            "client_question_id": str(r.client_question_id) if r.client_question_id else None,
+            "checked_at": r.checked_at.isoformat() if r.checked_at else None,
+        }
+        for r in result.scalars().all()
+    ]
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
