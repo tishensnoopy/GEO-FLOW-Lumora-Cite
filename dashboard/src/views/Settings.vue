@@ -88,6 +88,33 @@
               </div>
               <div class="guide-row"><span class="g-label">地域</span><span class="g-value">{{ item.guide.region }}</span></div>
               <div class="guide-row"><span class="g-label">默认模型</span><span class="g-value">{{ item.guide.model }}</span></div>
+
+              <!-- 价格参考 / 免费额度 / 单次检测估算（傻瓜化：让用户一眼看清成本） -->
+              <div v-if="item.guide.pricing" class="guide-row">
+                <span class="g-label">价格参考</span>
+                <span class="g-value">
+                  输入 <b>{{ item.guide.pricing.input }}</b> / 输出 <b>{{ item.guide.pricing.output }}</b>
+                  <span class="g-unit">每百万token</span>
+                  <span v-if="item.guide.pricing.cacheHit">（缓存命中{{ item.guide.pricing.cacheHit }}）</span>
+                  <span class="price-disclaimer">（截至2026-07，以官网为准）</span>
+                </span>
+              </div>
+              <div v-if="item.guide.pricing" class="guide-row">
+                <span class="g-label">免费额度</span>
+                <span class="g-value">{{ item.guide.pricing.freeQuota }}</span>
+              </div>
+              <div v-if="item.guide.pricing" class="guide-row">
+                <span class="g-label">联网搜索</span>
+                <span class="g-value">{{ item.guide.pricing.searchExtra }}</span>
+              </div>
+              <div v-if="item.guide.pricing" class="guide-row estimate-row">
+                <span class="g-label">单次检测约</span>
+                <span class="g-value">
+                  <b class="g-highlight">{{ item.guide.pricing.perCallEstimate }}</b>
+                  <span class="g-sub">（输入~2000 + 输出~1000 token + 1次联网搜索）</span>
+                </span>
+              </div>
+
               <div class="guide-row"><span class="g-label">开通步骤</span></div>
               <ol class="guide-steps">
                 <li v-for="(s, i) in item.guide.steps" :key="i" v-html="s"></li>
@@ -110,13 +137,82 @@
     </el-card>
 
     <!-- 操作按钮 -->
-    <div style="text-align: center;">
-      <el-button type="primary" @click="saveConfig">保存配置</el-button>
-      <el-button type="warning" @click="triggerScan('index')">立即收录扫描</el-button>
-      <el-button type="warning" @click="triggerScan('citation')">立即 AI 采信扫描</el-button>
-      <!-- I3：新增 AI 收录检测 / 全量扫描触发入口，对接 Phase 3 统一扫描入口 -->
-      <el-button type="success" @click="triggerScan('ai_index')">AI 收录扫描</el-button>
-      <el-button type="success" @click="triggerScan('all')">全量扫描</el-button>
+    <!-- 扫描类型说明：帮助用户区分 4 种扫描的含义、区别与扫描范围 -->
+    <el-alert type="info" :closable="false" style="margin-bottom: 16px;">
+      <template #title>
+        <strong>扫描类型说明（所有扫描均为增量，不会重复扫描已检测过的内容）</strong>
+      </template>
+      <div style="line-height: 1.9; font-size: 12px;">
+        <b>① 搜索引擎收录检测</b>：检测网址是否被百度/谷歌/必应等搜索引擎收录。<b>范围</b>：仅扫描<b>新增/未检测过</b>的已分发网址（SEO 基础）<br/>
+        <b>② AI 收录检测</b>：检测网址是否被豆包/千问/文心等 AI 大模型收录进知识库。<b>范围</b>：仅扫描<b>新增或上次失败</b>的网址×模型组合（GEO 核心）<br/>
+        <b>③ AI 引用检测</b>：检测文章内容是否被 AI 大模型在回答中引用并提及。<b>范围</b>：仅扫描<b>已收录 + 有监测问题 + 未检测过采信</b>的网址（AI 采信）<br/>
+        <b>④ 全量检测（三合一）</b>：依次执行 ①→②→③ 全流程。<b>范围</b>：三阶段全跑，但每阶段仍是增量扫描，不会重复检测已出结果的内容<br/>
+        <span style="color: var(--mute, #78716C);">提示：如需重新检测某个网址，请在"文章列表"中单独触发该网址的重扫。</span>
+      </div>
+    </el-alert>
+
+    <!-- 预估消耗：基于后端 /admin/scan/estimate 返回的 pending 数量 + 已配置模型实时计算 -->
+    <el-card v-if="estimateCosts" class="estimate-card" shadow="never" style="margin-bottom: 16px;">
+      <template #header>
+        <div class="estimate-header">
+          <span><strong>本次扫描预估消耗</strong> <span class="e-sub">（基于当前待扫描数量，增量计算）</span></span>
+          <el-button text size="small" :loading="estimateLoading" @click="loadEstimate">
+            <el-icon><Refresh /></el-icon> 刷新
+          </el-button>
+        </div>
+      </template>
+      <div class="estimate-grid">
+        <div class="estimate-item">
+          <div class="e-label">① 搜索引擎收录</div>
+          <div class="e-value">{{ estimateCosts.index.count }} 条网址</div>
+          <div class="e-cost free">免费（仅爬虫，不调 AI）</div>
+        </div>
+        <div class="estimate-item">
+          <div class="e-label">② AI 收录检测</div>
+          <div class="e-value">{{ estimateCosts.ai_index.count }} 次调用
+            <span class="e-models" v-if="estimateCosts.ai_index.models.length">
+             （{{ estimateCosts.ai_index.models.map(m => MODEL_LABELS[m] || m).join(' / ') }}）
+            </span>
+          </div>
+          <div class="e-cost">预估 <b>{{ formatCost(estimateCosts.ai_index.cost) }}</b></div>
+        </div>
+        <div class="estimate-item">
+          <div class="e-label">③ AI 引用检测</div>
+          <div class="e-value">{{ estimateCosts.citation.count }} 个网址 × {{ estimateCosts.citation.modelCount }} 个模型</div>
+          <div class="e-cost" v-if="estimateCosts.citation.count">
+            预估 <b>{{ formatCost(estimateCosts.citation.costMin) }} ~ {{ formatCost(estimateCosts.citation.costMax) }}</b>
+          </div>
+          <div class="e-cost free" v-else>暂无符合条件的网址</div>
+        </div>
+        <div class="estimate-item estimate-total">
+          <div class="e-label">④ 全量检测合计</div>
+          <div class="e-value">{{ estimateCosts.index.count + estimateCosts.ai_index.count + estimateCosts.citation.count }} 项任务</div>
+          <div class="e-cost">
+            预估 <b class="e-highlight">{{ formatCost(estimateCosts.total.costMin) }} ~ {{ formatCost(estimateCosts.total.costMax) }}</b>
+          </div>
+        </div>
+      </div>
+      <div class="estimate-note">
+        说明：① 零成本；② 按各模型实际调用次数精确计算；③ 为上界预估（实际只检测已收录模型子集，费用可能更低）；价格截至2026-07，以官网为准。
+      </div>
+    </el-card>
+
+    <div class="scan-buttons">
+      <el-tooltip content="保存上方的所有配置项（检测频率、API Key 等）。扫描前请先保存配置。" placement="top" effect="dark">
+        <el-button type="primary" @click="saveConfig">保存配置</el-button>
+      </el-tooltip>
+      <el-tooltip content="增量扫描：仅检测新增/未检测过的已分发网址，是否被百度/谷歌/必应等搜索引擎收录。已检测过的不重复扫描。" placement="top" effect="dark">
+        <el-button type="warning" @click="triggerScan('index')">① 搜索引擎收录检测</el-button>
+      </el-tooltip>
+      <el-tooltip content="增量扫描：仅检测新增或上次失败的 网址×AI模型 组合，是否被豆包/千问/文心等 AI 大模型收录进知识库。已出结果的不重复扫描。" placement="top" effect="dark">
+        <el-button type="success" @click="triggerScan('ai_index')">② AI 收录检测</el-button>
+      </el-tooltip>
+      <el-tooltip content="增量扫描：仅检测 已被AI收录 + 客户有监测问题 + 未检测过采信 的网址，是否被 AI 大模型在回答中引用。条件不满足的网址自动跳过。" placement="top" effect="dark">
+        <el-button type="success" @click="triggerScan('citation')">③ AI 引用检测</el-button>
+      </el-tooltip>
+      <el-tooltip content="依次执行 ①→②→③ 全流程，每阶段仍为增量扫描（不重复检测已出结果的内容）。最全面但耗时最长。如需重扫单个网址请在文章列表操作。" placement="top" effect="dark">
+        <el-button type="danger" @click="triggerScan('all')">④ 全量检测（三合一）</el-button>
+      </el-tooltip>
     </div>
 
     <!-- 扫描运行状态面板（阶段 4 - ⑤）：触发扫描后滑出，实时显示进度+模型状态。
@@ -128,7 +224,7 @@
 <script setup>
 import { ref, computed, onMounted, reactive } from 'vue'
 import { ElMessage } from 'element-plus'
-import { CircleCheck, CircleClose, ArrowDown, ArrowRight } from '@element-plus/icons-vue'
+import { CircleCheck, CircleClose, ArrowDown, ArrowRight, Refresh } from '@element-plus/icons-vue'
 import api from '../api'
 import ScanPanel from '../components/ScanPanel.vue'
 import { useScanTrigger } from '@/composables/useScanTrigger'
@@ -160,12 +256,21 @@ const apiKeyItems = [
       consoleUrl: 'https://platform.deepseek.com/api_keys',
       region: '无地域限制，国内可直连',
       model: 'deepseek-v4-flash（问题生成模型，非引用检测。可在上方"问题生成模型"字段修改）',
+      pricing: {
+        input: '¥1',
+        output: '¥2',
+        cacheHit: '¥0.02',
+        freeQuota: '新用户赠送额度（官网不时发放，如充10送10活动）',
+        searchExtra: '无需开通（DeepSeek 不支持联网搜索，仅用于问题生成）',
+        perCallEstimate: '¥0.004（仅问题生成，非引用检测）',
+      },
       mustOpenTool: false,
       steps: [
-        '注册 DeepSeek 账号并完成实名认证',
-        '进入 API Keys 页面创建 Key（sk- 开头）',
-        '账户需充值余额（按 token 计费，新用户有免费额度）',
-        'DeepSeek 为 OpenAI 兼容 chat 接口，<b>无需额外开通联网搜索工具</b>',
+        '打开 <a href="https://platform.deepseek.com" target="_blank" rel="noopener">platform.deepseek.com</a> → 注册账号（支持手机号/邮箱）→ 完成实名认证',
+        '登录后左侧菜单"API Keys" → 点"创建 API Key" → 复制 Key（sk- 开头，仅显示一次务必保存）',
+        '左侧菜单"费用管理" → 充值余额（按 token 计费，新用户有赠送额度可先体验）',
+        'DeepSeek 为 OpenAI 兼容 chat 接口，<b>无需额外开通联网搜索工具</b>，充值后即可用',
+        '回到本页粘贴 Key → 点"测试"按钮验证',
       ],
       errors: [
         { code: '402 insufficient balance', fix: '账户余额不足，请充值' },
@@ -183,14 +288,21 @@ const apiKeyItems = [
       platform: '阿里云百炼（DashScope）',
       consoleUrl: 'https://bailian.console.aliyun.com/?apiKey=1#/api-key',
       region: 'cn-beijing / cn-hangzhou（华东2/华北2）',
-      model: 'qwen3.6-plus（默认，可在系统环境变量 CITATION_QWEN_MODEL 覆盖）',
+      model: 'qwen-plus（默认，可在系统环境变量 CITATION_QWEN_MODEL 覆盖）',
+      pricing: {
+        input: '¥0.8',
+        output: '¥2',
+        freeQuota: '新用户 100 万 token 免费（开通百炼后 180 天内有效）',
+        searchExtra: '联网搜索按 token 计费，费用含在输出 token 内，不单独收费',
+        perCallEstimate: '约 ¥0.004',
+      },
       mustOpenTool: true,
       steps: [
-        '开通阿里云账号 → 进入百炼控制台',
-        '左侧"API-KEY 管理"创建 Key（sk- 开头）',
-        '在"模型广场"开通通义千问模型服务（如 qwen-plus / qwen3.6-plus）',
-        '<b>必须开通联网搜索能力</b>：百炼控制台 → 模型广场 → 确认 qwen 模型支持联网搜索（enable_thinking 关闭后调用 web_search）',
-        '点"测试"验证 Key 与联网搜索是否同时可用',
+        '打开 <a href="https://bailian.console.aliyun.com" target="_blank" rel="noopener">bailian.console.aliyun.com</a> → 用阿里云账号登录 → 首次进入点"立即开通"百炼服务（免费开通）',
+        '左侧菜单"API-KEY 管理" → 点"创建我的 API-KEY" → 选择业务空间 → 复制 Key（sk- 开头）',
+        '左侧菜单"模型广场" → 搜索"qwen-plus" → 进入模型详情 → 点"开通服务"（<b>不开通会报 AccessDenied</b>）',
+        '<b>必须开通联网搜索能力</b>：模型广场 → 确认 qwen-plus 支持"联网搜索"工具 → 在调用时传入 enable_search=true（本系统已自动配置）',
+        '回到本页粘贴 Key → 点"测试"验证 Key 与联网搜索是否同时可用',
       ],
       errors: [
         { code: 'AccessDenied', fix: '未开通百炼或该模型服务 → 模型广场开通' },
@@ -209,13 +321,21 @@ const apiKeyItems = [
       consoleUrl: 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey',
       region: '仅 cn-beijing（北京）地域',
       model: 'doubao-seed-2-0-lite-260428（默认，pro 版需单独激活）',
+      pricing: {
+        input: '¥0.6~1.8',
+        output: '¥3.6~10.8',
+        freeQuota: '有体验额度（具体以控制台显示为准）',
+        searchExtra: '联网内容插件：2万次/月免费，超出 ¥4/千次',
+        perCallEstimate: '约 ¥0.005（2万次/月免费额度内）/ ¥0.009（超出后）',
+      },
       mustOpenTool: true,
       steps: [
-        '开通火山引擎账号 → 进入方舟控制台（cn-beijing 地域）',
-        '左侧"API Key"创建 Key（ark- 开头）',
-        '在"模型广场"激活所用模型（如 doubao-seed-2-0-lite-260428）—— <b>不激活会报 ModelNotOpen</b>',
-        '<b>必须开通联网搜索插件</b>（不开通会报 ToolNotOpen）：<br/><a href="https://console.volcengine.com/common-buy/CC_content_plugin" target="_blank" rel="noopener">https://console.volcengine.com/common-buy/CC_content_plugin</a>',
-        '模型与插件均激活后，点"测试"验证',
+        '打开 <a href="https://console.volcengine.com" target="_blank" rel="noopener">console.volcengine.com</a> → 注册火山引擎账号 → 完成实名认证',
+        '页面顶部地域切换器 → 选择"<b>北京（cn-beijing）</b>"（方舟仅此地域可用）',
+        '左侧菜单"方舟大模型服务平台" → "在线推理" → "API Key" → 点"创建 API Key" → 复制 Key（ark- 开头）',
+        '左侧菜单"模型广场" → 搜索"doubao-seed-2-0-lite" → 进入详情 → 点"<b>激活模型</b>"（不激活会报 ModelNotOpen）',
+        '<b>必须开通联网内容插件</b>：访问 <a href="https://console.volcengine.com/common-buy/CC_content_plugin" target="_blank" rel="noopener">CC_content_plugin</a> → 点"开通"（不开通会报 ToolNotOpen: web search）',
+        '模型与插件均激活后 → 回到本页点"测试"按钮验证',
       ],
       errors: [
         { code: 'ModelNotOpen', fix: '模型未激活 → 方舟控制台"模型广场"激活对应模型 ID' },
@@ -234,14 +354,22 @@ const apiKeyItems = [
       platform: '百度千帆大模型平台',
       consoleUrl: 'https://console.bce.baidu.com/qianfan/ais/console/applicationConsole/application',
       region: '百度智能云（多地域可选）',
-      model: 'ernie-5.0（默认）',
+      model: 'ernie-4.5-turbo（默认，ERNIE-3.5/Speed 永久免费可作备选）',
+      pricing: {
+        input: '¥0.8',
+        output: '¥3.2',
+        freeQuota: 'ERNIE-3.5-8K / ERNIE-Speed-8K 永久免费不限量；ERNIE-4.5-Turbo 新用户 100 万 token（3 个月）',
+        searchExtra: 'web_search 按 token 计费，费用含在输出 token 内，不单独收费',
+        perCallEstimate: '约 ¥0.005',
+      },
       mustOpenTool: true,
       steps: [
-        '登录百度智能云 → 进入千帆大模型平台',
-        '"应用接入"创建应用，获取 API Key 与 Secret Key',
-        '在"模型服务"开通文心一言对应模型（如 ERNIE-5.0）',
-        '<b>必须开启联网搜索</b>：请求中 web_search.enable=true，需模型支持（ernie 系列部分模型支持）',
-        '点"测试"验证',
+        '打开 <a href="https://console.bce.baidu.com/qianfan/overview" target="_blank" rel="noopener">console.bce.baidu.com/qianfan</a> → 登录百度智能云账号 → 完成实名认证',
+        '首次进入点"立即开通"千帆模型服务（免费开通）→ 左侧菜单"应用接入" → "创建应用" → 填写应用名称 → 确认创建',
+        '应用列表点"查看" → 复制 <b>API Key</b>（bce-v3- 开头）与 <b>Secret Key</b> → 本系统只需填 API Key',
+        '左侧菜单"模型服务" → 找到"ERNIE-4.5-Turbo" → 点"开通服务"（<b>不开通会报 110 access token invalid</b>）',
+        '<b>必须开启联网搜索</b>：调用时传 web_search.enable=true（本系统已自动配置），需模型支持（ernie 系列部分模型支持）',
+        '回到本页粘贴 API Key → 点"测试"验证',
       ],
       errors: [
         { code: '110 access token invalid', fix: 'API Key / Secret Key 错误，检查应用凭证' },
@@ -259,18 +387,27 @@ const apiKeyItems = [
       platform: 'OpenAI Platform',
       consoleUrl: 'https://platform.openai.com/api-keys',
       region: '国内不可直连，需通过代理访问',
-      model: 'gpt-5（默认）',
+      model: 'gpt-5.6-luna（默认，轻量经济款；可在环境变量 CITATION_OPENAI_MODEL 覆盖为 terra/sol）',
+      pricing: {
+        input: '$1（¥7.2）',
+        output: '$6（¥43.2）',
+        cacheHit: '$0.1（¥0.72）',
+        freeQuota: '无免费额度，需充值后使用',
+        searchExtra: 'web_search 工具 $10/千次（约 ¥72/千次），每次搜索约 ¥0.07',
+        perCallEstimate: '约 ¥0.13（含联网搜索费用）',
+      },
       mustOpenTool: true,
       steps: [
-        '登录 OpenAI Platform → API Keys 创建 Key（sk- 开头）',
-        '账户需绑定付费方式并充值余额',
-        '<b>必须开通 web_search 工具</b>：Responses API 中 tools=[{type:"web_search"}]，该工具单独计费',
-        '确认网络可访问 api.openai.com（国内需代理）',
+        '打开 <a href="https://platform.openai.com" target="_blank" rel="noopener">platform.openai.com</a> → 注册/登录 OpenAI 账号（<b>国内需先配置代理</b>）',
+        '左侧菜单"API Keys" → 点"Create new secret key" → 复制 Key（sk- 开头，仅显示一次务必保存）',
+        '左侧菜单"Settings" → "Billing" → 绑定信用卡并充值余额（<b>不充值会报 429</b>）',
+        '<b>必须开通 web_search 工具</b>：Responses API 中 tools=[{type:"web_search"}]，该工具单独计费 $10/千次（本系统已自动配置）',
+        '确认网络可访问 api.openai.com（国内需代理）→ 回到本页粘贴 Key → 点"测试"验证',
       ],
       errors: [
         { code: '401 Incorrect API key', fix: 'Key 错误或已撤销' },
-        { code: '429 Rate limit', fix: '触发限流，降低频率或升级套餐' },
-        { code: '403 Country/region', fix: '区域受限，需使用代理' },
+        { code: '429 Rate limit', fix: '触发限流或余额不足，降低频率或充值' },
+        { code: '403 Country/region', fix: '区域受限，需使用代理切换至支持的地区' },
       ],
     },
   },
@@ -283,17 +420,25 @@ const apiKeyItems = [
       platform: 'Google AI Studio',
       consoleUrl: 'https://aistudio.google.com/app/apikey',
       region: '国内不可直连，需通过代理访问',
-      model: 'gemini-2.5-flash（默认）',
+      model: 'gemini-2.5-flash（默认，性价比最佳；可选 flash-lite 更便宜）',
+      pricing: {
+        input: '$0.30（¥2.2）',
+        output: '$2.50（¥18）',
+        freeQuota: '有免费层（限速 5 RPM / 20 次/天），适合小规模测试',
+        searchExtra: 'Google 搜索 grounding：每月 5000 次免费，超出 $14/千次（约 ¥100/千次）',
+        perCallEstimate: '约 ¥0.022（5000次/月免费额度内）/ ¥0.12（超出后）',
+      },
       mustOpenTool: false,
       steps: [
-        '登录 Google AI Studio → Get API Key 创建 Key',
-        'Gemini 自带 google_search grounding 工具，<b>无需单独开通</b>',
-        '在请求中 tools=[{"google_search":{}}] 启用联网搜索',
-        '确认网络可访问 generativelanguage.googleapis.com（国内需代理）',
+        '打开 <a href="https://aistudio.google.com" target="_blank" rel="noopener">aistudio.google.com</a> → 登录 Google 账号（<b>国内需先配置代理</b>）',
+        '左侧菜单"Get API Key" → 点"Create API Key" → 选择项目 → 复制 Key',
+        'Gemini 自带 <b>google_search grounding 工具，无需单独开通</b>（与豆包/千问不同）',
+        '在请求中 tools=[{"google_search":{}}] 启用联网搜索（本系统已自动配置）',
+        '确认网络可访问 generativelanguage.googleapis.com（国内需代理）→ 回到本页粘贴 Key → 点"测试"验证',
       ],
       errors: [
         { code: '403 User location not supported', fix: '区域受限，需使用代理切换至支持的地区' },
-        { code: '429 RESOURCE_EXHAUSTED', fix: '免费配额用尽，升级或等待重置' },
+        { code: '429 RESOURCE_EXHAUSTED', fix: '免费配额用尽，升级付费层或等待重置' },
         { code: 'API key not valid', fix: 'Key 错误或已删除，重新创建' },
       ],
     },
@@ -307,17 +452,26 @@ const apiKeyItems = [
       platform: 'Anthropic Console',
       consoleUrl: 'https://console.anthropic.com/settings/keys',
       region: '国内不可直连，需通过代理访问',
-      model: 'claude-sonnet-4-5（默认）',
+      model: 'claude-sonnet-4-6（默认；可选 haiku-4-5 更便宜 $1/$5）',
+      pricing: {
+        input: '$3（¥21.6）',
+        output: '$15（¥108）',
+        cacheHit: '$0.30（¥2.16）',
+        freeQuota: '无免费额度，需充值后使用（新用户有 $5 体验额度）',
+        searchExtra: 'web_search 工具 $10/千次（约 ¥72/千次），每次搜索约 ¥0.07',
+        perCallEstimate: '约 ¥0.22（含联网搜索费用）',
+      },
       mustOpenTool: true,
       steps: [
-        '登录 Anthropic Console → API Keys 创建 Key（sk-ant- 开头）',
-        '账户需充值余额',
-        '<b>必须开通 web_search 工具</b>：tools=[{type:"web_search_20250305"}]，该工具单独计费',
-        '确认网络可访问 api.anthropic.com（国内需代理）',
+        '打开 <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a> → 注册/登录 Anthropic 账号（<b>国内需先配置代理</b>）',
+        '左侧菜单"API Keys" → 点"Create Key" → 复制 Key（sk-ant- 开头，仅显示一次务必保存）',
+        '左侧菜单"Settings" → "Billing" → 充值余额（最低 $5，<b>不充值会报 429</b>）',
+        '<b>必须开通 web_search 工具</b>：tools=[{type:"web_search_20250305"}]，单独计费 $10/千次（本系统已自动配置）',
+        '确认网络可访问 api.anthropic.com（国内需代理）→ 回到本页粘贴 Key → 点"测试"验证',
       ],
       errors: [
         { code: '401 invalid x-api-key', fix: 'Key 错误或已失效' },
-        { code: '429 rate_limit', fix: '触发限流，降低频率或升级用量层级' },
+        { code: '429 rate_limit', fix: '触发限流或余额不足，降低频率或充值' },
         { code: '400 tool not found', fix: 'web_search 工具名/版本错误，确认用 web_search_20250305' },
       ],
     },
@@ -333,6 +487,83 @@ function toggleGuide(key) {
 // 测试中状态 + 测试结果：testingKey 标记当前正在测试的 key，testResult 存各 key 的结果
 const testingKey = ref('')
 const testResult = reactive({})
+
+// ---------- 扫描预估消耗 ----------
+// 各模型单次检测费用（元），基于 pricing 数据的 perCallEstimate 拆分。
+// ai_index 收录检测 prompt 短（~100 token 输入/输出，无显式联网搜索），约为 citation 的 1/5。
+// citation 引用检测含完整 prompt（~2000 输入 + ~1000 输出 + 1 次联网搜索）。
+const aiIndexUnitCost = {
+  qwen: 0.001, doubao: 0.001, ernie: 0.001,
+  openai: 0.015, gemini: 0.003, claude: 0.03,
+}
+const citationUnitCost = {
+  qwen: 0.004, doubao: 0.005, ernie: 0.005,
+  openai: 0.13, gemini: 0.022, claude: 0.22,
+}
+const MODEL_LABELS = {
+  qwen: '千问', doubao: '豆包', ernie: '文心',
+  openai: 'ChatGPT', gemini: 'Gemini', claude: 'Claude',
+}
+
+const scanEstimate = ref(null)
+const estimateLoading = ref(false)
+
+// 计算各扫描类型预估费用
+const estimateCosts = computed(() => {
+  if (!scanEstimate.value) return null
+  const est = scanEstimate.value
+
+  // index：零成本（仅爬虫，不调 AI）
+  const indexCount = est.index?.count || 0
+
+  // ai_index：按 model_counts 精确计算（count 已含模型维度）
+  const aiCounts = est.ai_index?.model_counts || {}
+  let aiIndexCost = 0
+  for (const [model, cnt] of Object.entries(aiCounts)) {
+    aiIndexCost += cnt * (aiIndexUnitCost[model] || 0.002)
+  }
+  const aiIndexCount = est.ai_index?.count || 0
+  const aiModels = est.ai_index?.models || []
+
+  // citation：count × 模型数 × 单价范围（上界预估，实际只检测已收录子集）
+  const citCount = est.citation?.count || 0
+  const citModels = est.citation?.models || []
+  let citMin = 0, citMax = 0
+  if (citCount && citModels.length) {
+    const costs = citModels.map(m => citationUnitCost[m] || 0.01)
+    citMin = citCount * Math.min(...costs)
+    citMax = citCount * Math.max(...costs)
+  }
+
+  return {
+    index: { count: indexCount },
+    ai_index: { count: aiIndexCount, cost: aiIndexCost, models: aiModels },
+    citation: { count: citCount, modelCount: citModels.length, costMin: citMin, costMax: citMax },
+    total: {
+      costMin: aiIndexCost + citMin,
+      costMax: aiIndexCost + citMax,
+    },
+  }
+})
+
+function formatCost(v) {
+  if (v === 0) return '¥0'
+  if (v < 0.01) return `¥${v.toFixed(4)}`
+  if (v < 1) return `¥${v.toFixed(3)}`
+  return `¥${v.toFixed(2)}`
+}
+
+async function loadEstimate() {
+  estimateLoading.value = true
+  try {
+    const res = await api.get('/admin/scan/estimate')
+    scanEstimate.value = res.data
+  } catch (e) {
+    console.warn('加载扫描预估失败', e)
+  } finally {
+    estimateLoading.value = false
+  }
+}
 
 // 扫描面板状态（阶段 4 - ⑤ + I1+I2+I4）：
 // 使用 useScanTrigger 复用扫描触发逻辑，统一调 /admin/scan/trigger（Phase 3 统一入口），
@@ -377,6 +608,8 @@ onMounted(async () => {
     console.error('加载配置失败', e)
     ElMessage.error('加载配置失败')
   }
+  // 加载扫描预估消耗（pending 数量 + 预估费用）
+  loadEstimate()
 })
 
 const saveConfig = async () => {
@@ -386,6 +619,8 @@ const saveConfig = async () => {
     // 重新加载以获取脱敏后的 API Key 显示
     const res = await api.get('/config')
     config.value = res.data
+    // 重新加载预估（API Key 变化可能影响已配置模型数）
+    loadEstimate()
   } catch (e) {
     ElMessage.error('保存失败')
   }
@@ -404,6 +639,8 @@ const triggerScan = async (type) => {
     } else {
       ElMessage.success(data.message || '扫描任务已触发')
     }
+    // 扫描触发后重新加载预估（pending 数量已变化）
+    loadEstimate()
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '触发失败')
   }
@@ -519,5 +756,115 @@ const triggerScan = async (type) => {
 .err-arrow {
   color: var(--mute, #78716C);
   margin: 0 4px;
+}
+
+/* 价格参考相关样式（傻瓜化增强） */
+.g-unit {
+  font-size: 11px;
+  color: var(--mute, #78716C);
+  margin-left: 2px;
+}
+.price-disclaimer {
+  font-size: 11px;
+  color: var(--mute, #78716C);
+  margin-left: 4px;
+  font-style: italic;
+}
+.estimate-row {
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: rgba(231, 159, 63, 0.08);
+  border-radius: var(--radius-md, 4px);
+  border-left: 3px solid var(--signal, #E79F3F);
+}
+.g-highlight {
+  color: var(--alert, #E76F51);
+  font-size: 13px;
+}
+.g-sub {
+  font-size: 11px;
+  color: var(--mute, #78716C);
+  margin-left: 4px;
+}
+.guide-row b {
+  color: var(--ink, #1A1A1A);
+  font-weight: 600;
+}
+
+/* 扫描按钮组：flex 换行排列，适配窄屏 */
+.scan-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+/* 预估消耗卡片样式 */
+.estimate-card {
+  border: 1px solid var(--border, #E5E5E5);
+  background: linear-gradient(135deg, rgba(231, 159, 63, 0.04), rgba(46, 184, 124, 0.04));
+}
+.estimate-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.e-sub {
+  font-size: 12px;
+  color: var(--mute, #78716C);
+  font-weight: normal;
+}
+.estimate-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+.estimate-item {
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: var(--radius-md, 6px);
+  border: 1px solid var(--border, #EDEDED);
+}
+.estimate-total {
+  background: rgba(231, 159, 63, 0.1);
+  border-color: var(--signal, #E79F3F);
+}
+.e-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink, #1A1A1A);
+  margin-bottom: 6px;
+}
+.e-value {
+  font-size: 12px;
+  color: var(--body, #444);
+  margin-bottom: 4px;
+}
+.e-models {
+  color: var(--mute, #78716C);
+  font-size: 11px;
+}
+.e-cost {
+  font-size: 13px;
+  color: var(--body, #444);
+}
+.e-cost.free {
+  color: var(--ok, #2EB87C);
+  font-size: 12px;
+}
+.e-cost b {
+  color: var(--alert, #E76F51);
+}
+.e-highlight {
+  font-size: 15px;
+}
+.estimate-note {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border, #E5E5E5);
+  font-size: 11px;
+  color: var(--mute, #78716C);
+  line-height: 1.6;
 }
 </style>

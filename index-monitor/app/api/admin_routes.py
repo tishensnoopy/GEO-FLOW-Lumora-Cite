@@ -1093,6 +1093,75 @@ class ScanTriggerRequest(BaseModel):
     scan_type: str  # 'index' | 'ai_index' | 'citation' | 'all'
 
 
+@router.get("/scan/estimate")
+async def get_scan_estimate(
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """预估各扫描类型的待扫描数量，供前端显示预估消耗。
+
+    复用各 checker 的 ``get_pending_urls()``（与实际扫描一致的增量逻辑），
+    返回各类型 pending 数量 + 已配置 AI 模型列表。前端据此 + pricing 数据
+    计算费用范围。
+
+    说明：
+    - index：pending URL 数。不调 AI，零成本（仅爬虫）。
+    - ai_index：pending URL×模型组合数（count 已含模型维度）。
+    - citation：pending URL 数。每个 URL 按其已收录模型数调用（动态），
+      此处用已配置模型数作为预估上界（实际只检测已收录子集，预估偏保守）。
+
+    GEOFlow 查询失败时降级为仅手动录入（各 checker 内部已 try/except），
+    接口本身再包一层保护，确保任一类型异常不影响其他类型返回。
+    """
+    from app.services.index_checker import IndexChecker
+    from app.services.ai_index_checker import AIIndexChecker
+    from app.services.citation_checker import CitationChecker
+
+    result: dict = {}
+
+    # index
+    try:
+        index_pending = await IndexChecker(db).get_pending_urls()
+        result["index"] = {"count": len(index_pending)}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("预估 index pending 失败: %s", exc)
+        result["index"] = {"count": 0, "error": str(exc)}
+
+    # ai_index
+    try:
+        ai_checker = AIIndexChecker(db)
+        ai_pending = await ai_checker.get_pending_urls()
+        ai_models = ai_checker._get_configured_models()
+        # 按 model 聚合调用次数，供前端精确计算费用（ai_pending 是 URL×model 组合）
+        from collections import Counter
+        ai_model_counts = Counter(m for _, _, m in ai_pending)
+        result["ai_index"] = {
+            "count": len(ai_pending),
+            "models": ai_models,
+            "model_counts": dict(ai_model_counts),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("预估 ai_index pending 失败: %s", exc)
+        result["ai_index"] = {
+            "count": 0, "models": [], "model_counts": {}, "error": str(exc),
+        }
+
+    # citation
+    try:
+        cit_checker = CitationChecker(db)
+        cit_pending = await cit_checker.get_pending_urls()
+        # citation 按已收录模型检测，预估用已配置模型数作上界（保守估计）
+        result["citation"] = {
+            "count": len(cit_pending),
+            "models": result.get("ai_index", {}).get("models", []),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("预估 citation pending 失败: %s", exc)
+        result["citation"] = {"count": 0, "models": [], "error": str(exc)}
+
+    return result
+
+
 @router.post("/scan/trigger")
 async def unified_scan_trigger(
     req: ScanTriggerRequest,
