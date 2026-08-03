@@ -136,7 +136,7 @@ volumes:
 networks:
   default:
     # 监测系统内部网络；与 GEOFlow-main/docker-compose.prod.yml 的 edge 外部网络名对齐
-    name: geo-monitoring_default
+    name: geo-flow-lumora_default
   # GEOFlow 生产栈的默认网络（外部网络，由 GEOFlow-main/docker-compose.prod.yml 创建）
   geoflow_net:
     external: true
