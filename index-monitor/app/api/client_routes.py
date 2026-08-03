@@ -418,7 +418,13 @@ async def client_rankings(
         if key is not None:
             citations_by_qid.setdefault(key, []).append(c)
 
-    # 3. 组装
+    # 3. 批量获取置信度（按 model 分组，避免 N+1 查询）
+    from app.services.calibration_service import CalibrationService
+    cal_service = CalibrationService(db)
+    all_confidence = await cal_service.get_all_confidence()
+    confidence_by_model = {c["model"]: c for c in all_confidence}
+
+    # 4. 组装
     return {
         "questions": [
             {
@@ -432,6 +438,8 @@ async def client_rankings(
                         "sources": c.sources or [],
                         "checked_at": c.checked_at.isoformat() if c.checked_at else None,
                         "article_url": c.url,
+                        "confidence": confidence_by_model.get(c.model, {}).get("confidence", -1),
+                        "confidence_level": confidence_by_model.get(c.model, {}).get("level", "uncalibrated"),
                     }
                     for c in citations_by_qid.get(str(q.id), [])
                 ],
@@ -484,25 +492,34 @@ async def client_visibility(
         if c.hit_type in CITED_HIT_TYPES:
             s["cited"] += 1
 
-    # 3. 计算每个平台得分
+    # 3. 批量获取置信度
+    from app.services.calibration_service import CalibrationService
+    cal_service = CalibrationService(db)
+    all_confidence = await cal_service.get_all_confidence()
+    confidence_by_model = {c["model"]: c for c in all_confidence}
+
+    # 4. 计算每个平台得分
     platform_scores = []
     for model, s in stats.items():
         score = (s["cited"] / s["total"] * 100) if s["total"] > 0 else 0
+        conf = confidence_by_model.get(model, {})
         platform_scores.append({
             "model": model,
             "score": round(score),
             "total": s["total"],
             "cited": s["cited"],
+            "confidence": conf.get("confidence", -1),
+            "confidence_level": conf.get("level", "uncalibrated"),
         })
     # 按 score 降序，让前端展示更稳定
     platform_scores.sort(key=lambda x: x["score"], reverse=True)
 
-    # 4. 综合得分（加权平均：总 cited / 总 total × 100）
+    # 5. 综合得分（加权平均：总 cited / 总 total × 100）
     grand_total = sum(s["total"] for s in stats.values())
     grand_cited = sum(s["cited"] for s in stats.values())
     overall_score = round(grand_cited / grand_total * 100) if grand_total > 0 else 0
 
-    # 5. 雷达图数据
+    # 6. 雷达图数据
     radar_labels = [MODEL_DISPLAY_NAMES.get(p["model"], p["model"]) for p in platform_scores]
     radar_values = [p["score"] for p in platform_scores]
 
@@ -513,4 +530,43 @@ async def client_visibility(
             "labels": radar_labels,
             "values": radar_values,
         },
+    }
+
+
+# ============================================================================
+# 阶段 4：客户端置信度 API
+# 基于网页端校准数据，向客户展示各平台置信度，便于评估数据可靠性。
+# ============================================================================
+
+
+@router.get("/client/confidence")
+async def client_confidence(
+    client_id: str = Depends(get_current_client_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """客户查看各平台置信度。
+
+    返回各平台的置信度分数和分级，以及综合置信度。
+    置信度基于网页端校准数据——校准数据越多，置信度越可靠。
+    """
+    if client_id == "admin":
+        raise HTTPException(status_code=403, detail="本端点仅供客户使用")
+
+    from app.services.calibration_service import CalibrationService
+
+    service = CalibrationService(db)
+    platforms = await service.get_all_confidence()
+
+    # 综合置信度：有校准数据的平台的加权平均（按校准数量加权）
+    calibrated_platforms = [p for p in platforms if p["total_calibrations"] > 0]
+    if calibrated_platforms:
+        total_weight = sum(p["total_calibrations"] for p in calibrated_platforms)
+        weighted_sum = sum(p["confidence"] * p["total_calibrations"] for p in calibrated_platforms)
+        overall_confidence = round(weighted_sum / total_weight) if total_weight > 0 else -1
+    else:
+        overall_confidence = -1
+
+    return {
+        "platforms": platforms,
+        "overall_confidence": overall_confidence,
     }
