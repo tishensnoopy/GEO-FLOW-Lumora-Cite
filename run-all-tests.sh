@@ -433,16 +433,55 @@ run_monitor_all() {
   run_monitor_contract
 }
 
+# run_dashboard_unit: 执行 vitest 单元测试（组件+路由+store+API 契约）
+# 覆盖 tests/unit + tests/components，验证前端逻辑不回归
+run_dashboard_unit() {
+  banner "Dashboard 前端单元测试（Vue 3 / Vitest）"
+  info "目录: $DASHBOARD_DIR"
+  info "命令: npm run test（vitest run，单次执行）"
+  echo ""
+
+  # 检查 node/npm 可用
+  if ! command -v npm >/dev/null 2>&1; then
+    error "主机未安装 npm，跳过 Dashboard 单元测试"
+    skip "Dashboard 单元测试（无 npm）"
+    return 0
+  fi
+
+  # 检查目录存在
+  if [[ ! -d "$DASHBOARD_DIR" ]]; then
+    error "Dashboard 目录不存在: $DASHBOARD_DIR"
+    fail "Dashboard 单元测试"
+    return 1
+  fi
+
+  # 检查 node_modules，缺失则提示
+  if [[ ! -d "$DASHBOARD_DIR/node_modules" ]]; then
+    warn "node_modules 缺失，先执行 npm install..."
+    (cd "$DASHBOARD_DIR" && npm install 2>&1 | sed 's/^/  /') || true
+  fi
+
+  info "执行 npm run test..."
+  echo ""
+  if (cd "$DASHBOARD_DIR" && npm run test 2>&1); then
+    echo ""
+    pass "Dashboard 单元测试"
+  else
+    echo ""
+    fail "Dashboard 单元测试"
+  fi
+}
+
 # =============================================================================
 # Dashboard 测试函数
 # =============================================================================
 
 # run_dashboard_build: 执行 npm run build 做前端构建可达性检查
-# Dashboard 没有 test 脚本，构建成功即视为通过
+# 配合 run_dashboard_unit（vitest）使用：先跑单元测试，再跑构建
 run_dashboard_build() {
   banner "Dashboard 前端构建检查（Vue 3 / Vite）"
   info "目录: $DASHBOARD_DIR"
-  info "命令: npm run build（无 test 脚本，用构建代替）"
+  info "命令: npm run build（生产构建，验证无语法/导入错误）"
   echo ""
 
   # 检查 node/npm 可用
@@ -523,7 +562,7 @@ GEO FLOW + LUMORA CITE 全项目一键测试脚本
   unit          仅 index-monitor 单元测试（最快，不依赖 DB）
   integration   仅 index-monitor 集成测试（依赖 monitor schema）
   contract      仅 index-monitor 契约测试（依赖 GEOFlow schema）
-  dashboard     仅 Dashboard 构建检查（npm run build）
+  dashboard     仅 Dashboard 单元测试 + 构建检查（vitest + npm run build）
   quick         快速模式：geoflow + monitor unit + dashboard（跳过集成/契约）
 
 选项:
@@ -601,9 +640,10 @@ main() {
   # ---------------------------------------------------------------------
   case "$target" in
     all)
-      # 全量模式：GEOFlow → monitor 全部 → dashboard
+      # 全量模式：GEOFlow → monitor 全部 → dashboard 单元+构建
       run_geoflow_tests
       run_monitor_all
+      run_dashboard_unit
       run_dashboard_build
       ;;
     geoflow)
@@ -622,13 +662,15 @@ main() {
       run_monitor_contract
       ;;
     dashboard)
+      run_dashboard_unit
       run_dashboard_build
       ;;
     quick)
-      # 快速模式：GEOFlow（含 Unit+Feature，sqlite 快）+ monitor unit + dashboard
+      # 快速模式：GEOFlow（含 Unit+Feature，sqlite 快）+ monitor unit + dashboard 单元+构建
       # 跳过 monitor integration/contract（依赖 DB，较慢）
       run_geoflow_tests
       run_monitor_unit
+      run_dashboard_unit
       run_dashboard_build
       ;;
   esac
