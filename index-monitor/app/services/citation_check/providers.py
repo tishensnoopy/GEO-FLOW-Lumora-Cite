@@ -226,6 +226,9 @@ def adapter_catalog() -> list[dict]:
         {"id": "openai", "name": "ChatGPT / OpenAI", "model_id": os.getenv("CITATION_OPENAI_MODEL", "gpt-5"), "configured": bool(os.getenv("OPENAI_API_KEY", ""))},
         {"id": "gemini", "name": "Gemini", "model_id": os.getenv("CITATION_GEMINI_MODEL", "gemini-2.5-flash"), "configured": bool(os.getenv("GEMINI_API_KEY", ""))},
         {"id": "claude", "name": "Claude", "model_id": os.getenv("CITATION_CLAUDE_MODEL", "claude-sonnet-4-5"), "configured": bool(os.getenv("ANTHROPIC_API_KEY", ""))},
+        # 阶段 3：网页端模拟平台（无公开 API）。元宝不需要 API Key，
+        # configured 始终为 True——Playwright 不可用时在 ask() 内捕获并返回错误。
+        {"id": "yuanbao", "name": "元宝", "model_id": "web-simulation", "configured": True},
     ]
 
 
@@ -291,7 +294,76 @@ def default_adapters(selected_ids: list[str] | None = None) -> list:
         ),
         "gemini": GeminiAdapter(os.getenv("CITATION_GEMINI_MODEL", "gemini-2.5-flash"), gemini_key),
         "claude": AnthropicAdapter(os.getenv("CITATION_CLAUDE_MODEL", "claude-sonnet-4-5"), anthropic_key),
+        # 阶段 3：网页端模拟平台。元宝通过 Playwright 模拟，不需要 API Key。
+        "yuanbao": WebSimulationAdapter("yuanbao"),
     }
     if selected_ids is None:
         selected_ids = [item["id"] for item in adapter_catalog() if item["configured"]]
     return [adapters[item] for item in selected_ids if item in adapters]
+
+
+def _run_async(coro):
+    """在同步上下文中安全运行异步协程。
+
+    ask() 在 ThreadPoolExecutor 子线程中被调用（无运行中的事件循环），
+    可直接用 asyncio.run。若意外处于事件循环中（不该发生），降级为新线程运行，
+    避免 "asyncio.run() cannot be called from a running event loop"。
+    """
+    import asyncio
+    import concurrent.futures
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    # 已在事件循环中：用独立线程跑，避免嵌套事件循环报错
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        return ex.submit(asyncio.run, coro).result()
+
+
+class WebSimulationAdapter:
+    """将网页端模拟器包装成 CitationModelAdapter。
+
+    让无公开 API 的 AI 平台（如元宝）通过 Playwright 网页端模拟接入
+    lumora-cite 的引用检测流程（probe + run_citation_check）。
+
+    设计：
+    - ask(question) 是同步方法（满足 CitationModelAdapter Protocol），
+      内部通过 _run_async 调用 WebSimulationManager.simulate（异步）。
+    - target_urls 在此层不传入（命中判定由 engine.run_citation_check 统一完成，
+      adapter 只负责返回 sources）。
+    - 模拟失败时返回带 error 的 ModelAnswer，不抛异常——保证单个平台失败
+      不阻塞其他平台的引用检测。
+    - Playwright 不可用时（未安装/无浏览器）在 ask() 内捕获并返回错误。
+    """
+
+    capability = VERIFIED_CITATIONS
+
+    def __init__(self, platform_id: str):
+        # 延迟导入避免 Playwright 未安装时影响整个 providers 模块加载
+        from app.services.web_simulation import get_web_simulation_manager
+        self._manager = get_web_simulation_manager()
+        self.provider_id = platform_id
+        simulator = self._manager.get(platform_id)
+        self.name = simulator.platform_name if simulator else platform_id
+        self.model_id = "web-simulation"
+
+    def ask(self, question: str) -> ModelAnswer:
+        try:
+            result = _run_async(
+                self._manager.simulate(self.provider_id, question, [], timeout=60)
+            )
+        except Exception as exc:  # noqa: BLE001 - 网页端模拟易失败，统一兜底
+            return ModelAnswer(self.name, self.model_id, "", [], None, str(exc))
+
+        if not result.success:
+            return ModelAnswer(self.name, self.model_id, result.answer, [], None, result.error)
+
+        sources = [s.get("url", "") for s in result.sources if s.get("url")]
+        return ModelAnswer(
+            self.name,
+            self.model_id,
+            result.answer,
+            sources,
+            bool(sources),
+            None,
+        )
