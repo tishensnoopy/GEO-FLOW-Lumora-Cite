@@ -9,7 +9,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import async_session
-from app.models.ai_index_result import AIIndexResult
 from app.models.client_question import ClientQuestion
 from app.services.ai_index_checker import AIIndexChecker
 from app.services.citation_checker import CitationChecker
@@ -23,8 +22,9 @@ class AutoPipeline:
     async def trigger_for_url(self, url: str, client_id: str) -> None:
         """对新文章触发完整联动链路。
 
-        阶段 1: AI 收录检测（该 URL × 所有配置模型）
-        阶段 2: 自动衔接——仅对 indexed 模型触发问题监测
+        阶段 1: AI 收录检测（可选，该 URL × 所有配置模型，单模型失败不阻塞）
+        阶段 2: 引用检测——直接执行，不依赖收录检测结果，
+                仅以客户是否配置 active 问题为门槛
         """
         logger.info("自动联动启动: %s (client=%s)", url, client_id)
 
@@ -55,20 +55,12 @@ class AutoPipeline:
     async def _auto_trigger_citation_check(
         self, url: str, client_id: str
     ) -> None:
-        """阶段 2：查询 indexed 模型，若有则触发问题监测。"""
-        async with async_session() as db:
-            # 查询该 URL 的 indexed 模型
-            result = await db.execute(
-                select(AIIndexResult.model).where(
-                    AIIndexResult.url == url,
-                    AIIndexResult.index_status == "indexed",
-                )
-            )
-            indexed_models = [row[0] for row in result.fetchall()]
-            if not indexed_models:
-                logger.info("自动联动-跳过问题监测 %s：无已收录模型", url)
-                return
+        """阶段 2：引用检测。直接执行，不依赖收录检测结果。
 
+        仅以客户是否配置 active 问题为门槛——有则执行引用检测，无则跳过。
+        收录检测（阶段 1）为可选前置，其结果不影响本阶段是否执行。
+        """
+        async with async_session() as db:
             # 查询客户是否有 active 问题
             q_result = await db.execute(
                 select(ClientQuestion.id).where(
@@ -83,7 +75,7 @@ class AutoPipeline:
                 )
                 return
 
-        # 阶段 3: 问题监测（独立 session）
+        # 引用检测（独立 session）
         async with async_session() as db:
             try:
                 checker = CitationChecker(db)

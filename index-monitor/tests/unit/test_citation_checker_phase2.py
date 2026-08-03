@@ -183,6 +183,11 @@ async def test_check_url_phase2_3_stages(db_session, monkeypatch):
         return {"ai_citation_models": "qwen"}
     monkeypatch.setattr(CitationChecker, "_load_ai_config", fake_load_ai_config)
 
+    # 任务 4：mock _get_configured_models（替代 indexed 作为模型筛选源）
+    async def fake_get_configured_models(self):
+        return ["qwen"]
+    monkeypatch.setattr(CitationChecker, "_get_configured_models", fake_get_configured_models)
+
     # mock default_adapters
     fake_adapter = MagicMock()
     fake_adapter.name = "千问"
@@ -228,8 +233,13 @@ async def test_check_url_phase2_3_stages(db_session, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_check_url_no_indexed_models_raises(db_session, monkeypatch):
-    """URL 无已收录模型时抛 ValueError。"""
+async def test_check_url_no_configured_models_raises(db_session, monkeypatch):
+    """任务 4：无已配置 API Key 的模型时抛 ValueError。
+
+    旧行为：indexed_models 为空 → 抛 ValueError("未被任何 AI 模型收录")。
+    新行为：indexed_models 是否为空不再作为门槛；改为 configured_models 为空
+            时抛 ValueError("未配置任何引用检测模型")。
+    """
     await _cleanup_test_data(db_session)
     db_session.add(ClientQuestion(
         client_id="client_a",
@@ -252,8 +262,14 @@ async def test_check_url_no_indexed_models_raises(db_session, monkeypatch):
         lambda url: fake_content,
     )
 
+    # mock _get_configured_models 返回空——模拟未配置任何 API Key
+    async def fake_get_configured_models(self):
+        return []
+    monkeypatch.setattr(CitationChecker, "_get_configured_models", fake_get_configured_models)
+
     checker = CitationChecker(db_session)
-    with pytest.raises(ValueError, match="未被任何 AI 模型收录"):
+    # 关键：错误信息变为"未配置任何引用检测模型"，不再是"未被任何 AI 模型收录"
+    with pytest.raises(ValueError, match="未配置任何引用检测模型"):
         await checker.check_url("https://example.com/no-index", "client_a")
 
 

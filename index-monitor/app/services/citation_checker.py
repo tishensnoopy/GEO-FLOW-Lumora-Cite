@@ -247,7 +247,8 @@ class CitationChecker:
     async def _get_indexed_models(self, url: str) -> list[str]:
         """从 ai_index_results 取该 URL 已收录的模型列表。
 
-        仅 index_status='indexed' 的模型才执行问题监测。
+        保留作为参考指标，但不再用作引用检测的前置门槛——引用检测
+        现改用 _get_configured_models 提供的已配置模型列表。
         """
         from app.models.ai_index_result import AIIndexResult
         result = await self.db.execute(
@@ -258,6 +259,17 @@ class CitationChecker:
             )
         )
         return [row[0] for row in result.fetchall()]
+
+    async def _get_configured_models(self) -> list[str]:
+        """从 adapter_catalog() 获取所有已配置 API Key 的模型 ID 列表。
+
+        替代 _get_indexed_models 作为引用检测的模型筛选源——引用检测不再
+        依赖收录检测结果（ai_index_results），改为使用所有已配置 API Key
+        的模型。这样即使某 URL 未被任何模型收录，仍可执行引用检测。
+
+        adapter_catalog() 返回项结构：{"id", "name", "model_id", "configured"}。
+        """
+        return [item["id"] for item in adapter_catalog() if item.get("configured")]
 
     # ------------------------------------------------------------------
     # 单 URL 检测
@@ -274,9 +286,13 @@ class CitationChecker:
         """对单个 URL 执行 AI 采信检测（3 阶段）。
 
         阶段：
-        1/3 准备：抓取内容 + 加载客户问题 + 筛选已收录模型
-        2/3 模型探测：对已收录模型探测联网能力
-        3/3 引用检测：用客户问题对已收录模型执行引用检测
+        1/3 准备：抓取内容 + 加载客户问题 + 加载已配置模型
+        2/3 模型探测：对已配置模型探测联网能力
+        3/3 引用检测：用客户问题对已配置模型执行引用检测
+
+        模型筛选源：_get_configured_models（adapter_catalog 中 configured=True
+        的项），不再依赖收录检测结果（ai_index_results）。即使 URL 未被任何
+        模型收录，只要有模型配置了 API Key，引用检测仍可执行。
 
         每步骤失败时抛带阶段标签 [N/3 阶段名] 的 ValueError。
         """
@@ -322,21 +338,25 @@ class CitationChecker:
                 "请在客户管理 → 监测问题中添加问题后重试。"
             )
 
-        # 1c. 筛选已收录模型
-        indexed_models = await self._get_indexed_models(url)
-        if not indexed_models:
-            await _report("1/3 准备", "error", "该 URL 未被任何 AI 模型收录")
-            raise ValueError("该 URL 未被任何 AI 模型收录，跳过问题监测")
+        # 1c. 加载已配置模型（替代原 indexed_models 前置依赖）
+        # 引用检测不再依赖收录检测结果——即使 URL 未被任何模型收录，
+        # 只要有模型配置了 API Key，引用检测仍可执行。
+        configured_models = await self._get_configured_models()
+        if not configured_models:
+            await _report("1/3 准备", "error", "未配置任何引用检测模型（无 API Key）")
+            raise ValueError(
+                "未配置任何引用检测模型。请在系统设置中配置对应模型的 API Key。"
+            )
 
         await _report(
             "1/3 准备", "success",
-            f"准备完成: {len(questions)} 问题, {len(indexed_models)} 已收录模型",
-            detail={"title": title, "question_count": len(questions), "indexed_models": indexed_models},
+            f"准备完成: {len(questions)} 问题, {len(configured_models)} 已配置模型",
+            detail={"title": title, "question_count": len(questions), "configured_models": configured_models},
             duration_ms=int((time.time() - t0) * 1000),
         )
 
         # ──────── 2/3 模型探测 ────────
-        await _report("2/3 模型探测", "start", f"开始探测 {len(indexed_models)} 个模型的联网能力")
+        await _report("2/3 模型探测", "start", f"开始探测 {len(configured_models)} 个模型的联网能力")
         t0 = time.time()
         self._set_provider_env(config)
         # 与配置的 citation_models 取交集
@@ -345,16 +365,17 @@ class CitationChecker:
             [m.strip() for m in citation_models_str.split(",") if m.strip()]
             if citation_models_str else None
         )
-        # catalog 过滤
+        # catalog 过滤（configured_models 已是 catalog 中 configured=True 的项，
+        # 此处再做一次 catalog_ids 校验以兼容未来 catalog 变更）
         catalog_ids = {item["id"] for item in adapter_catalog()}
         selected_ids = [
-            mid for mid in indexed_models
+            mid for mid in configured_models
             if mid in catalog_ids and (configured_ids is None or mid in configured_ids)
         ]
         if not selected_ids:
-            await _report("2/3 模型探测", "error", "已收录模型均未配置 API Key 或不在配置列表中")
+            await _report("2/3 模型探测", "error", "已配置模型均不在配置列表中")
             raise ValueError(
-                "已收录模型均未配置 API Key 或不在配置列表中。"
+                "已配置模型均不在配置列表中。"
                 "请在系统设置中配置对应模型的 API Key。"
             )
 
