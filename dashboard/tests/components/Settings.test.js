@@ -51,6 +51,8 @@ const stubs = {
     template: '<button class="el-button-stub" :data-type="type"><slot /></button>',
   },
   'el-icon': { name: 'ElIcon', template: '<i class="el-icon-stub"><slot /></i>' },
+  // 扫描按钮已包裹在 el-tooltip 中，需 stub 以渲染按钮内容
+  'el-tooltip': { name: 'ElTooltip', props: ['content', 'placement', 'effect'], template: '<div class="el-tooltip-stub"><slot /></div>' },
   'el-collapse-transition': {
     name: 'ElCollapseTransition',
     template: '<div class="el-collapse-transition-stub"><slot /></div>',
@@ -79,10 +81,10 @@ describe('Settings.vue 扫描触发（I1+I3+I4）', () => {
     wrapper = mount(Settings, mountOptions())
     await flushPromises()
     const buttons = wrapper.findAll('.el-button-stub').map(b => b.text())
-    expect(buttons).toContain('立即收录扫描')
-    expect(buttons).toContain('立即 AI 采信扫描')
-    expect(buttons).toContain('AI 收录扫描')
-    expect(buttons).toContain('全量扫描')
+    expect(buttons).toContain('① 搜索引擎收录检测')
+    expect(buttons).toContain('③ AI 引用检测')
+    expect(buttons).toContain('② AI 收录检测')
+    expect(buttons).toContain('④ 全量检测（三合一）')
   })
 
   it('点击"立即收录扫描"调 /admin/scan/trigger scan_type=index', async () => {
@@ -91,7 +93,7 @@ describe('Settings.vue 扫描触发（I1+I3+I4）', () => {
     })
     wrapper = mount(Settings, mountOptions())
     await flushPromises()
-    const btn = wrapper.findAll('.el-button-stub').find(b => b.text() === '立即收录扫描')
+    const btn = wrapper.findAll('.el-button-stub').find(b => b.text() === '① 搜索引擎收录检测')
     await btn.trigger('click')
     await flushPromises()
     expect(api.post).toHaveBeenCalledWith('/admin/scan/trigger', { scan_type: 'index' })
@@ -105,7 +107,7 @@ describe('Settings.vue 扫描触发（I1+I3+I4）', () => {
     })
     wrapper = mount(Settings, mountOptions())
     await flushPromises()
-    const btn = wrapper.findAll('.el-button-stub').find(b => b.text() === '立即 AI 采信扫描')
+    const btn = wrapper.findAll('.el-button-stub').find(b => b.text() === '③ AI 引用检测')
     await btn.trigger('click')
     await flushPromises()
     expect(api.post).toHaveBeenCalledWith('/admin/scan/trigger', { scan_type: 'citation' })
@@ -117,7 +119,7 @@ describe('Settings.vue 扫描触发（I1+I3+I4）', () => {
     })
     wrapper = mount(Settings, mountOptions())
     await flushPromises()
-    const btn = wrapper.findAll('.el-button-stub').find(b => b.text() === 'AI 收录扫描')
+    const btn = wrapper.findAll('.el-button-stub').find(b => b.text() === '② AI 收录检测')
     await btn.trigger('click')
     await flushPromises()
     expect(api.post).toHaveBeenCalledWith('/admin/scan/trigger', { scan_type: 'ai_index' })
@@ -134,7 +136,7 @@ describe('Settings.vue 扫描触发（I1+I3+I4）', () => {
     })
     wrapper = mount(Settings, mountOptions())
     await flushPromises()
-    const btn = wrapper.findAll('.el-button-stub').find(b => b.text() === '全量扫描')
+    const btn = wrapper.findAll('.el-button-stub').find(b => b.text() === '④ 全量检测（三合一）')
     await btn.trigger('click')
     await flushPromises()
     expect(api.post).toHaveBeenCalledWith('/admin/scan/trigger', { scan_type: 'all' })
@@ -149,7 +151,7 @@ describe('Settings.vue 扫描触发（I1+I3+I4）', () => {
     })
     wrapper = mount(Settings, mountOptions())
     await flushPromises()
-    const btn = wrapper.findAll('.el-button-stub').find(b => b.text() === '全量扫描')
+    const btn = wrapper.findAll('.el-button-stub').find(b => b.text() === '④ 全量检测（三合一）')
     await btn.trigger('click')
     await flushPromises()
     const panel = wrapper.find('.scan-panel-stub')
@@ -166,7 +168,7 @@ describe('Settings.vue 扫描触发（I1+I3+I4）', () => {
     })
     wrapper = mount(Settings, mountOptions())
     await flushPromises()
-    const btn = wrapper.findAll('.el-button-stub').find(b => b.text() === '立即收录扫描')
+    const btn = wrapper.findAll('.el-button-stub').find(b => b.text() === '① 搜索引擎收录检测')
     await btn.trigger('click')
     await flushPromises()
     const panel = wrapper.find('.scan-panel-stub')
@@ -180,7 +182,7 @@ describe('Settings.vue 扫描触发（I1+I3+I4）', () => {
     })
     wrapper = mount(Settings, mountOptions())
     await flushPromises()
-    const btn = wrapper.findAll('.el-button-stub').find(b => b.text() === '立即收录扫描')
+    const btn = wrapper.findAll('.el-button-stub').find(b => b.text() === '① 搜索引擎收录检测')
     await btn.trigger('click')
     await flushPromises()
     expect(ElMessage.error).toHaveBeenCalledWith('已有扫描在运行')

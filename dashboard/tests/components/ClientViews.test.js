@@ -45,6 +45,9 @@ vi.mock('@/api/clientView', () => ({
       },
     })),
     stats: vi.fn(() => Promise.resolve({ data: {} })),
+    // ClientOverview onMounted 还会调 workReport / visibility，补充 mock 避免报错
+    workReport: vi.fn(() => Promise.resolve({ data: { summary: {}, items: [] } })),
+    visibility: vi.fn(() => Promise.resolve({ data: { overall_score: 0, platform_scores: [], radar_data: { labels: [], values: [] } } })),
   },
 }))
 
@@ -113,6 +116,12 @@ const stubs = {
   'el-form': { name: 'ElForm', template: '<form class="el-form-stub"><slot /></form>' },
   'el-form-item': { name: 'ElFormItem', props: ['label'], template: '<div class="el-form-item-stub"><span class="el-form-item-label">{{ label }}</span><slot /></div>' },
   'el-icon': { name: 'ElIcon', template: '<i class="el-icon-stub"><slot /></i>' },
+  // el-progress 默认插槽传递 percentage，组件模板用 <template #default="{ percentage }"> 解构
+  'el-progress': {
+    name: 'ElProgress',
+    props: ['percentage', 'type', 'width', 'strokeWidth', 'color', 'showText'],
+    template: '<div class="el-progress-stub"><slot :percentage="percentage" /></div>',
+  },
 }
 
 const directives = {
@@ -128,6 +137,7 @@ function buildClientRouterStore() {
     routes: [
       { path: '/client/overview', component: { template: '<div/>' } },
       { path: '/client/evidence', component: { template: '<div/>' } },
+      { path: '/client/rankings', component: { template: '<div/>' } },
       { path: '/client/articles', component: { template: '<div/>' } },
       { path: '/client/settings', component: { template: '<div/>' } },
       { path: '/login', component: { template: '<div/>' } },

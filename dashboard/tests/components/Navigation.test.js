@@ -31,6 +31,7 @@ function buildRouterStore(role) {
       { path: '/settings', component: { template: '<div/>' } },
       { path: '/client/overview', component: { template: '<div/>' } },
       { path: '/client/evidence', component: { template: '<div/>' } },
+      { path: '/client/rankings', component: { template: '<div/>' } },
       { path: '/client/articles', component: { template: '<div/>' } },
       { path: '/client/settings', component: { template: '<div/>' } },
     ],
@@ -118,7 +119,7 @@ describe('MobileTabBar 角色适配', () => {
     expect(paths).toEqual(['/', '/distributions', '/articles', '/exports', '/settings'])
   })
 
-  it('client 渲染 4 个 tab（概览/证据/文章/设置），指向 /client/*', async () => {
+  it('client 渲染 5 个 tab（概览/证据/快照/文章/设置），指向 /client/*', async () => {
     const { router, store } = buildRouterStore('client')
     await router.push('/client/overview')
     await router.isReady()
@@ -126,12 +127,12 @@ describe('MobileTabBar 角色适配', () => {
       global: { plugins: [router, store], stubs },
     })
     const tabs = wrapper.findAll('.tab-item')
-    expect(tabs).toHaveLength(4)
+    expect(tabs).toHaveLength(5)
     const labels = tabs.map(t => t.text())
-    expect(labels).toEqual(['概览', '证据', '文章', '设置'])
+    expect(labels).toEqual(['概览', '证据', '快照', '文章', '设置'])
     const paths = tabs.map(t => t.attributes('data-to'))
     expect(paths).toEqual([
-      '/client/overview', '/client/evidence', '/client/articles', '/client/settings',
+      '/client/overview', '/client/evidence', '/client/rankings', '/client/articles', '/client/settings',
     ])
   })
 
