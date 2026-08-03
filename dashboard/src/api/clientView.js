@@ -10,4 +10,6 @@ export const clientViewApi = {
   rankings: () => api.get('/client/rankings'),
   // Phase 2：AI 可见度得分
   visibility: () => api.get('/client/visibility'),
+  // 阶段 4：置信度
+  confidence: () => api.get('/client/confidence'),
 }

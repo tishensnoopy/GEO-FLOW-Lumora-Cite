@@ -53,6 +53,21 @@
                   <el-tag :type="hitTypeTagType(r.hit_type)" size="small" effect="dark">
                     {{ hitTypeLabel(r.hit_type) }}
                   </el-tag>
+                  <!-- 阶段 4：置信度标签 -->
+                  <el-tag
+                    v-if="r.confidence_level && r.confidence_level !== 'uncalibrated'"
+                    :type="getConfidenceTagType(r.confidence_level)"
+                    size="small"
+                  >
+                    {{ getConfidenceLabel(r.confidence_level, r.confidence) }}
+                  </el-tag>
+                  <el-tag
+                    v-else-if="r.confidence_level === 'uncalibrated'"
+                    type="info"
+                    size="small"
+                  >
+                    未校准
+                  </el-tag>
                 </div>
                 <span v-if="isCited(r.hit_type)" class="cited-badge">已引用您的文章</span>
               </div>
@@ -141,6 +156,21 @@ function hitTypeLabel(type) {
   if (type === 'none') return '未命中'
   if (!type) return '—'
   return type
+}
+
+// 阶段 4：置信度标签辅助函数
+const getConfidenceTagType = (level) => {
+  switch (level) {
+    case 'high': return 'success'
+    case 'medium': return 'warning'
+    case 'low': return 'danger'
+    default: return 'info'
+  }
+}
+
+const getConfidenceLabel = (level, confidence) => {
+  const levelText = { high: '高置信度', medium: '中置信度', low: '低置信度' }
+  return `${levelText[level] || ''} ${confidence}%`
 }
 // exact / domain 视为"已引用"
 function isCited(type) {

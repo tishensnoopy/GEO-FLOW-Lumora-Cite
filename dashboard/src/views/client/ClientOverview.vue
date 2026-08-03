@@ -170,7 +170,18 @@
               :show-text="false"
               :stroke-width="8"
             />
-            <div class="platform-meta">引用 {{ p.cited }} / {{ p.total }} 次</div>
+            <div class="platform-meta">
+              <span>引用 {{ p.cited }} / {{ p.total }} 次</span>
+              <!-- 阶段 4：置信度标签 -->
+              <el-tag
+                v-if="p.confidence_level && p.confidence_level !== 'uncalibrated'"
+                :type="getConfidenceTagType(p.confidence_level)"
+                size="small"
+              >
+                {{ p.confidence }}%
+              </el-tag>
+              <el-tag v-else type="info" size="small">未校准</el-tag>
+            </div>
           </div>
           <div v-if="!visibilityLoading && platformScores.length === 0" class="empty-tip">暂无可见度数据</div>
         </div>
@@ -282,6 +293,16 @@ function scoreColor(score) {
   if (s >= 70) return '#10B981'
   if (s >= 40) return '#F59E0B'
   return '#EF4444'
+}
+
+// 阶段 4：置信度标签 → Element Plus tag 类型
+const getConfidenceTagType = (level) => {
+  switch (level) {
+    case 'high': return 'success'
+    case 'medium': return 'warning'
+    case 'low': return 'danger'
+    default: return 'info'
+  }
 }
 
 async function fetchWorkReport() {
@@ -613,6 +634,10 @@ onMounted(async () => {
 .platform-meta {
   font-size: var(--fs-small);
   color: var(--mute);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
 }
 
 @media (max-width: 768px) {
