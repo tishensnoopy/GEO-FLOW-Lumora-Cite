@@ -1470,3 +1470,41 @@ async def _run_batch_ai_index(targets: list[tuple[str, str]], task_id: str = Non
                 complete_task(task_id, status="failed")
         finally:
             await release_scan_lock(db, "ai_index")
+
+
+# ============================================================================
+# 阶段 4：引用检测校准 API
+# ============================================================================
+
+@router.post("/calibration/trigger")
+async def trigger_calibration(
+    sample_rate: float = 0.1,
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """手动触发引用检测校准任务。
+
+    采样 citation_results，用网页端模拟重新检测，对比 API vs 网页端结果。
+    返回各平台的采样数、校准数、一致数、一致率。
+    """
+    from app.services.calibration_service import CalibrationService
+
+    if not 0 < sample_rate <= 1.0:
+        raise HTTPException(status_code=400, detail="sample_rate 必须在 (0, 1] 范围内")
+
+    service = CalibrationService(db)
+    result = await service.run_calibration(sample_rate=sample_rate)
+    return result
+
+
+@router.get("/calibration/results")
+async def get_calibration_results(
+    admin: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """查看校准结果概览（各平台置信度）。"""
+    from app.services.calibration_service import CalibrationService
+
+    service = CalibrationService(db)
+    platforms = await service.get_all_confidence()
+    return {"platforms": platforms}
