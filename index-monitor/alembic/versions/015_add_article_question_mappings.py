@@ -24,7 +24,7 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     op.create_table(
         "article_question_mappings",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("uuid_generate_v4()")),
         sa.Column("distribution_id", UUID(as_uuid=True), nullable=False, index=True),
         sa.Column("client_question_id", UUID(as_uuid=True), nullable=False, index=True),
         sa.Column("relevance_score", sa.Float, nullable=False, server_default="0"),
