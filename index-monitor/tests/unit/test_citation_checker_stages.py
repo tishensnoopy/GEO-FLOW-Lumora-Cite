@@ -89,6 +89,8 @@ async def test_check_url_filters_dropped_model_ids(monkeypatch):
 
     # mock 阶段 1c：已收录模型含 deepseek（应被 catalog 过滤）
     checker._get_indexed_models = AsyncMock(return_value=["qwen", "deepseek"])
+    # 任务 4：模型筛选源改为 _get_configured_models（含 deepseek 测试过滤）
+    checker._get_configured_models = AsyncMock(return_value=["qwen", "deepseek"])
 
     # 关键：捕获传给 default_adapters 的 selected_ids
     captured_selected_ids = []
@@ -278,6 +280,8 @@ async def test_check_url_probe_all_failed_does_not_eliminate(monkeypatch):
 
     # mock 阶段 1c：已收录模型
     checker._get_indexed_models = AsyncMock(return_value=["qwen", "doubao"])
+    # 任务 4：模型筛选源改为 _get_configured_models
+    checker._get_configured_models = AsyncMock(return_value=["qwen", "doubao"])
 
     # 关键 mock：default_adapters 返回 2 个 fake adapter（不走真实网络）
     fake_adapters = [_make_fake_adapter("qwen"), _make_fake_adapter("doubao")]
@@ -352,6 +356,9 @@ async def test_check_url_zero_adapters_still_raises_stage2_model_probe(monkeypat
     # mock 阶段 1b/1c：客户问题 + 已收录模型
     checker._get_client_questions = AsyncMock(return_value=["测试问题"])
     checker._get_indexed_models = AsyncMock(return_value=["qwen"])
+    # 任务 4：configured_models 非空以通过阶段 1，让阶段 2 的 default_adapters
+    # 返回空列表触发 [2/3 模型探测] 硬错误（零模型不可降级）
+    checker._get_configured_models = AsyncMock(return_value=["qwen"])
 
     # 关键 mock：default_adapters 返回空列表（无任何可用模型）
     monkeypatch.setattr(

@@ -25,22 +25,27 @@ def _setup_success_mocks(monkeypatch, checker):
 
     Phase 2 改造后不再 mock 目的推断/问题生成（parse_purpose_response /
     generate_candidates / call_llm_with_parse_retry_fallback），改为 mock
-    _get_client_questions + _get_indexed_models（客户问题 + 已收录模型）。
+    _get_client_questions + _get_configured_models（客户问题 + 已配置模型）。
+
+    任务 4：模型筛选源从 _get_indexed_models（收录检测产物）改为
+    _get_configured_models（adapter_catalog 中 configured=True 的项），
+    引用检测不再依赖收录检测结果。_get_indexed_models 仍 mock 以保持兼容。
     """
 
     async def mock_load_ai_config():
         return {
             "ai_deepseek_api_key": "ds-key",
             "ai_question_model": "deepseek-chat",
-            # 包含 qwen + doubao，供多模型测试覆盖 _get_indexed_models 后通过过滤
+            # 包含 qwen + doubao，供多模型测试覆盖 _get_configured_models 后通过过滤
             "ai_citation_models": "qwen,doubao",
         }
     checker._load_ai_config = mock_load_ai_config
     checker._set_provider_env = MagicMock()
 
-    # Phase 2：mock 客户问题（替代 LLM 自动生成）+ 已收录模型
+    # Phase 2：mock 客户问题（替代 LLM 自动生成）+ 已配置模型（任务 4 替代 indexed）
     checker._get_client_questions = AsyncMock(return_value=["测试问题"])
     checker._get_indexed_models = AsyncMock(return_value=["qwen"])
+    checker._get_configured_models = AsyncMock(return_value=["qwen"])
 
     mock_content = MagicMock()
     mock_content.suitability.suitable = True
@@ -156,8 +161,9 @@ async def test_progress_reports_probe_per_model(monkeypatch):
     checker = CitationChecker(db=MagicMock())
     _setup_success_mocks(monkeypatch, checker)
 
-    # 覆盖已收录模型：2 个模型，供 stage 2 探测
+    # 覆盖已配置模型：2 个模型，供 stage 2 探测
     checker._get_indexed_models = AsyncMock(return_value=["qwen", "doubao"])
+    checker._get_configured_models = AsyncMock(return_value=["qwen", "doubao"])
 
     # 覆盖 probe：返回 2 个模型，状态不同
     monkeypatch.setattr(
@@ -326,8 +332,9 @@ async def test_default_progress_updates_citation_model_in_stage2_model_probe(mon
     checker = CitationChecker(db=MagicMock())
     _setup_success_mocks(monkeypatch, checker)
 
-    # 覆盖已收录模型：2 个模型，供 stage 2 探测
+    # 覆盖已配置模型：2 个模型，供 stage 2 探测
     checker._get_indexed_models = AsyncMock(return_value=["qwen", "doubao"])
+    checker._get_configured_models = AsyncMock(return_value=["qwen", "doubao"])
 
     # 覆盖 probe：返回 2 个模型
     monkeypatch.setattr(

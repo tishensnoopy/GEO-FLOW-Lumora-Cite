@@ -162,3 +162,33 @@ class GeoflowAdmin(GeoflowBase):
     remember_token = Column(String(100), nullable=True)
     created_at = Column(DateTime(timezone=True))
     updated_at = Column(DateTime(timezone=True))
+
+
+def seed_geoflow_base_data(engine) -> None:
+    """预置 GEOFlow 基础数据（authors id=1 + categories id=1）。
+
+    ``articles`` 表有外键约束 ``articles_author_id_fkey`` 和
+    ``articles_category_id_fkey``，测试播种 ``GeoflowArticle(author_id=1,
+    category_id=1)`` 时若 ``authors``/``categories`` 表无对应记录会触发
+    IntegrityError。本函数在建表后插入 id=1 的基础行（ON CONFLICT DO NOTHING
+    幂等），保证外键约束满足。
+
+    用 raw SQL 而非 ORM——``authors``/``categories`` 不在 ``GeoflowBase``
+    metadata 中（真实表由 GEOFlow Laravel migration 创建），且只需最小列集。
+    """
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO public.authors (id, name) VALUES (1, '测试作者') "
+                "ON CONFLICT (id) DO NOTHING"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO public.categories (id, name, slug) "
+                "VALUES (1, '测试分类', 'test-category') "
+                "ON CONFLICT (id) DO NOTHING"
+            )
+        )

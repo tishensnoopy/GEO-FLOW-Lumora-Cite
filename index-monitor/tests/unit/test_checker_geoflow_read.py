@@ -32,7 +32,7 @@ def ensure_geoflow_tables():
     """
     from sqlalchemy import create_engine
     from app.core.config import settings
-    from tests._geoflow_test_models import GeoflowBase
+    from tests._geoflow_test_models import GeoflowBase, seed_geoflow_base_data
 
     url = (
         f"postgresql+psycopg2://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
@@ -41,6 +41,8 @@ def ensure_geoflow_tables():
     engine = create_engine(url)
     try:
         GeoflowBase.metadata.create_all(engine)
+        # 预置 authors id=1 + categories id=1，满足 articles 外键约束
+        seed_geoflow_base_data(engine)
     finally:
         engine.dispose()
 
