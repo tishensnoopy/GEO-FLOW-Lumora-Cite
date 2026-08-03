@@ -57,7 +57,7 @@
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useStore } from 'vuex'
-import { DataLine, Document, ChatDotRound, Setting, SwitchButton } from '@element-plus/icons-vue'
+import { DataLine, Document, ChatDotRound, Memo, Setting, SwitchButton } from '@element-plus/icons-vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 
 const route = useRoute()
@@ -65,10 +65,11 @@ const router = useRouter()
 const store = useStore()
 const { isMobile } = useBreakpoint()
 
-// 客户端菜单：仅概览 / 引用证据 / 我的文章 / 设置（不含任何管理员入口）
+// 客户端菜单：概览 / 引用证据 / 回答快照 / 我的文章 / 设置（不含任何管理员入口）
 const menuItems = computed(() => [
   { path: '/client/overview', label: '概览', icon: DataLine },
   { path: '/client/evidence', label: '引用证据', icon: ChatDotRound },
+  { path: '/client/rankings', label: '回答快照', icon: Memo },
   { path: '/client/articles', label: '我的文章', icon: Document },
   { path: '/client/settings', label: '设置', icon: Setting },
 ])

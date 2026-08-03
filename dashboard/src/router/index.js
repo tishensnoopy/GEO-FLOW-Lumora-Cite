@@ -17,6 +17,7 @@ const routes = [
   { path: '/ai-index', name: 'AiIndex', component: () => import('../views/AiIndex.vue'), meta: { requiresAuth: true, requiresAdmin: true } },
   { path: '/client/overview', name: 'ClientOverview', component: () => import('../views/client/ClientOverview.vue'), meta: { requiresAuth: true, requiresClient: true } },
   { path: '/client/evidence', name: 'ClientEvidence', component: () => import('../views/client/ClientEvidence.vue'), meta: { requiresAuth: true, requiresClient: true } },
+  { path: '/client/rankings', name: 'ClientRankings', component: () => import('../views/client/ClientRankings.vue'), meta: { requiresAuth: true, requiresClient: true } },
   { path: '/client/articles', name: 'ClientArticles', component: () => import('../views/client/ClientArticles.vue'), meta: { requiresAuth: true, requiresClient: true } },
   { path: '/client/settings', name: 'ClientSettings', component: () => import('../views/client/ClientSettings.vue'), meta: { requiresAuth: true, requiresClient: true } }
 ]
